@@ -123,7 +123,9 @@ tts:
   #   python -m jarvis --download-voice     # полный список
   voices:
     ru: vosk:male_1
-    en: xtts:male_1
+    # Был xtts:male_1 — вернул обычный движок: XTTS на процессоре подвешивает
+    # первую же английскую реплику. Если появится CUDA, ставь его обратно.
+    en: kokoro:bm_george
     # Один тембр на обоих языках: XTTS договаривает вставки голосом с образца.
     # Основной язык русский, поэтому эталон снимается с русского голоса:
     #   python -m jarvis --make-reference vosk:male_0
