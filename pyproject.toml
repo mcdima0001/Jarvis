@@ -20,6 +20,8 @@ xtts = ["coqui-tts>=0.27", "torch>=2.0", "torchaudio", "torchcodec",
         "transformers>=4.57,<5.0"]
 edge = ["edge-tts>=6.1", "av>=11.0"]
 audio = ["sounddevice>=0.4"]
+# Громкость на Windows: остальное в скилле обходится стандартной библиотекой.
+windows = ["pycaw>=20230407", "comtypes>=1.2"]
 voices = ["piper-tts>=1.2", "kokoro-onnx>=0.4", "torch>=2.0", "vosk-tts>=0.3.61",
           "edge-tts>=6.1", "av>=11.0"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]

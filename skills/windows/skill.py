@@ -257,7 +257,13 @@ def scan_start_menu(directories: list[Path], *, limit: int = 400) -> dict[str, s
     for directory in directories:
         if not directory.is_dir():
             continue
-        for shortcut in sorted(directory.rglob("*.lnk")):
+        try:
+            shortcuts = sorted(
+                item for item in directory.rglob("*") if item.suffix.lower() in (".lnk", ".url")
+            )
+        except OSError:
+            continue
+        for shortcut in shortcuts:
             name = shortcut.stem
             if _SKIP_SHORTCUT.search(name):
                 continue
@@ -270,21 +276,134 @@ def scan_start_menu(directories: list[Path], *, limit: int = 400) -> dict[str, s
 
 
 def start_menu_dirs() -> list[Path]:
-    """Каталоги меню «Пуск» — общий и пользовательский."""
+    """Каталоги, где Windows держит ярлыки: меню «Пуск» и рабочий стол.
+
+    Рабочий стол добавлен не для красоты: Steam и часть установщиков кладут
+    ярлык только туда, и без этого программа остаётся невидимой.
+    """
     parts = [
         (os.environ.get("ProgramData"), "Microsoft/Windows/Start Menu/Programs"),
         (os.environ.get("APPDATA"), "Microsoft/Windows/Start Menu/Programs"),
+        (os.environ.get("PUBLIC"), "Desktop"),
+        (os.environ.get("USERPROFILE"), "Desktop"),
+        (os.environ.get("USERPROFILE"), "OneDrive/Desktop"),
     ]
     return [Path(root) / tail for root, tail in parts if root]
 
 
-def parse_tasklist(output: str) -> set[str]:
-    """Достать имена процессов из вывода ``tasklist /fo csv /nh``."""
-    return {
-        row[0]
-        for row in csv.reader(io.StringIO(output))
-        if row and row[0].lower().endswith(".exe")
-    }
+def scan_program_files(roots: list[Path], *, limit: int = 300) -> dict[str, str]:
+    """Найти программы, не оставившие ярлыка: ``Program Files/Имя/Имя.exe``.
+
+    Так находится то, что ставится без ярлыков или ставится через Steam.
+    Смотрим только на один уровень вглубь и только на файлы, чьё имя похоже на
+    имя папки, — иначе в каталог попадут все установщики и обновлялки подряд.
+    """
+    found: dict[str, str] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            folders = sorted(item for item in root.iterdir() if item.is_dir())
+        except OSError:
+            continue
+        for folder in folders:
+            if _SKIP_SHORTCUT.search(folder.name):
+                continue
+            try:
+                executables = [item for item in folder.glob("*.exe") if item.is_file()]
+            except OSError:
+                continue
+            for executable in executables:
+                if _skeleton(executable.stem) == _skeleton(folder.name):
+                    found.setdefault(folder.name, str(executable))
+                    break
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def program_files_dirs() -> list[Path]:
+    """Куда Windows и Steam ставят программы."""
+    roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramW6432"),
+    ]
+    directories = [Path(root) for root in roots if root]
+    directories += steam_library_dirs()
+    # Один и тот же путь может прийти из разных переменных окружения.
+    return list(dict.fromkeys(directories))
+
+
+def steam_library_dirs() -> list[Path]:
+    """Папки, куда Steam ставит игры и приложения.
+
+    Библиотек бывает несколько и на разных дисках; их список Steam держит в
+    ``libraryfolders.vdf``. Формат простой, разбираем регулярным выражением —
+    тащить ради этого зависимость незачем.
+    """
+    bases = [
+        Path(root) / "Steam"
+        for root in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"))
+        if root
+    ]
+    libraries: list[Path] = []
+    for base in bases:
+        manifest = base / "steamapps" / "libraryfolders.vdf"
+        if not manifest.is_file():
+            continue
+        try:
+            text = manifest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r'"path"\s+"([^"]+)"', text):
+            libraries.append(Path(match.group(1).replace("\\\\", "\\")) / "steamapps" / "common")
+    return [path for path in libraries if path.is_dir()]
+
+
+def parse_tasklist(output: str) -> dict[str, str]:
+    """Разобрать вывод ``tasklist /fo csv /nh /v``: как назвать → что закрывать.
+
+    Имя процесса и название программы совпадают далеко не всегда: FL Studio
+    работает как ``FL64.exe``, и «закрой фл студио» по именам процессов не
+    находилось ничего. Поэтому в каталог идут и заголовки окон — там программа
+    подписана так, как её называет человек.
+    """
+    catalog: dict[str, str] = {}
+    for row in csv.reader(io.StringIO(output)):
+        if not row or not row[0].lower().endswith(".exe"):
+            continue
+        image = row[0]
+        catalog.setdefault(image.removesuffix(".exe"), image)
+        # Заголовок окна — последняя колонка режима /v.
+        title = row[-1].strip() if len(row) >= 9 else ""
+        if title and title != "N/A":
+            catalog.setdefault(title, image)
+    return catalog
+
+
+def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт только в pycaw
+    """Получить регулятор громкости системы через pycaw.
+
+    Пакет за годы поменял API: раньше ``GetSpeakers()`` отдавал сырой
+    COM-объект, у которого надо было запрашивать интерфейс через ``Activate``,
+    теперь — обёртку ``AudioDevice`` со свойством ``EndpointVolume``. Старый
+    вызов на новой версии падает с ``AttributeError``, поэтому поддерживаем оба.
+    """
+    from pycaw.utils import AudioUtilities
+
+    speakers = AudioUtilities.GetSpeakers()
+    volume = getattr(speakers, "EndpointVolume", None)
+    if volume is not None:
+        return volume
+
+    from ctypes import POINTER, cast
+
+    from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import IAudioEndpointVolume
+
+    interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    return cast(interface, POINTER(IAudioEndpointVolume))
 
 
 class WindowsSkill(Skill):
@@ -314,6 +433,8 @@ class WindowsSkill(Skill):
         автоматически.
         """
         catalog: dict[str, str] = dict(BUILT_IN)
+        # Ярлыки точнее найденного перебором папок, поэтому идут позже.
+        catalog.update(scan_program_files(program_files_dirs()))
         catalog.update(scan_start_menu(start_menu_dirs()))
         catalog.update(self._configured)
         self._catalog = catalog
@@ -392,7 +513,7 @@ class WindowsSkill(Skill):
         :param program: название программы.
         """
         running = await self._running()
-        found = match_program(program, {name: name for name in running})
+        found = match_program(program, running)
         if found is None:
             return ToolResult.failure(
                 f"процесс для {program!r} не найден среди запущенных",
@@ -442,16 +563,18 @@ class WindowsSkill(Skill):
             )
 
         # Вслух перечислять полсотни процессов бессмысленно.
-        visible = [name.removesuffix(".exe") for name in sorted(running)[:5]]
+        processes = sorted(set(running.values()))
+        visible = [name.removesuffix(".exe") for name in processes[:5]]
         return ToolResult.success(
-            sorted(running),
+            processes,
             speech={
-                "ru": f"Запущено {len(running)} программ, среди них {', '.join(visible)}.",
-                "en": f"{len(running)} programs running, among them {', '.join(visible)}.",
+                "ru": f"Запущено {len(processes)} программ, среди них {', '.join(visible)}.",
+                "en": f"{len(processes)} programs running, among them {', '.join(visible)}.",
             },
         )
 
-    @tool()
+    @tool(phrases=["поставь громкость {level}", "громкость {level}",
+                   "set volume to {level}", "volume {level}"])
     async def set_volume(self, level: int) -> ToolResult:
         """Установить громкость системы.
 
@@ -459,11 +582,71 @@ class WindowsSkill(Skill):
         """
         level = max(0, min(100, level))
         try:
-            from ctypes import POINTER, cast
+            endpoint_volume().SetMasterVolumeLevelScalar(level / 100, None)
+        except Exception as exc:  # noqa: BLE001 — COM бросает что угодно
+            return self._volume_failure(exc)
 
-            from comtypes import CLSCTX_ALL
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-        except ImportError:
+        return ToolResult.success(
+            level,
+            speech={"ru": f"Громкость {level} процентов.",
+                    "en": f"Volume {level} percent."},
+        )
+
+    @tool(phrases=["погромче", "сделай громче", "louder", "turn it up"],
+          routable=False)
+    async def louder(self) -> ToolResult:
+        """Сделать громче на десять процентов."""
+        return await self.change_volume(10)
+
+    @tool(phrases=["потише", "сделай тише", "quieter", "turn it down"],
+          routable=False)
+    async def quieter(self) -> ToolResult:
+        """Сделать тише на десять процентов."""
+        return await self.change_volume(-10)
+
+    @tool()
+    async def change_volume(self, delta: int = 10) -> ToolResult:
+        """Изменить громкость на несколько процентов.
+
+        :param delta: на сколько процентов, отрицательное значение — тише.
+        """
+        try:
+            volume = endpoint_volume()
+            current = round(volume.GetMasterVolumeLevelScalar() * 100)
+            level = max(0, min(100, current + delta))
+            volume.SetMasterVolumeLevelScalar(level / 100, None)
+        except Exception as exc:  # noqa: BLE001 — COM бросает что угодно
+            return self._volume_failure(exc)
+
+        return ToolResult.success(
+            level,
+            speech={"ru": f"Громкость {level} процентов.",
+                    "en": f"Volume {level} percent."},
+        )
+
+    @tool(phrases=["выключи звук", "включи звук", "mute", "unmute"])
+    async def mute(self, on: bool = True) -> ToolResult:
+        """Выключить или включить звук.
+
+        :param on: ``true`` — выключить звук, ``false`` — вернуть.
+        """
+        try:
+            endpoint_volume().SetMute(bool(on), None)
+        except Exception as exc:  # noqa: BLE001 — COM бросает что угодно
+            return self._volume_failure(exc)
+
+        return ToolResult.success(
+            bool(on),
+            speech={
+                "ru": "Звук выключен." if on else "Звук включён.",
+                "en": "Muted." if on else "Unmuted.",
+            },
+        )
+
+    def _volume_failure(self, exc: Exception) -> ToolResult:
+        """Одинаковый ответ на любую беду с громкостью."""
+        self.log.error("Громкость: %s: %s", type(exc).__name__, exc)
+        if isinstance(exc, ImportError):
             return ToolResult.failure(
                 "нет пакета pycaw",
                 speech={
@@ -471,16 +654,10 @@ class WindowsSkill(Skill):
                     "en": "Volume control isn't installed.",
                 },
             )
-
-        speakers = AudioUtilities.GetSpeakers()
-        interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        volume.SetMasterVolumeLevelScalar(level / 100, None)
-
-        return ToolResult.success(
-            level,
-            speech={"ru": f"Громкость {level} процентов.",
-                    "en": f"Volume {level} percent."},
+        return ToolResult.failure(
+            f"{type(exc).__name__}: {exc}",
+            speech={"ru": "Не получилось изменить громкость.",
+                    "en": "Couldn't change the volume."},
         )
 
     @tool(phrases=["обнови список программ", "refresh programs"])
@@ -513,12 +690,14 @@ class WindowsSkill(Skill):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
-    async def _running(self) -> set[str]:
-        """Имена запущенных процессов."""
-        result = await self._run(["tasklist.exe", "/fo", "csv", "/nh"])
+    async def _running(self) -> dict[str, str]:
+        """Запущенные программы: как их называют → имя процесса."""
+        # Режим /v добавляет заголовки окон: по ним программа узнаётся там,
+        # где имя процесса ничего не говорит (FL Studio живёт как FL64.exe).
+        result = await self._run(["tasklist.exe", "/fo", "csv", "/nh", "/v"])
         if result.returncode != 0:
             self.log.warning("tasklist вернул %s: %s", result.returncode, result.stderr)
-            return set()
+            return {}
         return parse_tasklist(result.stdout)
 
     async def health(self) -> HealthStatus:
