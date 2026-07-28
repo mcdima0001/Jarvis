@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,10 @@ def _load() -> Any:
     spec = importlib.util.spec_from_file_location("skill_windows", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    # Регистрация обязательна: dataclass ищет модуль класса в sys.modules,
+    # и без неё падает с AttributeError. Настоящий загрузчик скиллов делает
+    # то же самое.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -277,14 +282,15 @@ _TASKLIST = (
 
 
 def test_tasklist_parsed() -> None:
-    """Из вывода tasklist берутся имена процессов и заголовки окон."""
-    catalog = windows.parse_tasklist(_TASKLIST)
+    """Из вывода tasklist берутся имя, номер процесса и заголовок окна."""
+    processes = windows.parse_tasklist(_TASKLIST)
+    by_image = {process.image: process for process in processes}
 
-    assert catalog["chrome"] == "chrome.exe"
-    assert catalog["steam"] == "steam.exe"
-    # Процессов без окна это не касается.
-    assert "N/A" not in catalog
-    assert "System Idle Process" not in catalog.values()
+    assert by_image["FL64.exe"].pid == 5678
+    assert by_image["FL64.exe"].title == "FL Studio 21"
+    # У процесса без окна заголовка нет, а «N/A» — это не заголовок.
+    assert by_image["svchost.exe"].title == ""
+    assert "System Idle Process" not in by_image
 
 
 def test_program_closed_by_window_title() -> None:
@@ -294,12 +300,22 @@ def test_program_closed_by_window_title() -> None:
     не находило ничего. Название, под которым программу знает человек, есть
     в заголовке окна.
     """
-    catalog = windows.parse_tasklist(_TASKLIST)
+    catalog = windows.process_catalog(windows.parse_tasklist(_TASKLIST))
 
     assert windows.match_program("фл студио", catalog)[1] == "FL64.exe"
     assert windows.match_program("FL Studio", catalog)[1] == "FL64.exe"
     assert windows.match_program("стим", catalog)[1] == "steam.exe"
     assert windows.match_program("хром", catalog)[1] == "chrome.exe"
+
+
+def test_steam_has_its_own_exit() -> None:
+    """Steam не закрывается ни окном, ни taskkill.
+
+    Крестик сворачивает его в трей, поэтому и Alt+F4 ничего не даёт, а убийство
+    процесса Steam считает некорректным выходом. Штатный способ у него один —
+    адрес steam://exit, который понимает сам клиент.
+    """
+    assert windows.QUIT_URIS["steam.exe"] == "steam://exit"
 
 
 @pytest.mark.parametrize(
@@ -329,3 +345,90 @@ def test_built_in_tools_present() -> None:
     assert windows.match_program("диспетчер задач", windows.BUILT_IN)[1] == "taskmgr.exe"
     assert windows.match_program("настройки", windows.BUILT_IN)[1] == "ms-settings:"
     assert windows.match_program("калькулятор", windows.BUILT_IN)[1] == "calc.exe"
+
+
+# --- порядок закрытия -------------------------------------------------------
+
+
+def _closer(**overrides: Any) -> Any:
+    """Скилл с подменёнными внешними вызовами: без Windows и без процессов."""
+    import logging
+
+    class Closer(windows.WindowsSkill):
+        """Логгер вместо контекста — остальное настоящее."""
+
+        log = logging.getLogger("test-windows")
+
+    skill = object.__new__(Closer)
+    skill._quit_commands = dict(windows.QUIT_URIS)
+    skill._force_close = False
+    for name, value in overrides.items():
+        setattr(skill, name, value)
+    return skill
+
+
+async def test_steam_closed_by_its_own_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Для Steam сначала пробуется его собственная команда выхода.
+
+    Окно ему слать бесполезно — крестик сворачивает в трей, — а taskkill Steam
+    считает некорректным выходом и жалуется при следующем запуске.
+    """
+    started: list[str] = []
+    monkeypatch.setattr(windows.os, "startfile", started.append, raising=False)
+
+    skill = _closer()
+    skill._wait_gone = _always_gone
+    skill._run = _should_not_run
+
+    assert await skill._close("steam.exe", {1234}) == "steam://exit"
+    assert started == ["steam://exit"]
+
+
+async def test_ordinary_program_closed_by_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Обычной программе шлётся запрос окну — то же, что Alt+F4.
+
+    Так она успевает спросить про несохранённое, чего taskkill /f не даёт.
+    """
+    monkeypatch.setattr(windows, "close_windows", lambda pids: len(pids))
+
+    skill = _closer()
+    skill._wait_gone = _always_gone
+    skill._run = _should_not_run
+
+    assert await skill._close("notepad.exe", {1, 2}) == "окно"
+
+
+async def test_stubborn_program_falls_back_to_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если программа не закрылась ни сама, ни по окну — остаётся taskkill."""
+    import subprocess
+
+    monkeypatch.setattr(windows, "close_windows", lambda pids: 1)
+    commands: list[list[str]] = []
+
+    async def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    async def never_gone(image: str, *, timeout: float = 4.0) -> bool:
+        return False
+
+    skill = _closer()
+    skill._wait_gone = never_gone
+    skill._run = run
+
+    assert await skill._close("stubborn.exe", {7}) == "taskkill"
+    assert commands == [["taskkill.exe", "/im", "stubborn.exe"]]
+    # Без force_close ключ /f не добавляется: несохранённое дороже.
+    assert "/f" not in commands[0]
+
+
+async def _always_gone(image: str, *, timeout: float = 4.0) -> bool:
+    """Процесс исчез сразу."""
+    return True
+
+
+async def _should_not_run(command: list[str]) -> Any:
+    """Внешняя команда на этом пути вызываться не должна."""
+    raise AssertionError(f"лишний вызов: {command}")

@@ -19,12 +19,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import difflib
 import io
 import os
 import re
 import subprocess
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
@@ -361,8 +364,34 @@ def steam_library_dirs() -> list[Path]:
     return [path for path in libraries if path.is_dir()]
 
 
-def parse_tasklist(output: str) -> dict[str, str]:
-    """Разобрать вывод ``tasklist /fo csv /nh /v``: как назвать → что закрывать.
+@dataclass(frozen=True, slots=True)
+class Process:
+    """Запущенная программа: чем является, под каким номером и как подписана."""
+
+    image: str
+    pid: int
+    title: str = ""
+
+
+def parse_tasklist(output: str) -> list[Process]:
+    """Разобрать вывод ``tasklist /fo csv /nh /v``."""
+    processes: list[Process] = []
+    for row in csv.reader(io.StringIO(output)):
+        if not row or not row[0].lower().endswith(".exe"):
+            continue
+        try:
+            pid = int(row[1])
+        except (IndexError, ValueError):
+            continue
+        title = row[-1].strip() if len(row) >= 9 else ""
+        processes.append(
+            Process(image=row[0], pid=pid, title="" if title == "N/A" else title)
+        )
+    return processes
+
+
+def process_catalog(processes: list[Process]) -> dict[str, str]:
+    """Как программу называют → имя её процесса.
 
     Имя процесса и название программы совпадают далеко не всегда: FL Studio
     работает как ``FL64.exe``, и «закрой фл студио» по именам процессов не
@@ -370,16 +399,56 @@ def parse_tasklist(output: str) -> dict[str, str]:
     подписана так, как её называет человек.
     """
     catalog: dict[str, str] = {}
-    for row in csv.reader(io.StringIO(output)):
-        if not row or not row[0].lower().endswith(".exe"):
-            continue
-        image = row[0]
-        catalog.setdefault(image.removesuffix(".exe"), image)
-        # Заголовок окна — последняя колонка режима /v.
-        title = row[-1].strip() if len(row) >= 9 else ""
-        if title and title != "N/A":
-            catalog.setdefault(title, image)
+    for process in processes:
+        catalog.setdefault(process.image.removesuffix(".exe"), process.image)
+        if process.title:
+            catalog.setdefault(process.title, process.image)
     return catalog
+
+
+#: Программы, которые не закрываются ни по окну, ни по taskkill.
+#:
+#: Steam — главный пример: крестик у него сворачивает окно в трей, а не выходит,
+#: поэтому и Alt+F4 ничего не даёт. Штатный выход у него один — адрес
+#: ``steam://exit``, который понимает сам клиент. Своё можно дописать в конфиг
+#: (``skills.settings.windows.quit_commands``).
+QUIT_URIS: dict[str, str] = {
+    "steam.exe": "steam://exit",
+}
+
+
+def close_windows(pids: set[int]) -> int:
+    """Послать окнам процессов запрос на закрытие — то же, что Alt+F4.
+
+    Именно сообщение окну, а не нажатие клавиш: клавиши ушли бы в то окно,
+    которое сейчас в фокусе, а это может оказаться что угодно. Программа при
+    этом успевает спросить про несохранённое — в отличие от ``taskkill /f``.
+
+    :return: скольким окнам отправлен запрос.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    sent = 0
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(handle: int, _: int) -> bool:
+        """Проверить одно окно и, если оно наше, попросить его закрыться."""
+        nonlocal sent
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        if owner.value in pids and user32.IsWindowVisible(handle):
+            user32.PostMessageW(handle, _WM_CLOSE, 0, 0)
+            sent += 1
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return sent
+
+
+#: Сообщение «закройся», которое Windows шлёт окну по Alt+F4.
+_WM_CLOSE = 0x0010
 
 
 def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт только в pycaw
@@ -423,6 +492,14 @@ class WindowsSkill(Skill):
             for key, value in dict(self.context.setting("programs", {})).items()
         }
         self._force_close = bool(self.context.setting("force_close", False))
+        # Свои команды выхода поверх встроенных: ключ — имя процесса.
+        self._quit_commands = {
+            **QUIT_URIS,
+            **{
+                str(key).lower(): str(value)
+                for key, value in dict(self.context.setting("quit_commands", {})).items()
+            },
+        }
         self._catalog: dict[str, str] = {}
         self._rebuild()
 
@@ -510,10 +587,16 @@ class WindowsSkill(Skill):
     async def close_program(self, program: str) -> ToolResult:
         """Закрыть программу по названию.
 
+        Способы пробуются по очереди, от вежливого к решительному: сначала
+        собственная команда выхода, если она у программы есть, потом запрос
+        окнам (то же, что Alt+F4), и только если программа осталась жива —
+        ``taskkill``. Порядок важен: убитая программа не сохраняет настройки,
+        а Steam при убийстве процесса ещё и жалуется на некорректный выход.
+
         :param program: название программы.
         """
-        running = await self._running()
-        found = match_program(program, running)
+        processes = await self._processes()
+        found = match_program(program, process_catalog(processes))
         if found is None:
             return ToolResult.failure(
                 f"процесс для {program!r} не найден среди запущенных",
@@ -533,28 +616,73 @@ class WindowsSkill(Skill):
                         "en": "Suspicious process name, not closing."},
             )
 
+        pids = {process.pid for process in processes if process.image == image}
+        how = await self._close(image, pids)
+        if how is None:
+            return ToolResult.failure(
+                f"{image} не закрылся",
+                speech={"ru": f"{image} не закрывается.", "en": f"{image} won't close."},
+            )
+
+        self.log.info("Закрыто: %s (%s)", image, how)
+        return ToolResult.success(
+            {"process": image, "method": how},
+            speech={"ru": f"Закрываю {image}.", "en": f"Closing {image}."},
+        )
+
+    async def _close(self, image: str, pids: set[int]) -> str | None:
+        """Закрыть процесс, перебирая способы. Возвращает сработавший."""
+        quit_uri = self._quit_commands.get(image.lower())
+        if quit_uri:
+            # У программы есть свой выход — он всегда чище внешнего закрытия.
+            self.log.info("Закрываю %s через %s", image, quit_uri)
+            try:
+                os.startfile(quit_uri)  # type: ignore[attr-defined]  # только Windows
+            except OSError as exc:
+                self.log.warning("Команда выхода %s не сработала: %s", quit_uri, exc)
+            else:
+                if await self._wait_gone(image):
+                    return quit_uri
+
+        # Запрос окнам: то же, что Alt+F4, но адресно — клавиши ушли бы в окно,
+        # которое сейчас в фокусе, а это может оказаться что угодно.
+        sent = await asyncio.to_thread(close_windows, pids)
+        if sent:
+            self.log.info("Отправлено закрытие %d окнам %s", sent, image)
+            if await self._wait_gone(image):
+                return "окно"
+
         command = ["taskkill.exe", "/im", image]
         if self._force_close:
             command.append("/f")
         result = await self._run(command)
         if result.returncode != 0:
-            return ToolResult.failure(
-                result.stderr.strip() or f"taskkill вернул {result.returncode}",
-                speech={"ru": f"Не получилось закрыть {image}.",
-                        "en": f"Couldn't close {image}."},
+            self.log.warning(
+                "taskkill для %s вернул %s: %s", image, result.returncode, result.stderr.strip()
             )
+            return None
+        return "taskkill"
 
-        self.log.info("Закрыто: %s", image)
-        return ToolResult.success(
-            {"process": image},
-            speech={"ru": f"Закрываю {image}.", "en": f"Closing {image}."},
-        )
+    async def _wait_gone(self, image: str, *, timeout: float = 4.0) -> bool:
+        """Подождать, пока процесс исчезнет.
+
+        Программы закрываются не мгновенно: Steam сохраняет состояние, редакторы
+        спрашивают про несохранённое. Без ожидания следующий способ применился бы
+        к программе, которая уже закрывается сама.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.4)
+            alive = {process.image for process in await self._processes()}
+            if image not in alive:
+                return True
+        return False
 
     @tool(phrases=["какие программы открыты", "что запущено",
                    "what is running", "list programs"])
     async def list_programs(self) -> ToolResult:
         """Перечислить запущенные программы."""
-        running = await self._running()
+        running = await self._processes()
         if not running:
             return ToolResult.failure(
                 "не удалось получить список процессов",
@@ -563,7 +691,7 @@ class WindowsSkill(Skill):
             )
 
         # Вслух перечислять полсотни процессов бессмысленно.
-        processes = sorted(set(running.values()))
+        processes = sorted({process.image for process in running})
         visible = [name.removesuffix(".exe") for name in processes[:5]]
         return ToolResult.success(
             processes,
@@ -679,8 +807,6 @@ class WindowsSkill(Skill):
         Команда всегда список, а не строка: оболочка не вызывается вовсе,
         поэтому услышанный текст не может стать её частью.
         """
-        import asyncio
-
         return await asyncio.to_thread(
             subprocess.run,
             command,
@@ -691,14 +817,14 @@ class WindowsSkill(Skill):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
-    async def _running(self) -> dict[str, str]:
-        """Запущенные программы: как их называют → имя процесса."""
+    async def _processes(self) -> list[Process]:
+        """Запущенные процессы: имя, номер, заголовок окна."""
         # Режим /v добавляет заголовки окон: по ним программа узнаётся там,
         # где имя процесса ничего не говорит (FL Studio живёт как FL64.exe).
         result = await self._run(["tasklist.exe", "/fo", "csv", "/nh", "/v"])
         if result.returncode != 0:
             self.log.warning("tasklist вернул %s: %s", result.returncode, result.stderr)
-            return {}
+            return []
         return parse_tasklist(result.stdout)
 
     async def health(self) -> HealthStatus:

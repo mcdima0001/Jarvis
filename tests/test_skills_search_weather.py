@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,10 @@ def _load(name: str) -> Any:
     spec = importlib.util.spec_from_file_location(f"skill_{name}", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    # Регистрация обязательна: dataclass ищет модуль класса в sys.modules,
+    # и без неё падает с AttributeError. Настоящий загрузчик скиллов делает
+    # то же самое.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
