@@ -68,8 +68,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--make-reference",
         metavar="ГОЛОС",
-        help="снять эталон с голоса, чтобы XTTS заговорил им по-русски "
-        "(например kokoro:bm_george)",
+        help="снять эталон, чтобы XTTS говорил этим голосом на втором языке: "
+        "движок:голос (vosk:male_0) либо путь к записи",
     )
     parser.add_argument(
         "--log-level",

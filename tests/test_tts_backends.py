@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jarvis.core.audio import NullAudioSink
 from jarvis.core.config import TTSConfig
 from jarvis.core.runtime import BlockingWorker
@@ -130,3 +132,104 @@ def test_run_blocking_without_loop() -> None:
         return 42
 
     assert _run_blocking(work()) == 42
+
+
+# --- Vosk -------------------------------------------------------------------
+
+
+def test_vosk_engine_recognised(tmp_path: Path) -> None:
+    """Vosk разбирается и собирается как остальные движки."""
+    from jarvis.core.tts.backends import VoskBackend
+
+    assert parse_voice("vosk:male_0") == ("vosk", "male_0")
+    backend = build_backend("vosk", tmp_path)
+    assert isinstance(backend, VoskBackend)
+    assert backend.engine == "vosk"
+
+
+def test_vosk_speed_inverts_length_scale(tmp_path: Path) -> None:
+    """Одна настройка скорости работает и здесь: у Vosk это темп речи."""
+    slow = build_backend("vosk", tmp_path, length_scale=2.0)
+    fast = build_backend("vosk", tmp_path, length_scale=0.5)
+
+    assert slow._speech_rate < 1.0 < fast._speech_rate
+
+
+def test_vosk_speaker_by_name_and_number(tmp_path: Path) -> None:
+    """Диктор задаётся именем из модели или номером."""
+    backend = build_backend("vosk", tmp_path)
+    backend._speakers = {"male_0": 3, "female_0": 0}
+
+    assert backend._speaker_id("male_0") == 3
+    assert backend._speaker_id("4") == 4
+    with pytest.raises(ValueError, match="male_9"):
+        backend._speaker_id("male_9")
+
+
+def test_vosk_reports_missing_model(tmp_path: Path) -> None:
+    """Без скачанной модели движок объясняет, что делать."""
+    backend = build_backend("vosk", tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="download-voice"):
+        backend.prepare("male_0", "ru")
+
+
+# --- эталон для XTTS --------------------------------------------------------
+
+
+def test_reference_taken_from_recording(tmp_path: Path) -> None:
+    """Эталон можно снять с готовой записи, а не только с другого движка.
+
+    Это лучший путь: клон делается с живого голоса, без потери качества на
+    промежуточном синтезе.
+    """
+    import wave
+
+    from jarvis.core.assets import make_reference
+
+    source = tmp_path / "мой-голос.wav"
+    with wave.open(str(source), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(22050)
+        handle.writeframes(b"\x00\x01" * 22050 * 8)
+
+    target = make_reference(str(source), tmp_path / "models")
+
+    assert target == tmp_path / "models" / "xtts" / "мой-голос.wav"
+    with wave.open(str(target)) as handle:
+        assert handle.getframerate() == 22050
+        assert handle.getnframes() == 22050 * 8
+
+
+def test_stereo_recording_rejected(tmp_path: Path) -> None:
+    """Стерео-запись отбивается с понятным объяснением, а не портит эталон."""
+    import wave
+
+    from jarvis.core.assets import make_reference
+    from jarvis.core.errors import JarvisError
+
+    source = tmp_path / "stereo.wav"
+    with wave.open(str(source), "wb") as handle:
+        handle.setnchannels(2)
+        handle.setsampwidth(2)
+        handle.setframerate(44100)
+        handle.writeframes(b"\x00\x01" * 4410)
+
+    with pytest.raises(JarvisError, match="моно"):
+        make_reference(str(source), tmp_path / "models")
+
+
+def test_reference_text_matches_voice_language() -> None:
+    """Эталон читается на родном языке голоса.
+
+    Иначе движок проговаривает чужой алфавит по буквам, и клонировать нечего.
+    """
+    from jarvis.core.assets import _is_russian
+
+    assert _is_russian("vosk", "male_0")
+    assert _is_russian("silero", "eugene")
+    assert _is_russian("piper", "ru_RU-denis-medium")
+    assert _is_russian("edge", "ru-RU-DmitryNeural")
+    assert not _is_russian("kokoro", "bm_george")
+    assert not _is_russian("edge", "en-GB-RyanNeural")

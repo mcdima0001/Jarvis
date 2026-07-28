@@ -4,12 +4,16 @@
 синтезировать текст. Всё синхронное — вызывается из `BlockingWorker`, потому
 что нейросетевой синтез это CPU-bound работа, которая заморозила бы event loop.
 
-Три движка с разными сильными сторонами:
+Движки с разными сильными сторонами:
 
 * **Piper** — самый лёгкий и быстрый, 22 кГц. Хорош, когда важна нагрузка.
 * **Kokoro** — 24 кГц, заметно естественнее, есть британские мужские голоса.
   Модель 311 МБ, RTF около 0.9 на слабом процессоре.
 * **Silero** — 48 кГц, русские голоса живее, чем у Piper. Тянет за собой torch.
+* **Vosk** — русский с интонацией по смыслу фразы (BERT размечает текст).
+  Модель 750 МБ, зато из локальных ближе всех к живой речи.
+* **XTTS** — говорит любым голосом с образца, нужна видеокарта.
+* **Edge** — облачные нейроголоса Microsoft, самое естественное звучание.
 
 Голос в конфиге пишется как ``движок:голос`` (``kokoro:bm_george``), а без
 префикса берётся движок по умолчанию.
@@ -225,6 +229,72 @@ class SileroBackend:
         return [s for s in self._models[language].speakers if s != "random"]
 
 
+#: Модель Vosk-TTS: пять дикторов в одном файле, лицензия Apache 2.0.
+VOSK_MODEL = "vosk-model-tts-ru-0.9-multi"
+
+
+class VoskBackend:
+    """Vosk-TTS: русская модель Alpha Cephei с предсказанием просодии по BERT.
+
+    Отличие от Piper и Silero — отдельная BERT-модель размечает текст, поэтому
+    интонация ставится по смыслу фразы, а не по одним знакам препинания. Это и
+    даёт живость, которой не хватало остальным русским движкам. Цена — 750 МБ
+    на диске и примерно 0.35 от длительности речи на процессоре.
+
+    Дикторы лежат в одной модели, голос пишется именем из ``speaker_id_map``
+    (``vosk:male_0``) либо номером (``vosk:3``).
+    """
+
+    def __init__(self, models_dir: Path, *, speech_rate: float = 1.0) -> None:
+        self._dir = models_dir
+        self._speech_rate = speech_rate
+        self._synth: Any = None
+        self._speakers: dict[str, int] = {}
+        self._rate = 22050
+
+    @property
+    def engine(self) -> str:
+        """Имя движка."""
+        return "vosk"
+
+    def prepare(self, voice: str, language: str) -> None:
+        """Загрузить модель — она одна на всех дикторов."""
+        if self._synth is not None:
+            return
+        from vosk_tts import Model, Synth
+
+        path = self._dir / VOSK_MODEL
+        if not (path / "model.onnx").is_file():
+            raise FileNotFoundError(
+                f"Модель Vosk не найдена: {path}. "
+                f"Скачай: python -m jarvis --download-voice vosk:male_0"
+            )
+        model = Model(model_path=str(path))
+        self._speakers = dict(model.config.get("speaker_id_map", {}))
+        self._rate = int(model.config.get("audio", {}).get("sample_rate", 22050))
+        self._synth = Synth(model)
+
+    def _speaker_id(self, voice: str) -> int:
+        """Перевести имя или номер диктора в идентификатор модели."""
+        if voice in self._speakers:
+            return self._speakers[voice]
+        if voice.isdigit():
+            return int(voice)
+        known = ", ".join(sorted(self._speakers)) or "—"
+        raise ValueError(f"Диктор Vosk {voice!r} неизвестен. Есть: {known}")
+
+    def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
+        """Синтезировать речь выбранным диктором."""
+        self.prepare(voice, language)
+        audio = self._synth.synth_audio(
+            text,
+            speaker_id=self._speaker_id(voice),
+            speech_rate=self._speech_rate,
+        )
+        # На выходе уже int16 — приводить через `_to_pcm16` не нужно.
+        return np.asarray(audio, dtype=np.int16).tobytes(), self._rate
+
+
 class XttsBackend:
     """XTTS-v2: говорит по-русски голосом, взятым с образца.
 
@@ -277,7 +347,7 @@ class XttsBackend:
         if not reference.is_file():
             raise FileNotFoundError(
                 f"Нет эталона голоса: {reference}. "
-                f"Создай его: python -m jarvis --make-reference kokoro:{voice}"
+                f"Создай его: python -m jarvis --make-reference vosk:{voice}"
             )
         if self._model is not None:
             return
@@ -386,7 +456,7 @@ class EdgeBackend:
 
 
 #: Известные движки.
-BACKENDS = ("piper", "kokoro", "silero", "xtts", "edge")
+BACKENDS = ("piper", "kokoro", "silero", "vosk", "xtts", "edge")
 
 
 def parse_voice(spec: str, *, default_engine: str = "piper") -> tuple[str, str]:
@@ -417,6 +487,9 @@ def build_backend(
         return KokoroBackend(models_dir / "kokoro", speed=1.0 / max(length_scale, 0.1))
     if engine == "silero":
         return SileroBackend(models_dir / "silero")
+    if engine == "vosk":
+        # Здесь скорость тоже обратная length_scale: у Vosk это темп речи.
+        return VoskBackend(models_dir / "vosk", speech_rate=1.0 / max(length_scale, 0.1))
     if engine == "xtts":
         return XttsBackend(models_dir / "xtts", device=device)
     if engine == "edge":

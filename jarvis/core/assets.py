@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import zipfile
 from pathlib import Path
 
 import httpx
@@ -24,6 +25,15 @@ _KOKORO_REPO = (
     "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 )
 _SILERO_REPO = "https://models.silero.ai/models/tts"
+_VOSK_REPO = "https://alphacephei.com/vosk/models"
+
+#: Имя модели Vosk дублировать нельзя — берём то же, что знает движок.
+#: Импорт ленивый: `assets` работает и там, где numpy не установлен.
+def _vosk_model() -> str:
+    """Имя модели Vosk-TTS из движка."""
+    from jarvis.core.tts.backends import VOSK_MODEL
+
+    return VOSK_MODEL
 
 #: Голоса Piper: лёгкий движок, 22 кГц.
 PIPER_VOICES = (
@@ -51,6 +61,9 @@ KOKORO_VOICES = (
 
 #: Голоса Silero: 48 кГц, русский звучит живее, чем у Piper.
 SILERO_VOICES = ("eugene", "aidar", "baya", "kseniya", "xenia")
+
+#: Дикторы Vosk: все в одной модели, имена из её ``speaker_id_map``.
+VOSK_VOICES = ("male_0", "male_1", "female_0", "female_1", "female_2")
 
 #: Нейроголоса Microsoft: считаются в облаке, звучат естественнее всего
 #: локального. Ключ не нужен, но нужен интернет.
@@ -92,29 +105,118 @@ VOICE_NOTES: dict[str, str] = {
     "silero:baya": "русский женский",
     "silero:kseniya": "русский женский, мягче",
     "silero:xenia": "русский женский, живее",
+    "vosk:male_0": "русский мужской, интонация по смыслу фразы",
+    "vosk:male_1": "русский мужской, второй диктор",
+    "vosk:female_0": "русский женский",
+    "vosk:female_1": "русский женский, второй диктор",
+    "vosk:female_2": "русский женский, третий диктор",
 }
 
 #: Фраза для эталона XTTS: нужно 10–20 секунд связной чистой речи.
-REFERENCE_TEXT = (
-    "Good evening, sir. The studio is at twenty two degrees and everything is "
-    "running smoothly. I have prepared the recording session, and the lights are "
-    "set to your usual preference. Shall I switch to game mode, or would you "
-    "rather continue working for a while longer?"
-)
+REFERENCE_TEXT = {
+    "ru": (
+        "Добрый вечер. В студии двадцать два градуса, всё работает штатно. "
+        "Сессия записи готова, свет выставлен как вы обычно любите. "
+        "Включить игровой режим, или вы ещё поработаете?"
+    ),
+    "en": (
+        "Good evening, sir. The studio is at twenty two degrees and everything is "
+        "running smoothly. I have prepared the recording session, and the lights are "
+        "set to your usual preference. Shall I switch to game mode, or would you "
+        "rather continue working for a while longer?"
+    ),
+}
 
 
-def make_reference(source: str, models_dir: Path) -> Path:
-    """Создать эталон голоса для XTTS из любого другого движка.
+def _is_russian(engine: str, voice: str) -> bool:
+    """Русский ли это голос — по движку и по имени.
 
-    Так русская речь получает тембр английского голоса: XTTS синтезирует по
-    образцу, а образец берётся у того самого голоса, который понравился.
+    XTTS сюда не попадает намеренно: он говорит на языке, который ему задали,
+    а тембр берёт с эталона. Языка у него своего нет.
+    """
+    return (
+        engine in ("silero", "vosk")
+        or voice.startswith("ru_")
+        or voice.startswith("ru-")
+    )
 
-    :param source: голос-источник, например ``kokoro:bm_george``.
-    :param models_dir: каталог из конфига ``tts.models_dir``.
+
+def _write_wav(target: Path, audio: bytes, rate: int) -> Path:
+    """Сохранить моно-PCM 16 бит в WAV."""
+    import wave
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(target), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(audio)
+    return target
+
+
+def _reference_from_file(source: Path, models_dir: Path) -> Path:
+    """Взять эталон из готовой записи — хоть с микрофона.
+
+    Это лучший вариант из возможных: клон делается с живого голоса, без потери
+    качества на промежуточном синтезе.
     """
     import wave
 
+    target = models_dir / "xtts" / f"{source.stem}.wav"
+
+    if source.suffix.lower() == ".wav":
+        with wave.open(str(source)) as handle:
+            if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+                raise JarvisError(
+                    f"Нужен моно WAV 16 бит, а в {source.name} "
+                    f"{handle.getnchannels()} канала по {handle.getsampwidth() * 8} бит"
+                )
+            audio = handle.readframes(handle.getnframes())
+            rate = handle.getframerate()
+    else:
+        try:
+            import av
+        except ImportError as exc:
+            raise JarvisError(
+                f"Чтобы читать {source.suffix}, нужен пакет av: pip install -e '.[edge]'. "
+                f"Либо сохрани запись как моно WAV 16 бит."
+            ) from exc
+
+        rate = 22050
+        container = av.open(str(source))
+        resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=rate)
+        pcm = bytearray()
+        for frame in container.decode(audio=0):
+            for resampled in resampler.resample(frame):
+                pcm += bytes(resampled.planes[0])[: resampled.samples * 2]
+        audio = bytes(pcm)
+
+    seconds = len(audio) / 2 / rate
+    if seconds < 6:
+        print(f"⚠ Запись короткая ({seconds:.0f} с) — XTTS хочет 10–20 секунд речи")
+    return _write_wav(target, audio, rate)
+
+
+def make_reference(source: str, models_dir: Path) -> Path:
+    """Создать эталон голоса для XTTS.
+
+    XTTS синтезирует по образцу, поэтому им можно договорить то, чего основной
+    движок не умеет: русскому голосу — английские вставки, английскому —
+    русские. Тембр остаётся тем же, и переключение языка не слышно как смена
+    диктора.
+
+    :param source: голос-источник (``vosk:male_0``, ``kokoro:bm_george``)
+        либо путь к записи живого голоса — так клон получается чище всего.
+    :param models_dir: каталог из конфига ``tts.models_dir``.
+    """
     from jarvis.core.tts.backends import build_backend
+
+    path = Path(source)
+    if path.is_file():
+        target = _reference_from_file(path, models_dir)
+        print(f"Готово: {target}")
+        print(f"Теперь в config.yaml можно писать:  en: xtts:{target.stem}")
+        return target
 
     engine, voice = _split(source)
     if engine == "xtts":
@@ -123,20 +225,19 @@ def make_reference(source: str, models_dir: Path) -> Path:
     download_voice(source, models_dir)
     backend = build_backend(engine, models_dir)
 
-    print(f"Снимаю эталон с {source} — {len(REFERENCE_TEXT.split())} слов")
-    audio, rate = backend.synthesize(REFERENCE_TEXT, voice, "en")  # type: ignore[attr-defined]
+    # Читать образец лучше на родном языке голоса: чужой алфавит движок
+    # проговаривает по буквам, и эталон получается из мусора.
+    language = "ru" if _is_russian(engine, voice) else "en"
+    text = REFERENCE_TEXT[language]
 
-    target = models_dir / "xtts" / f"{voice}.wav"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(target), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(rate)
-        handle.writeframes(audio)
+    print(f"Снимаю эталон с {source} — {len(text.split())} слов на {language}")
+    audio, rate = backend.synthesize(text, voice, language)  # type: ignore[attr-defined]
 
+    target = _write_wav(models_dir / "xtts" / f"{voice}.wav", audio, rate)
     seconds = len(audio) / 2 / rate
     print(f"Готово: {target} ({seconds:.0f} с, {rate} Гц)")
-    print(f"Теперь в config.yaml можно писать:  ru: xtts:{voice}")
+    other = "en" if language == "ru" else "ru"
+    print(f"Теперь в config.yaml можно писать:  {other}: xtts:{voice}")
     return target
 
 
@@ -145,10 +246,14 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "jarvis": ("kokoro:bm_george", "kokoro:bm_daniel", "kokoro:bm_lewis", "kokoro:bm_fable"),
     "en": tuple(f"kokoro:{v}" for v in KOKORO_VOICES)
     + ("piper:en_GB-alan-medium", "piper:en_US-ryan-high"),
-    "ru": ("edge:ru-RU-DmitryNeural",)
+    # Русские: сначала непрослушанное — Vosk. Остальное уже отбраковано на слух,
+    # но оставлено, чтобы было с чем сравнивать.
+    "ru": tuple(f"vosk:{v}" for v in VOSK_VOICES)
+    + ("edge:ru-RU-DmitryNeural",)
     + tuple(f"silero:{v}" for v in SILERO_VOICES)
     + ("piper:ru_RU-denis-medium", "piper:ru_RU-ruslan-medium"),
     "clone": ("xtts:bm_george",),
+    "vosk": tuple(f"vosk:{v}" for v in VOSK_VOICES),
     "cloud": tuple(f"edge:{v}" for v in EDGE_VOICES),
     "edge": tuple(f"edge:{v}" for v in EDGE_VOICES),
     "kokoro": tuple(f"kokoro:{v}" for v in KOKORO_VOICES),
@@ -242,6 +347,20 @@ def download_voice(spec: str, models_dir: Path) -> Path:
                 _download(client, f"{_SILERO_REPO}/ru/v4_ru.pt", target)
                 return target
 
+            if engine == "vosk":
+                name = _vosk_model()
+                target = models_dir / "vosk" / name
+                if (target / "model.onnx").is_file():
+                    return target
+                print(f"Скачиваю модель Vosk {name} (750 МБ, одна на всех дикторов)")
+                archive = models_dir / "vosk" / f"{name}.zip"
+                _download(client, f"{_VOSK_REPO}/{name}.zip", archive)
+                print("  распаковываю")
+                with zipfile.ZipFile(archive) as bundle:
+                    bundle.extractall(models_dir / "vosk")
+                archive.unlink()
+                return target
+
             if engine == "edge":
                 # Модель живёт в облаке — скачивать нечего.
                 return models_dir
@@ -253,8 +372,8 @@ def download_voice(spec: str, models_dir: Path) -> Path:
                 if reference.is_file():
                     return reference
                 raise JarvisError(
-                    f"Нет эталона голоса {voice}. Сними его с понравившегося голоса: "
-                    f"python -m jarvis --make-reference kokoro:{voice}"
+                    f"Нет эталона голоса {voice}. Сними его с понравившегося голоса "
+                    f"или с записи: python -m jarvis --make-reference vosk:{voice}"
                 )
 
         except httpx.HTTPStatusError as exc:
@@ -298,32 +417,33 @@ def preview_voices(names: list[str], models_dir: Path, *, text: str | None = Non
             print(f"\n✗ {spec}: {exc}")
             continue
 
-        russian = (
-            engine in ("silero", "xtts")
-            or voice.startswith("ru_")
-            or voice.startswith("ru-")
-        )
-        language = "ru" if russian else "en"
-        sample = text or SAMPLE_TEXT[language]
+        # Клон говорит на обоих языках, и слушать его нужно тоже на обоих:
+        # смысл клонирования в том, чтобы вставка не звучала другим диктором.
+        if engine == "xtts":
+            languages = ("ru", "en")
+        else:
+            languages = ("ru",) if _is_russian(engine, voice) else ("en",)
 
         print(f"\n▶ {spec}  ({VOICE_NOTES.get(spec, '')})")
-        print(f"  {sample}")
-
         backend = backends.get(engine) or build_backend(engine, models_dir)
         backends[engine] = backend
-        try:
-            audio, rate = backend.synthesize(sample, voice, language)  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001 — один сбойный голос не должен рвать перебор
-            print(f"  ✗ не удалось: {type(exc).__name__}: {exc}")
-            continue
 
-        with sd.RawOutputStream(samplerate=rate, channels=1, dtype="int16") as stream:
-            stream.write(audio)
+        for language in languages:
+            sample = text or SAMPLE_TEXT[language]
+            print(f"  {sample}")
+            try:
+                audio, rate = backend.synthesize(sample, voice, language)  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001 — один голос не должен рвать перебор
+                print(f"  ✗ не удалось: {type(exc).__name__}: {exc}")
+                continue
+
+            with sd.RawOutputStream(samplerate=rate, channels=1, dtype="int16") as stream:
+                stream.write(audio)
 
     print("\nПонравившийся впиши в config.yaml:")
     print("  tts:")
     print("    voices:")
-    print("      ru: silero:eugene")
+    print("      ru: vosk:male_0")
     print("      en: kokoro:bm_george")
 
 
@@ -344,6 +464,15 @@ def list_voices() -> str:
         spec = f"kokoro:{voice}"
         lines.append(f"  {spec:<22} {VOICE_NOTES.get(spec, '')}")
 
+    lines += [
+        "",
+        "Vosk — русский, интонацию расставляет BERT по смыслу фразы, поэтому",
+        "звучит живее остальных локальных. Модель 750 МБ, все дикторы в ней:",
+    ]
+    for voice in VOSK_VOICES:
+        spec = f"vosk:{voice}"
+        lines.append(f"  {spec:<22} {VOICE_NOTES.get(spec, '')}")
+
     lines += ["", "Silero — 48 кГц, русский, модель 39 МБ (нужен torch):"]
     for voice in SILERO_VOICES:
         spec = f"silero:{voice}"
@@ -351,10 +480,12 @@ def list_voices() -> str:
 
     lines += [
         "",
-        "XTTS — говорит по-русски голосом с образца (модель ~1.8 ГБ, нужна видеокарта",
-        "для приемлемой скорости; лицензия Coqui — некоммерческое использование):",
-        "  xtts:bm_george         русский тем же голосом, что английский bm_george",
-        "  сначала:  python -m jarvis --make-reference kokoro:bm_george",
+        "XTTS — говорит любым голосом с образца, на любом из языков (модель ~1.8 ГБ,",
+        "нужна видеокарта; лицензия Coqui — некоммерческое использование).",
+        "Нужен, чтобы вставки на втором языке звучали тем же голосом:",
+        "  сначала:  python -m jarvis --make-reference vosk:male_0",
+        "  или с записи живого голоса:  python -m jarvis --make-reference голос.wav",
+        "  потом в config.yaml:  en: xtts:male_0",
         "",
         "Piper — самый лёгкий и быстрый, 22 кГц:",
     ]
@@ -366,6 +497,7 @@ def list_voices() -> str:
         "",
         "Послушать и выбрать:",
         "  python -m jarvis --try-voice jarvis   # британские мужские, как в фильме",
+        "  python -m jarvis --try-voice vosk     # русские дикторы Vosk",
         "  python -m jarvis --try-voice ru       # русские",
         "  python -m jarvis --try-voice en       # английские",
         "  python -m jarvis --try-voice kokoro:bm_george silero:eugene",
