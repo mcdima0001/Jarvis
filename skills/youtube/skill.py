@@ -31,8 +31,8 @@ class YouTubeSkill(Skill):
         """
         if not self._api_key:
             return ToolResult.failure(
-                "Нет ключа YouTube API",
-                speech="Поиск по YouTube не настроен.",
+                "Нет ключа YouTube API: задай JARVIS_YOUTUBE_KEY в .env",
+                speech="Поиск по Ютубу не настроен.",
             )
         # TODO: YouTube Data API v3, search.list
         results: list[dict[str, str]] = []

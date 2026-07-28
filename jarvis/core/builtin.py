@@ -55,8 +55,10 @@ class CoreTools:
         """
         if not self._llm.available:
             return ToolResult.failure(
-                "Языковая модель не настроена",
-                speech="Модель не подключена — добавь ключ OpenRouter в файл .env.",
+                # Технические подробности — в error и в лог, а вслух только то,
+                # что не превратится в кашу при синтезе.
+                "Языковая модель не настроена: задай JARVIS_OPENROUTER_KEY в .env",
+                speech="Языковая модель не подключена. Добавь ключ в настройки.",
             )
 
         context = await self._memory.context.build(

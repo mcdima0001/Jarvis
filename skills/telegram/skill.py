@@ -52,8 +52,8 @@ class TelegramSkill(Skill):
         """
         if not self._token:
             return ToolResult.failure(
-                "Нет токена Telegram",
-                speech="Telegram не подключён: добавь токен бота в файл .env.",
+                "Нет токена Telegram: задай JARVIS_TELEGRAM_TOKEN в .env",
+                speech="Телеграм не подключён. Добавь токен бота в настройки.",
             )
         # TODO: Bot API sendMessage
         self.log.info("Сообщение в %s: %s", chat, text)
@@ -70,8 +70,8 @@ class TelegramSkill(Skill):
         """
         if not self._token:
             return ToolResult.failure(
-                "Нет токена Telegram",
-                speech="Telegram не подключён.",
+                "Нет токена Telegram: задай JARVIS_TELEGRAM_TOKEN в .env",
+                speech="Телеграм не подключён.",
             )
         # TODO: Bot API getUpdates
         chats: list[dict[str, str]] = []

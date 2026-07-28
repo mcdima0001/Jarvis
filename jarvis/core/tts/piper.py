@@ -22,6 +22,7 @@ from jarvis.core.audio import AudioSink
 from jarvis.core.config import TTSConfig
 from jarvis.core.runtime import BlockingWorker
 
+from .normalize import normalize_for_speech
 from .protocol import Speech
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,14 @@ class PiperTTS:
             raise RuntimeError("Piper не загружен — вызови start()")
         if not text.strip():
             return Speech(audio=b"", sample_rate=self._sample_rate, text=text)
-        audio, rate = await self._worker.run(self._synthesize, text)
+
+        # Латиницу русский голос читает как кашу, поэтому готовим текст здесь,
+        # а не в каждом скилле: имена скиллов и пути тоже попадают в речь.
+        spoken = normalize_for_speech(text, self._config.pronounce)
+        if spoken != text:
+            logger.debug("Текст для синтеза: %r -> %r", text, spoken)
+
+        audio, rate = await self._worker.run(self._synthesize, spoken)
         return Speech(audio=audio, sample_rate=rate, text=text)
 
     def _synthesize(self, text: str) -> tuple[bytes, int]:
