@@ -75,7 +75,17 @@ class CompositeTTS:
         return backend
 
     async def start(self) -> None:
-        """Загрузить голос языка по умолчанию; остальные — при первом обращении."""
+        """Загрузить все голоса из конфига.
+
+        Раньше грелся только голос языка по умолчанию, а остальные загружались
+        при первом обращении — то есть посреди разговора. С лёгким движком это
+        незаметно, но тяжёлый (XTTS на процессоре) так подвешивает первую же
+        реплику на своём языке на минуты, и со стороны это выглядит поломкой.
+        Лучше заплатить это время один раз при запуске, где оно видно в логе.
+
+        Голос языка по умолчанию обязателен, остальные — нет: без английской
+        модели разумнее работать по-русски, чем не запуститься совсем.
+        """
         code, engine, voice = self.resolve(self._config.default_language)
         if not voice:
             raise FileNotFoundError(
@@ -83,6 +93,20 @@ class CompositeTTS:
                 "список: python -m jarvis --download-voice"
             )
         await self._ensure(code, engine, voice)
+
+        for language in self._config.voices:
+            other_code, other_engine, other_voice = self.resolve(language)
+            try:
+                await self._ensure(other_code, other_engine, other_voice)
+            except Exception as exc:  # noqa: BLE001 — один голос не рушит запуск
+                logger.warning(
+                    "Голос %s:%s для языка %s не загрузился (%s): "
+                    "на этом языке синтеза не будет",
+                    other_engine,
+                    other_voice,
+                    other_code,
+                    exc,
+                )
 
     async def stop(self) -> None:
         """Освободить модели."""

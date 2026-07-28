@@ -131,7 +131,9 @@ tts:
     #   python -m jarvis --make-reference мой-голос.wav
     # Затем заменить строку en на:
     #   en: xtts:male_0
-    # Модель ~1.8 ГБ, на процессоре медленно — держи device: auto.
+    # ВАЖНО: только с видеокартой. На процессоре XTTS грузится минутами и
+    # синтезирует дольше, чем длится фраза, — ассистент замолкает. Проверить:
+    #   python -c "import torch; print(torch.cuda.is_available())"
   default_language: ru
   device: auto             # auto | cpu | cuda — для тяжёлых движков (XTTS)
   # Каталог общий: у каждого движка внутри свой подкаталог.

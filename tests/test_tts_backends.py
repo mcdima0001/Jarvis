@@ -174,6 +174,78 @@ def test_vosk_reports_missing_model(tmp_path: Path) -> None:
         backend.prepare("male_0", "ru")
 
 
+# --- загрузка голосов -------------------------------------------------------
+
+
+async def test_all_configured_voices_loaded_at_start(tmp_path: Path) -> None:
+    """Голоса всех языков греются при запуске, а не в середине разговора.
+
+    Тяжёлый движок иначе подвешивает первую же реплику своего языка на минуты,
+    и со стороны это неотличимо от поломки.
+    """
+    config = TTSConfig(
+        voices={"ru": "piper:ru_RU-denis-medium", "en": "piper:en_US-ryan-high"},
+        default_language="ru",
+        models_dir=tmp_path,
+    )
+    tts = CompositeTTS(config, BlockingWorker(1), sink=NullAudioSink())
+
+    prepared: list[tuple[str, str]] = []
+
+    class FakeBackend:
+        """Движок, который только запоминает, что его просили подготовить."""
+
+        engine = "piper"
+
+        def prepare(self, voice: str, language: str) -> None:
+            prepared.append((language, voice))
+
+        def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
+            return b"", 22050
+
+    tts._backends["piper"] = FakeBackend()
+    worker = tts._worker
+    await worker.start()
+    try:
+        await tts.start()
+    finally:
+        await worker.stop()
+
+    assert prepared == [("ru", "ru_RU-denis-medium"), ("en", "en_US-ryan-high")]
+
+
+async def test_broken_second_voice_does_not_block_start(tmp_path: Path) -> None:
+    """Без английской модели ассистент всё равно запускается и говорит по-русски."""
+    config = TTSConfig(
+        voices={"ru": "piper:ru_RU-denis-medium", "en": "piper:отсутствует"},
+        default_language="ru",
+        models_dir=tmp_path,
+    )
+    tts = CompositeTTS(config, BlockingWorker(1), sink=NullAudioSink())
+
+    class HalfBrokenBackend:
+        """Русский голос грузится, английского нет."""
+
+        engine = "piper"
+
+        def prepare(self, voice: str, language: str) -> None:
+            if language == "en":
+                raise FileNotFoundError("нет модели")
+
+        def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
+            return b"", 22050
+
+    tts._backends["piper"] = HalfBrokenBackend()
+    worker = tts._worker
+    await worker.start()
+    try:
+        await tts.start()
+    finally:
+        await worker.stop()
+
+    assert tts.ready
+
+
 # --- эталон для XTTS --------------------------------------------------------
 
 

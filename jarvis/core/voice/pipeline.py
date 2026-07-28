@@ -138,15 +138,22 @@ class VoicePipeline:
         он её ещё и выполнит.
         """
         self._speaking = True
+        spoken = True
         try:
             await self._tts.say(text, language=language)
+        except Exception as exc:  # noqa: BLE001 — немой ответ лучше упавшего цикла
+            # Сбойный голос одного языка не должен обрывать разговор: реплику
+            # хотя бы видно в логе, и ассистент продолжает слушать.
+            spoken = False
+            logger.error("Не удалось озвучить реплику (%s): %s", type(exc).__name__, exc)
+            logger.info("Ответ (без голоса): %s", text)
         finally:
             # Колонки ещё звучат, плюс реверберация комнаты.
             self._mute_until = time.time() + self._config.echo_tail_ms / 1000
             self._speaking = False
 
         self._events.emit(
-            AssistantReplied(source="voice", text=text, spoken=self._tts.ready)
+            AssistantReplied(source="voice", text=text, spoken=spoken and self._tts.ready)
         )
 
     @property
