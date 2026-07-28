@@ -106,16 +106,23 @@ stt:
     en: "Jarvis, the studio assistant. Steam, OBS, XLR, ESP32."
 
 tts:
-  engine: piper            # piper | null
-  # Голос под каждый язык: русский голос английский текст внятно не прочтёт.
-  # Послушать и выбрать:  python -m jarvis --try-voice ru
-  #                       python -m jarvis --try-voice en
-  # Список:               python -m jarvis --download-voice
+  engine: piper            # движок по умолчанию, если в voices нет префикса
+  # Движок и голос на каждый язык: пишется как движок:голос.
+  #   kokoro — 24 кГц, естественная интонация, есть британские мужские голоса
+  #   silero — 48 кГц, живой русский (нужен torch)
+  #   piper  — самый лёгкий и быстрый, 22 кГц
+  # Послушать и выбрать:
+  #   python -m jarvis --try-voice jarvis   # британские, как в фильме
+  #   python -m jarvis --try-voice ru
+  #   python -m jarvis --download-voice     # полный список
   voices:
-    ru: ru_RU-dmitri-medium
-    en: en_US-ryan-high
+    ru: silero:eugene
+    en: kokoro:bm_george
   default_language: ru
-  models_dir: models/piper
+  # Каталог общий: у каждого движка внутри свой подкаталог.
+  models_dir: models
+  # Твоя правка сохранена: 1.5 — речь медленнее обычной.
+  # У Kokoro скорость задаётся наоборот, ядро пересчитает само.
   length_scale: 1.5        # <1 быстрее речь, >1 медленнее
   sample_rate: 22050       # подсказка; настоящую частоту задаёт сам голос
   # Латиницу русский голос читает как кашу («OpenRouter» звучит как «об

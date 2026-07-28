@@ -1,4 +1,9 @@
-"""Синтез речи: протокол, Piper, заглушка."""
+"""Синтез речи: протокол, движки, заглушка.
+
+Движок и голос выбираются на каждый язык отдельно (``tts.voices``), потому что
+сильные стороны у них разные: Kokoro даёт британские голоса, но не знает
+русского; Silero живее на русском, но тянет torch; Piper легче всех.
+"""
 
 from __future__ import annotations
 
@@ -8,60 +13,66 @@ from jarvis.core.audio import AudioSink
 from jarvis.core.config import TTSConfig
 from jarvis.core.runtime import BlockingWorker
 
+from .backends import BACKENDS, KokoroBackend, PiperBackend, SileroBackend, parse_voice
+from .composite import CompositeTTS
+from .normalize import normalize_for_speech
 from .null import NullTTS
-from .piper import PiperTTS
 from .protocol import TTS, Speech
 
 logger = logging.getLogger(__name__)
 
+#: Какой пакет нужен каждому движку.
+_REQUIREMENTS = {
+    "piper": ("piper", "tts"),
+    "kokoro": ("kokoro_onnx", "kokoro"),
+    "silero": ("torch", "silero"),
+}
+
+
+def _engine_available(engine: str) -> bool:
+    """Установлен ли пакет, нужный движку."""
+    module, extra = _REQUIREMENTS.get(engine, ("piper", "tts"))
+    try:
+        __import__(module)
+    except ImportError as exc:
+        logger.warning(
+            "Движок %s недоступен (%s). Установи: pip install 'jarvis-core[%s]'",
+            engine,
+            exc,
+            extra,
+        )
+        return False
+    return True
+
 
 def build_tts(config: TTSConfig, worker: BlockingWorker, *, sink: AudioSink) -> TTS:
     """Создать синтезатор по конфигу с откатом на заглушку."""
-    if config.engine in (None, "", "null"):
+    if config.engine in (None, "", "null") and not config.voices:
         return NullTTS(sample_rate=config.sample_rate)
 
-    if config.engine == "piper":
-        try:
-            import piper  # noqa: F401
-        except ImportError as exc:
-            logger.warning(
-                "Piper недоступен (%s) — синтез отключён. "
-                "Установи: pip install 'jarvis-core[tts]'",
-                exc,
-            )
-            return NullTTS(sample_rate=config.sample_rate)
+    if not config.voices:
+        logger.warning("В tts.voices не задан ни один голос — синтез отключён")
+        return NullTTS(sample_rate=config.sample_rate)
 
-        _, voice = config.voice_for(config.default_language)
-        if not voice:
-            logger.warning("В tts.voices не задан ни один голос — синтез отключён")
-            return NullTTS(sample_rate=config.sample_rate)
+    # Движок языка по умолчанию обязан быть рабочим: без него говорить нечем.
+    _, spec = config.voice_for(config.default_language)
+    engine, _voice = parse_voice(spec, default_engine=config.engine)
+    if not _engine_available(engine):
+        return NullTTS(sample_rate=config.sample_rate)
 
-        model_path = config.models_dir / f"{voice}.onnx"
-        if not model_path.is_file():
-            logger.warning(
-                "Голос Piper не найден: %s — синтез отключён. "
-                "Скачай: python -m jarvis --download-voice %s",
-                model_path,
-                voice,
-            )
-            return NullTTS(sample_rate=config.sample_rate)
-
-        missing = [
-            name
-            for code, name in config.voices.items()
-            if not (config.models_dir / f"{name}.onnx").is_file()
-        ]
-        if missing:
-            logger.warning(
-                "Не скачаны голоса: %s — на этих языках буду отвечать голосом «%s»",
-                ", ".join(missing),
-                voice,
-            )
-
-        return PiperTTS(config, worker, sink=sink)
-
-    logger.warning("Неизвестный движок TTS %r — использую заглушку", config.engine)
-    return NullTTS(sample_rate=config.sample_rate)
+    return CompositeTTS(config, worker, sink=sink)
 
 
-__all__ = ["TTS", "NullTTS", "PiperTTS", "Speech", "build_tts"]
+__all__ = [
+    "BACKENDS",
+    "TTS",
+    "CompositeTTS",
+    "KokoroBackend",
+    "NullTTS",
+    "PiperBackend",
+    "SileroBackend",
+    "Speech",
+    "build_tts",
+    "normalize_for_speech",
+    "parse_voice",
+]
