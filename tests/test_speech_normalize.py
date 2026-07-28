@@ -102,3 +102,73 @@ def test_english_text_untouched_by_english_voice() -> None:
 def test_latin_kept_for_english_voice() -> None:
     """Названия программ английскому голосу транслитерировать не надо."""
     assert "OBS" in normalize_for_speech("Opening OBS now", language="en")
+
+
+# --- алфавит движка ---------------------------------------------------------
+
+
+def test_typographic_quotes_removed() -> None:
+    """Кавычки-ёлочки роняли синтез: их нет в алфавите модели Vosk.
+
+    Реальный сбой: реплика «Не нашёл ничего по запросу «...»» падала с
+    KeyError: '»', и ассистент молчал на каждом неудачном поиске.
+    """
+    result = normalize_for_speech("Не нашёл ничего по запросу «погода в Москве».")
+    assert "«" not in result and "»" not in result
+    assert "погода в Москве" in result
+
+
+def test_digits_spelled_out() -> None:
+    """Цифр в алфавите модели тоже нет — любое число нужно записать словами."""
+    assert normalize_for_speech("В студии 22 градуса") == "В студии двадцать два градуса"
+    assert "ноль" in normalize_for_speech("Осталось 0 попыток")
+
+
+def test_units_agree_with_number() -> None:
+    """Единицы склоняются по числу: 1 процент, 3 процента, 5 процентов."""
+    assert "один процент" in normalize_for_speech("яркость 1 процент")
+    assert "три процента" in normalize_for_speech("яркость 3 процент")
+    assert "пять процентов" in normalize_for_speech("яркость 5 процент")
+
+
+def test_percent_sign_becomes_word() -> None:
+    """Знак процента произносится и согласуется как слово."""
+    assert normalize_for_speech("яркость 100%") == "яркость сто процентов"
+
+
+def test_ordinals_read_as_ordinals() -> None:
+    """«47-й президент», а не «сорок семь-й президент»."""
+    assert normalize_for_speech("47-й президент") == "сорок седьмой президент"
+    assert normalize_for_speech("Сегодня 29-е") == "Сегодня двадцать девятое"
+    assert normalize_for_speech("3-я попытка") == "третья попытка"
+
+
+def test_stress_marks_do_not_split_words() -> None:
+    """Ударения из Википедии — отдельные символы поверх буквы.
+
+    Выкинуть их как посторонние нельзя: слово разорвётся пробелом и
+    «До́нальд» превратится в «До нальд».
+    """
+    assert normalize_for_speech("До́нальд Трамп") == "Дональд Трамп"
+    assert normalize_for_speech("Всё чётко") == "Всё чётко"
+
+
+def test_unknown_symbols_dropped() -> None:
+    """Эмодзи и стрелки от LLM до движка доходить не должны."""
+    result = normalize_for_speech("Готово 🔥 → дальше")
+    assert result == "Готово дальше"
+
+
+def test_thousands_separator_is_one_number() -> None:
+    """«1 299» — одно число, а не «один» и «двести девяносто девять»."""
+    assert normalize_for_speech("1 299 рублей").startswith("одна тысяча двести")
+
+
+def test_currency_read_after_number() -> None:
+    """Знак валюты пишется перед числом, а произносится после."""
+    assert normalize_for_speech("подписка $10") == "подписка десять долларов"
+
+
+def test_english_voice_keeps_digits() -> None:
+    """Английскому движку цифры чистить не надо — он их читает сам."""
+    assert normalize_for_speech("22 degrees", language="en") == "22 degrees"

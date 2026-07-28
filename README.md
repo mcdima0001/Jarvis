@@ -293,7 +293,13 @@ class TimerSkill(Skill):
 | Скиллы: автозагрузка, scope, `reload` | работает |
 | Конфигурация, логирование, память | работает |
 | LLM: сервис, профили, OpenRouter | работает (нужен ключ) |
-| STT (faster-whisper), TTS (Piper) | адаптеры готовы, нужны модели |
-| VAD, wake word | протоколы и заглушки, реализаций пока нет |
-| Скиллы ESP32/Windows/Telegram/YouTube/Search | заглушки с `TODO` |
-| Скилл Memory | работает |
+| STT (faster-whisper), TTS (5 движков) | работает |
+| VAD | энергетический с калибровкой; Silero VAD — на будущее |
+| Wake word | по тексту; openWakeWord — только протокол |
+| Скиллы Memory, Search, Weather | работают |
+| Скиллы ESP32/Windows/Telegram/YouTube | заглушки с `TODO` |
+
+Поиск и погода ключей не требуют: Википедия, DuckDuckGo и Open-Meteo отвечают
+без регистрации. Источники поиска перечисляются в
+`skills.settings.search.engines` — платный поисковик подключается добавлением
+класса с одним методом.

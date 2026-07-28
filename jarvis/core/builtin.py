@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from jarvis.core.contracts import ToolResult
@@ -40,10 +41,37 @@ _DIALOG_SYSTEM = {
 }
 
 
+#: Дни недели: у модели даты нет, а «какой сегодня день» спрашивают постоянно.
+_WEEKDAYS = {
+    "ru": ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"),
+    "en": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+}
+
+_MONTHS_RU = ("января", "февраля", "марта", "апреля", "мая", "июня",
+              "июля", "августа", "сентября", "октября", "ноября", "декабря")
+
+
 def _language(code: str | None) -> str:
     """Привести код языка к короткому виду с откатом на русский."""
     short = (code or "ru").split("-")[0].lower()
     return short if short in _DIALOG_SYSTEM else "ru"
+
+
+def _now_line(code: str) -> str:
+    """Строка с текущей датой и временем для системной подсказки.
+
+    Модель не знает, какой сегодня день: её знания заканчиваются на дате
+    обучения, а часов у неё нет. Без этой строки на «какой сегодня день» она
+    честно выдумывает.
+    """
+    now = datetime.now().astimezone()
+    weekday = _WEEKDAYS[code][now.weekday()]
+    if code == "ru":
+        return (
+            f"Сейчас {now.day} {_MONTHS_RU[now.month - 1]} {now.year} года, "
+            f"{weekday}, {now:%H:%M}."
+        )
+    return f"Current date and time: {weekday}, {now:%d %B %Y, %H:%M}."
 
 
 class CoreTools:
@@ -89,7 +117,7 @@ class CoreTools:
         answer = await self._llm.ask(
             text,
             task="dialog",
-            system=_DIALOG_SYSTEM[code],
+            system=f"{_DIALOG_SYSTEM[code]} {_now_line(code)}",
             context=context or None,
         )
         await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))
