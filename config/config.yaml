@@ -1,0 +1,125 @@
+# Единственный источник настроек Jarvis.
+# В коде нет ни одного пути и ни одного ключа — всё здесь.
+# ${VAR} и ${VAR:-значение} подставляются из окружения и .env (секреты — только так).
+
+app:
+  name: Jarvis
+  language: ru
+
+logging:
+  level: INFO          # DEBUG | INFO | WARNING | ERROR
+  dir: logs
+  file: jarvis.log
+  console: true
+  max_bytes: 5242880   # 5 МБ на файл
+  backup_count: 5
+
+runtime:
+  worker_threads: 2    # пул для блокирующих задач (Whisper, Piper)
+  tool_timeout: 30.0   # предохранитель: сколько ждать ответа инструмента, сек
+
+skills:
+  paths:
+    - skills          # положил файл сюда — скилл заработает без правки ядра
+  disabled: []        # имена скиллов, которые не грузить
+  settings:           # секция config каждого скилла; необязательна
+    esp32:
+      host: ${JARVIS_ESP32_HOST:-192.168.1.50}
+      port: 80
+    telegram:
+      token: ${JARVIS_TELEGRAM_TOKEN:-}
+    youtube:
+      api_key: ${JARVIS_YOUTUBE_KEY:-}
+
+router:
+  confidence_threshold: 0.6   # ниже порога — резолвер не считается сработавшим
+  resolvers:                  # порядок важен: LLM вызывается только последней
+    - phrase
+    - alias
+    - llm
+    - fallback
+  aliases:                    # ручные синонимы: фраза -> имя инструмента
+    погромче: system.volume_up
+    потише: system.volume_down
+
+llm:
+  default_task: dialog
+  providers:
+    openrouter:
+      type: openrouter
+      api_key: ${JARVIS_OPENROUTER_KEY:-}
+      base_url: https://openrouter.ai/api/v1
+      timeout: 60.0
+      headers:                # OpenRouter просит их для статистики; необязательны
+        HTTP-Referer: https://github.com/mcdima0001/Jarvis
+        X-Title: Jarvis
+  # Разные модели под разные задачи. Меняются на лету: llm.set_model("code", "...")
+  # Точные идентификаторы смотри на https://openrouter.ai/models
+  profiles:
+    dialog:
+      provider: openrouter
+      model: anthropic/claude-sonnet-5
+      temperature: 0.7
+      max_tokens: 1024
+    code:
+      provider: openrouter
+      model: anthropic/claude-opus-5
+      temperature: 0.2
+      max_tokens: 4096
+    summarize:
+      provider: openrouter
+      model: anthropic/claude-haiku-4-5
+      temperature: 0.3
+      max_tokens: 1024
+    intent:                   # самая дешёвая модель: только разбор команд
+      provider: openrouter
+      model: anthropic/claude-haiku-4-5
+      temperature: 0.0
+      max_tokens: 512
+    analysis:
+      provider: openrouter
+      model: anthropic/claude-sonnet-5
+      temperature: 0.4
+      max_tokens: 2048
+
+stt:
+  engine: faster-whisper   # faster-whisper | null
+  model: base              # tiny | base | small | medium | large-v3
+  device: auto             # auto | cpu | cuda
+  compute_type: int8       # int8 — быстрее на CPU, float16 — точнее на GPU
+  language: ru
+  beam_size: 1             # 1 = максимальная скорость
+  models_dir: models/whisper
+
+tts:
+  engine: piper            # piper | null
+  voice: ru_RU-irina-medium
+  models_dir: models/piper
+  length_scale: 1.0        # <1 быстрее речь, >1 медленнее
+  sample_rate: 22050
+
+audio:
+  input_device: null       # null = устройство по умолчанию
+  output_device: null
+  sample_rate: 16000
+  frame_ms: 30
+  vad:
+    engine: null           # null пропускает всё; сюда встанет silero
+    aggressiveness: 2
+  wake_word:
+    engine: null           # null = без активационной фразы
+    phrase: джарвис
+    threshold: 0.5
+
+memory:
+  dir: memory
+  documents:               # изменяемые документы (read-modify-write)
+    - profile
+    - preferences
+    - studio
+    - projects
+    - knowledge
+  journals:                # append-only, доступ по времени
+    - today
+    - history
+  context_budget_tokens: 2000   # потолок на сборку контекста для LLM

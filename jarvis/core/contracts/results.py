@@ -1,0 +1,61 @@
+"""Результат вызова инструмента.
+
+Инструменты не бросают исключения наружу: ошибка — это тоже результат.
+Так вызывающая сторона (роутер, другой скилл, LLM) обрабатывает успех и сбой
+одинаково, а один кривой скилл не роняет ядро.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ToolResult:
+    """Итог работы инструмента.
+
+    :param ok: успешно ли отработал инструмент.
+    :param value: полезная нагрузка (число, словарь, что угодно сериализуемое).
+    :param error: текст ошибки, если ``ok`` ложно.
+    :param speech: что произнести пользователю; если не задано, ответ соберут выше.
+    """
+
+    ok: bool
+    value: Any = None
+    error: str | None = None
+    tool: str = ""
+    duration: float = 0.0
+    speech: str | None = None
+
+    @classmethod
+    def success(
+        cls,
+        value: Any = None,
+        *,
+        tool: str = "",
+        speech: str | None = None,
+        duration: float = 0.0,
+    ) -> "ToolResult":
+        """Удачный результат."""
+        return cls(ok=True, value=value, tool=tool, speech=speech, duration=duration)
+
+    @classmethod
+    def failure(
+        cls,
+        error: str,
+        *,
+        tool: str = "",
+        speech: str | None = None,
+        duration: float = 0.0,
+    ) -> "ToolResult":
+        """Неудачный результат с описанием причины."""
+        return cls(ok=False, error=error, tool=tool, speech=speech, duration=duration)
+
+    def unwrap(self) -> Any:
+        """Вернуть значение или бросить исключение — для внутреннего кода ядра."""
+        if not self.ok:
+            from jarvis.core.errors import ToolError
+
+            raise ToolError(self.error or f"Инструмент {self.tool!r} завершился ошибкой")
+        return self.value
