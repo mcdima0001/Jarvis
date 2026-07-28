@@ -118,7 +118,14 @@ tts:
   voices:
     ru: silero:eugene
     en: kokoro:bm_george
+    # Один тембр на обоих языках: XTTS говорит по-русски голосом bm_george.
+    # Сначала снять эталон:
+    #   python -m jarvis --make-reference kokoro:bm_george
+    # Затем заменить строку ru на:
+    #   ru: xtts:bm_george
+    # Модель ~1.8 ГБ, на процессоре медленно — держи device: auto.
   default_language: ru
+  device: auto             # auto | cpu | cuda — для тяжёлых движков (XTTS)
   # Каталог общий: у каждого движка внутри свой подкаталог.
   models_dir: models
   # Твоя правка сохранена: 1.5 — речь медленнее обычной.

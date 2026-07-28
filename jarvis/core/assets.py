@@ -69,12 +69,59 @@ VOICE_NOTES: dict[str, str] = {
     "kokoro:am_onyx": "американский мужской, глубокий",
     "kokoro:bf_emma": "британский женский",
     "kokoro:af_heart": "американский женский",
+    "xtts:bm_george": "русский голосом bm_george — тот же тембр, что в английском",
     "silero:eugene": "русский мужской",
     "silero:aidar": "русский мужской, ровный",
     "silero:baya": "русский женский",
     "silero:kseniya": "русский женский, мягче",
     "silero:xenia": "русский женский, живее",
 }
+
+#: Фраза для эталона XTTS: нужно 10–20 секунд связной чистой речи.
+REFERENCE_TEXT = (
+    "Good evening, sir. The studio is at twenty two degrees and everything is "
+    "running smoothly. I have prepared the recording session, and the lights are "
+    "set to your usual preference. Shall I switch to game mode, or would you "
+    "rather continue working for a while longer?"
+)
+
+
+def make_reference(source: str, models_dir: Path) -> Path:
+    """Создать эталон голоса для XTTS из любого другого движка.
+
+    Так русская речь получает тембр английского голоса: XTTS синтезирует по
+    образцу, а образец берётся у того самого голоса, который понравился.
+
+    :param source: голос-источник, например ``kokoro:bm_george``.
+    :param models_dir: каталог из конфига ``tts.models_dir``.
+    """
+    import wave
+
+    from jarvis.core.tts.backends import build_backend
+
+    engine, voice = _split(source)
+    if engine == "xtts":
+        raise JarvisError("Эталон нужно снимать с обычного голоса, а не с xtts")
+
+    download_voice(source, models_dir)
+    backend = build_backend(engine, models_dir)
+
+    print(f"Снимаю эталон с {source} — {len(REFERENCE_TEXT.split())} слов")
+    audio, rate = backend.synthesize(REFERENCE_TEXT, voice, "en")  # type: ignore[attr-defined]
+
+    target = models_dir / "xtts" / f"{voice}.wav"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(target), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(audio)
+
+    seconds = len(audio) / 2 / rate
+    print(f"Готово: {target} ({seconds:.0f} с, {rate} Гц)")
+    print(f"Теперь в config.yaml можно писать:  ru: xtts:{voice}")
+    return target
+
 
 #: Подборки для быстрого прослушивания.
 GROUPS: dict[str, tuple[str, ...]] = {
@@ -83,6 +130,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
     + ("piper:en_GB-alan-medium", "piper:en_US-ryan-high"),
     "ru": tuple(f"silero:{v}" for v in SILERO_VOICES)
     + ("piper:ru_RU-denis-medium", "piper:ru_RU-ruslan-medium"),
+    "clone": ("xtts:bm_george",),
     "kokoro": tuple(f"kokoro:{v}" for v in KOKORO_VOICES),
     "silero": tuple(f"silero:{v}" for v in SILERO_VOICES),
     "piper": tuple(f"piper:{v}" for v in PIPER_VOICES),
@@ -174,6 +222,17 @@ def download_voice(spec: str, models_dir: Path) -> Path:
                 _download(client, f"{_SILERO_REPO}/ru/v4_ru.pt", target)
                 return target
 
+            if engine == "xtts":
+                # Саму модель тянет coqui-tts при первом синтезе; здесь нужен
+                # только эталон, снятый с другого голоса.
+                reference = models_dir / "xtts" / f"{voice}.wav"
+                if reference.is_file():
+                    return reference
+                raise JarvisError(
+                    f"Нет эталона голоса {voice}. Сними его с понравившегося голоса: "
+                    f"python -m jarvis --make-reference kokoro:{voice}"
+                )
+
         except httpx.HTTPStatusError as exc:
             raise JarvisError(
                 f"Голос {spec} не найден ({exc.response.status_code}). "
@@ -209,7 +268,8 @@ def preview_voices(names: list[str], models_dir: Path, *, text: str | None = Non
             print(f"\n✗ {spec}: {exc}")
             continue
 
-        language = "ru" if engine == "silero" or voice.startswith("ru_") else "en"
+        russian = engine in ("silero", "xtts") or voice.startswith("ru_")
+        language = "ru" if russian else "en"
         sample = text or SAMPLE_TEXT[language]
 
         print(f"\n▶ {spec}  ({VOICE_NOTES.get(spec, '')})")
@@ -249,7 +309,15 @@ def list_voices() -> str:
         spec = f"silero:{voice}"
         lines.append(f"  {spec:<22} {VOICE_NOTES.get(spec, '')}")
 
-    lines += ["", "Piper — самый лёгкий и быстрый, 22 кГц:"]
+    lines += [
+        "",
+        "XTTS — говорит по-русски голосом с образца (модель ~1.8 ГБ, нужна видеокарта",
+        "для приемлемой скорости; лицензия Coqui — некоммерческое использование):",
+        "  xtts:bm_george         русский тем же голосом, что английский bm_george",
+        "  сначала:  python -m jarvis --make-reference kokoro:bm_george",
+        "",
+        "Piper — самый лёгкий и быстрый, 22 кГц:",
+    ]
     for voice in PIPER_VOICES:
         spec = f"piper:{voice}"
         lines.append(f"  {spec:<22} {VOICE_NOTES.get(spec, '')}")
@@ -261,5 +329,6 @@ def list_voices() -> str:
         "  python -m jarvis --try-voice ru       # русские",
         "  python -m jarvis --try-voice en       # английские",
         "  python -m jarvis --try-voice kokoro:bm_george silero:eugene",
+        "  python -m jarvis --try-voice clone    # русский голосом bm_george",
     ]
     return "\n".join(lines)

@@ -204,8 +204,87 @@ class SileroBackend:
         return [s for s in self._models[language].speakers if s != "random"]
 
 
+class XttsBackend:
+    """XTTS-v2: говорит по-русски голосом, взятым с образца.
+
+    Решает задачу, которую остальные движки не решают: русских голосов много,
+    но ни один не звучит как выбранный английский. XTTS синтезирует речь по
+    эталонной записи, поэтому эталоном можно взять сам английский голос —
+    и тембр совпадёт на обоих языках.
+
+    Голос здесь — имя файла-эталона в ``models/xtts/<имя>.wav``. Создать его
+    из голоса Kokoro: ``python -m jarvis --make-reference kokoro:bm_george``.
+
+    Модель тяжёлая (около 1.8 ГБ) и на процессоре считает медленно — это
+    осознанный размен качества на скорость. На видеокарте заметно быстрее,
+    поэтому ``tts.device`` стоит держать на ``auto``.
+
+    Лицензия модели — Coqui Public Model License: некоммерческое использование.
+    """
+
+    _SAMPLE_RATE = 24000
+    _MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
+
+    def __init__(self, models_dir: Path, *, device: str = "auto") -> None:
+        self._dir = models_dir
+        self._device = device
+        self._model: Any = None
+
+    @property
+    def engine(self) -> str:
+        """Имя движка."""
+        return "xtts"
+
+    def reference_path(self, voice: str) -> Path:
+        """Путь к эталонной записи голоса."""
+        return self._dir / f"{voice}.wav"
+
+    def _resolve_device(self) -> str:
+        """Выбрать устройство: на видеокарте XTTS считает в разы быстрее."""
+        if self._device != "auto":
+            return self._device
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:  # noqa: BLE001 — проверка не должна ронять запуск
+            return "cpu"
+
+    def prepare(self, voice: str, language: str) -> None:
+        """Загрузить модель и проверить наличие эталона."""
+        reference = self.reference_path(voice)
+        if not reference.is_file():
+            raise FileNotFoundError(
+                f"Нет эталона голоса: {reference}. "
+                f"Создай его: python -m jarvis --make-reference kokoro:{voice}"
+            )
+        if self._model is not None:
+            return
+
+        import os
+
+        # Модель распространяется под лицензией Coqui; пакет требует явного
+        # согласия переменной окружения, иначе спрашивает в консоли и виснет.
+        os.environ.setdefault("COQUI_TOS_AGREED", "1")
+        from TTS.api import TTS
+
+        device = self._resolve_device()
+        logger.info("Загружаю XTTS-v2 на %s (это надолго при первом запуске)", device)
+        self._model = TTS(self._MODEL, progress_bar=False).to(device)
+
+    def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
+        """Синтезировать речь голосом с эталона."""
+        self.prepare(voice, language)
+        samples = self._model.tts(
+            text=text,
+            speaker_wav=str(self.reference_path(voice)),
+            language=language.split("-")[0],
+        )
+        return _to_pcm16(samples), self._SAMPLE_RATE
+
+
 #: Известные движки.
-BACKENDS = ("piper", "kokoro", "silero")
+BACKENDS = ("piper", "kokoro", "silero", "xtts")
 
 
 def parse_voice(spec: str, *, default_engine: str = "piper") -> tuple[str, str]:
@@ -223,11 +302,19 @@ def parse_voice(spec: str, *, default_engine: str = "piper") -> tuple[str, str]:
     return default_engine, spec.strip()
 
 
-def build_backend(engine: str, models_dir: Path, *, length_scale: float = 1.0) -> SpeechBackend:
+def build_backend(
+    engine: str,
+    models_dir: Path,
+    *,
+    length_scale: float = 1.0,
+    device: str = "auto",
+) -> SpeechBackend:
     """Создать движок по имени."""
     if engine == "kokoro":
         # length_scale больше единицы означает «медленнее», у Kokoro наоборот.
         return KokoroBackend(models_dir / "kokoro", speed=1.0 / max(length_scale, 0.1))
     if engine == "silero":
         return SileroBackend(models_dir / "silero")
+    if engine == "xtts":
+        return XttsBackend(models_dir / "xtts", device=device)
     return PiperBackend(models_dir / "piper", length_scale=length_scale)

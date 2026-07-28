@@ -243,6 +243,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             models_dir=_resolve(project_root, tts.get("models_dir", "models/piper")),
             length_scale=float(tts.get("length_scale", 1.0)),
             sample_rate=int(tts.get("sample_rate", 22050)),
+            device=str(tts.get("device", "auto")),
             pronounce={str(k): str(v) for k, v in (tts.get("pronounce") or {}).items()},
         ),
         audio=AudioConfig(

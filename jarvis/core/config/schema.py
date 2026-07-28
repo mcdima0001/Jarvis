@@ -146,6 +146,8 @@ class TTSConfig:
     models_dir: Path = Path("models/piper")
     length_scale: float = 1.0
     sample_rate: int = 22050
+    #: Где считать тяжёлым движкам: ``auto`` | ``cpu`` | ``cuda``.
+    device: str = "auto"
     #: Как читать чужие названия: ``{"OBS": "О-Би-Эс"}``. Дополняет
     #: встроенный словарь в `jarvis.core.tts.normalize`.
     pronounce: Mapping[str, str] = field(default_factory=dict)

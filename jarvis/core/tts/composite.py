@@ -69,6 +69,7 @@ class CompositeTTS:
                 engine,
                 self._config.models_dir,
                 length_scale=self._config.length_scale,
+                device=self._config.device,
             )
             self._backends[engine] = backend
         return backend

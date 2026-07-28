@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from jarvis.core.app import JarvisApp
-from jarvis.core.assets import download_voice, list_voices, preview_voices
+from jarvis.core.assets import download_voice, list_voices, make_reference, preview_voices
 from jarvis.core.audio import list_devices
 from jarvis.core.config import DEFAULT_CONFIG_PATH, load_config
 from jarvis.core.errors import AudioError, ConfigError, JarvisError
@@ -62,7 +62,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--try-voice",
         metavar="ГОЛОС",
         nargs="+",
-        help="послушать голоса и выбрать: имена через пробел либо ru / en",
+        help="послушать голоса и выбрать: имена через пробел либо jarvis / ru / en / clone",
+    )
+    parser.add_argument(
+        "--make-reference",
+        metavar="ГОЛОС",
+        help="снять эталон с голоса, чтобы XTTS заговорил им по-русски "
+        "(например kokoro:bm_george)",
     )
     parser.add_argument(
         "--log-level",
@@ -120,6 +126,9 @@ async def _amain(args: argparse.Namespace) -> int:
             print(list_voices())
             return 0
         download_voice(args.download_voice, config.tts.models_dir)
+        return 0
+    if args.make_reference:
+        make_reference(args.make_reference, config.tts.models_dir)
         return 0
     if args.try_voice:
         preview_voices(args.try_voice, config.tts.models_dir)
