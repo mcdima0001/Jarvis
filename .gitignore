@@ -6,9 +6,12 @@ venv/
 
 .env
 
-logs/
-models/
-memory/
+# Ведущий слэш обязателен: без него шаблон совпадает с каталогом на любой
+# глубине, и `memory/` вырезает из репозитория ещё и jarvis/core/memory/
+# со skills/memory/ — код молча не попадает в коммит.
+/logs/
+/models/
+/memory/
 
 .pytest_cache/
 .mypy_cache/
