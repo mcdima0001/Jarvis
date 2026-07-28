@@ -25,7 +25,8 @@ class SearchSkill(Skill):
         self._engine = str(self.context.setting("engine", "duckduckgo"))
         self._max_results = int(self.context.setting("max_results", 5))
 
-    @tool(phrases=["найди {query}", "поищи {query}", "загугли {query}"])
+    @tool(phrases=["найди {query}", "поищи {query}", "загугли {query}",
+                   "search for {query}", "look up {query}"])
     async def web_search(self, query: str, limit: int = 5) -> ToolResult:
         """Найти страницы по запросу.
 
@@ -37,14 +38,17 @@ class SearchSkill(Skill):
         if not results:
             return ToolResult.success(
                 [],
-                speech=f"Поиск пока не подключён, запрос был: {query}.",
+                speech={"ru": f"Поиск пока не подключён, запрос был: {query}.",
+                       "en": f"Search isn't connected yet. The query was: {query}."},
             )
         return ToolResult.success(
             results[: min(limit, self._max_results)],
-            speech=f"Нашёл {len(results)} результатов.",
+            speech={"ru": f"Нашёл {len(results)} результатов.",
+                   "en": f"Found {len(results)} results."},
         )
 
-    @tool(phrases=["что такое {query}", "расскажи про {query}"])
+    @tool(phrases=["что такое {query}", "расскажи про {query}",
+                   "what is {query}", "tell me about {query}"])
     async def answer(self, query: str) -> ToolResult:
         """Найти информацию и дать короткий ответ.
 
@@ -55,7 +59,8 @@ class SearchSkill(Skill):
         if not pages:
             return ToolResult.success(
                 "",
-                speech=f"Не нашёл ничего по запросу «{query}».",
+                speech={"ru": f"Не нашёл ничего по запросу «{query}».",
+                       "en": f"Found nothing for {query}."},
             )
 
         digest = "\n\n".join(f"{p.get('title', '')}\n{p.get('snippet', '')}" for p in pages)

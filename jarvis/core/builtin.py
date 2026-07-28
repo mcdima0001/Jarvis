@@ -25,10 +25,25 @@ logger = logging.getLogger(__name__)
 
 NAMESPACE = "core"
 
-_DIALOG_SYSTEM = (
-    "Ты — Jarvis, голосовой ассистент домашней студии. Отвечай по-русски, "
-    "кратко и по делу: реплику будут произносить вслух. Без списков и разметки."
-)
+#: Системные подсказки под каждый язык: модель должна отвечать так же, как её
+#: спросили, и коротко — реплику будут произносить вслух.
+_DIALOG_SYSTEM = {
+    "ru": (
+        "Ты — Jarvis, голосовой ассистент домашней студии. Отвечай по-русски, "
+        "кратко и по делу: реплику будут произносить вслух. Без списков и разметки."
+    ),
+    "en": (
+        "You are Jarvis, the voice assistant of a home studio. Answer in English, "
+        "briefly and to the point: your reply will be spoken aloud. "
+        "No lists, no markdown."
+    ),
+}
+
+
+def _language(code: str | None) -> str:
+    """Привести код языка к короткому виду с откатом на русский."""
+    short = (code or "ru").split("-")[0].lower()
+    return short if short in _DIALOG_SYSTEM else "ru"
 
 
 class CoreTools:
@@ -48,17 +63,22 @@ class CoreTools:
         self._skills = skills
 
     @tool(name="chat")
-    async def chat(self, text: str) -> ToolResult:
+    async def chat(self, text: str, language: str = "ru") -> ToolResult:
         """Ответить на свободный вопрос через языковую модель.
 
         :param text: реплика пользователя.
+        :param language: язык, на котором отвечать.
         """
+        code = _language(language)
         if not self._llm.available:
             return ToolResult.failure(
                 # Технические подробности — в error и в лог, а вслух только то,
                 # что не превратится в кашу при синтезе.
                 "Языковая модель не настроена: задай JARVIS_OPENROUTER_KEY в .env",
-                speech="Языковая модель не подключена. Добавь ключ в настройки.",
+                speech={
+                    "ru": "Языковая модель не подключена. Добавь ключ в настройки.",
+                    "en": "The language model isn't connected. Add the key in settings.",
+                },
             )
 
         context = await self._memory.context.build(
@@ -69,24 +89,35 @@ class CoreTools:
         answer = await self._llm.ask(
             text,
             task="dialog",
-            system=_DIALOG_SYSTEM,
+            system=_DIALOG_SYSTEM[code],
             context=context or None,
         )
         await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))
         return ToolResult.success(answer, speech=answer)
 
-    @tool(name="help", phrases=["что ты умеешь", "список команд", "помощь"])
+    @tool(
+        name="help",
+        phrases=["что ты умеешь", "список команд", "помощь", "what can you do", "help"],
+    )
     async def help(self) -> ToolResult:
         """Перечислить доступные команды."""
         specs = self._registry.specs()
         if not specs:
-            return ToolResult.success([], speech="Пока ни одной команды не подключено.")
+            return ToolResult.success(
+                [],
+                speech={
+                    "ru": "Пока ни одной команды не подключено.",
+                    "en": "No commands are connected yet.",
+                },
+            )
 
         skills = sorted({spec.skill for spec in specs if spec.skill})
-        speech = f"Подключено {len(specs)} команд в модулях: {', '.join(skills)}."
         return ToolResult.success(
             [{"name": spec.name, "description": spec.description} for spec in specs],
-            speech=speech,
+            speech={
+                "ru": f"Подключено {len(specs)} команд в модулях: {', '.join(skills)}.",
+                "en": f"{len(specs)} commands available in modules: {', '.join(skills)}.",
+            },
         )
 
     @tool(name="reload_skill")
@@ -100,11 +131,17 @@ class CoreTools:
         except Exception as exc:
             return ToolResult.failure(
                 f"{type(exc).__name__}: {exc}",
-                speech=f"Не удалось перезагрузить модуль {skill}.",
+                speech={
+                    "ru": f"Не удалось перезагрузить модуль {skill}.",
+                    "en": f"Couldn't reload module {skill}.",
+                },
             )
         return ToolResult.success(
             {"skill": record.name, "tools": list(record.scope.tool_names)},
-            speech=f"Модуль {skill} перезагружен.",
+            speech={
+                "ru": f"Модуль {skill} перезагружен.",
+                "en": f"Module {skill} reloaded.",
+            },
         )
 
     @tool(name="set_model")
@@ -117,13 +154,22 @@ class CoreTools:
         try:
             self._llm.set_model(task, model)
         except Exception as exc:
-            return ToolResult.failure(str(exc), speech="Не получилось сменить модель.")
+            return ToolResult.failure(
+                str(exc),
+                speech={
+                    "ru": "Не получилось сменить модель.",
+                    "en": "Couldn't switch the model.",
+                },
+            )
         return ToolResult.success(
             self._llm.models(),
-            speech=f"Для задачи {task} теперь используется {model}.",
+            speech={
+                "ru": f"Для задачи {task} теперь используется {model}.",
+                "en": f"Task {task} now uses {model}.",
+            },
         )
 
-    @tool(name="status", phrases=["статус", "как дела"])
+    @tool(name="status", phrases=["статус", "как дела", "status", "how are you"])
     async def status(self) -> ToolResult:
         """Показать состояние скиллов и подключённых моделей."""
         health = await self._skills.health()
@@ -135,7 +181,13 @@ class CoreTools:
             "llm_available": self._llm.available,
         }
         if broken:
-            speech = f"Есть проблемы в модулях: {', '.join(broken)}."
+            speech = {
+                "ru": f"Есть проблемы в модулях: {', '.join(broken)}.",
+                "en": f"Problems in modules: {', '.join(broken)}.",
+            }
         else:
-            speech = f"Всё работает: {len(health)} модулей, {len(self._registry)} команд."
+            speech = {
+                "ru": f"Всё работает: {len(health)} модулей, {len(self._registry)} команд.",
+                "en": f"All good: {len(health)} modules, {len(self._registry)} commands.",
+            }
         return ToolResult.success(payload, speech=speech)

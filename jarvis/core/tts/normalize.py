@@ -120,14 +120,58 @@ def _speak_token(token: str, dictionary: Mapping[str, str]) -> str:
     return transliterate(token)
 
 
-def normalize_for_speech(text: str, pronunciation: Mapping[str, str] | None = None) -> str:
-    """Подготовить текст к синтезу русским голосом.
+#: Обратное направление: кириллица для английского голоса.
+_CYRILLIC: dict[str, str] = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+_CYRILLIC_RUN = re.compile(r"[А-Яа-яЁё]+")
+
+
+def romanize(word: str) -> str:
+    """Записать русское слово латиницей, чтобы английский голос его прочитал.
+
+    Регистр сохраняется: имена собственные в середине фразы не должны
+    превращаться в строчные.
+    """
+    result: list[str] = []
+    for char in word:
+        replacement = _CYRILLIC.get(char.lower())
+        if replacement is None:
+            result.append(char)
+        elif char.isupper():
+            result.append(replacement.capitalize())
+        else:
+            result.append(replacement)
+    return "".join(result)
+
+
+def normalize_for_speech(
+    text: str,
+    pronunciation: Mapping[str, str] | None = None,
+    *,
+    language: str = "ru",
+) -> str:
+    """Подготовить текст к синтезу голосом конкретного языка.
+
+    Голос читает текст по правилам своего языка, поэтому чужой алфавит нужно
+    перевести: русскому голосу — латиницу в кириллицу, английскому — наоборот.
+    Иначе вместо слов получается каша.
 
     :param text: исходная реплика, возможно с латиницей и путями.
     :param pronunciation: дополнения к словарю из конфига ``tts.pronounce``.
+    :param language: язык голоса, которым будет произнесён текст.
     """
     if not text:
         return text
+
+    if not language.startswith("ru"):
+        # Английский (или любой другой латинский) голос: убираем кириллицу.
+        return _CYRILLIC_RUN.sub(lambda m: romanize(m.group(0)), text)
 
     dictionary = dict(DEFAULT_PRONUNCIATION)
     if pronunciation:

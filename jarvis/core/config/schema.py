@@ -108,12 +108,29 @@ class STTConfig:
     model: str = "base"
     device: str = "auto"
     compute_type: str = "int8"
+    #: Код языка или ``auto``. Автоопределение на коротких фразах ненадёжно,
+    #: поэтому работает вместе с порогом уверенности и откатом.
     language: str = "ru"
+    #: Какие языки допускаются при ``language: auto``.
+    languages: tuple[str, ...] = ("ru", "en")
+    #: Ниже этой уверенности определение отбрасывается и берётся `fallback_language`.
+    language_min_probability: float = 0.6
+    #: Основной язык: на него откатываемся, когда определение не уверено.
+    fallback_language: str = "ru"
     beam_size: int = 1
     models_dir: Path = Path("models/whisper")
-    #: Подсказка словаря. Имя «Джарвис» и названия программ модель сама по себе
-    #: слышит плохо («жаркость», «жар виск»); с подсказкой — уверенно.
-    initial_prompt: str = ""
+    #: Подсказка словаря по языкам. Имя «Джарвис» и названия программ модель
+    #: сама по себе слышит плохо («жаркость», «жар виск»); с подсказкой — уверенно.
+    initial_prompt: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def auto_detect(self) -> bool:
+        """Определять ли язык автоматически."""
+        return self.language in ("", "auto")
+
+    def prompt_for(self, language: str) -> str | None:
+        """Подсказка словаря для языка."""
+        return self.initial_prompt.get(language) or self.initial_prompt.get("*") or None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -121,13 +138,35 @@ class TTSConfig:
     """Синтез речи."""
 
     engine: str = "piper"
-    voice: str = "ru_RU-irina-medium"
+    #: Голос под каждый язык: ``{"ru": "ru_RU-denis-medium", "en": "en_US-ryan-high"}``.
+    #: Русский голос английский текст внятно не прочтёт, и наоборот.
+    voices: Mapping[str, str] = field(default_factory=dict)
+    #: Язык, на котором говорим, если он не указан явно.
+    default_language: str = "ru"
     models_dir: Path = Path("models/piper")
     length_scale: float = 1.0
     sample_rate: int = 22050
-    #: Как читать латинские названия: ``{"OBS": "О-Би-Эс"}``. Дополняет
+    #: Как читать чужие названия: ``{"OBS": "О-Би-Эс"}``. Дополняет
     #: встроенный словарь в `jarvis.core.tts.normalize`.
     pronounce: Mapping[str, str] = field(default_factory=dict)
+
+    def voice_for(self, language: str | None) -> tuple[str, str]:
+        """Подобрать голос под язык.
+
+        :return: пара «язык» и «имя голоса». Если голоса для языка нет,
+            берётся язык по умолчанию — лучше прочитать с акцентом, чем молчать.
+        """
+        code = (language or self.default_language).split("-")[0].lower()
+        voice = self.voices.get(code)
+        if voice:
+            return code, voice
+        fallback = self.default_language
+        return fallback, self.voices.get(fallback, "")
+
+    @property
+    def languages(self) -> tuple[str, ...]:
+        """Языки, для которых настроен голос."""
+        return tuple(sorted(self.voices))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -147,13 +186,21 @@ class WakeWordConfig:
 
     #: ``text`` — проверять по распознанному тексту, ``none`` — реагировать на всё.
     mode: str = "text"
-    phrase: str = "джарвис"
+    #: Написания имени на всех языках, на которых к ассистенту обращаются.
+    #: Нечёткое сравнение идёт с каждым: «jarvis» и «джарвис» — разные алфавиты,
+    #: и одно другому не близко.
+    phrases: tuple[str, ...] = ("джарвис", "jarvis")
     #: Варианты, которые засчитываются как обращение без нечёткого сравнения.
     aliases: tuple[str, ...] = ()
     #: Насколько похожим должно быть первое слово (Whisper часто пишет имя иначе).
     similarity: float = 0.7
     #: Сколько секунд после голого «Джарвис» ждать команду без повторного имени.
     follow_up_s: float = 10.0
+
+    @property
+    def phrase(self) -> str:
+        """Основное написание имени — для логов и событий."""
+        return self.phrases[0] if self.phrases else "джарвис"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

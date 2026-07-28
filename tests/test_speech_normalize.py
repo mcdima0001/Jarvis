@@ -77,3 +77,28 @@ def test_transliteration_handles_digraphs() -> None:
 def test_empty_input() -> None:
     """Пустая строка не ломает нормализацию."""
     assert normalize_for_speech("") == ""
+
+
+# --- английский голос -------------------------------------------------------
+
+
+def test_cyrillic_romanized_for_english_voice() -> None:
+    """Английскому голосу кириллицу нужно записать латиницей.
+
+    Иначе он читает её по своим правилам и получается такая же каша, как у
+    русского голоса на латинице.
+    """
+    result = normalize_for_speech("Режим game включён", language="en")
+    assert "Rezhim" in result
+    assert "game" in result
+
+
+def test_english_text_untouched_by_english_voice() -> None:
+    """Чистый английский текст английскому голосу менять не нужно."""
+    text = "Light in studio is on."
+    assert normalize_for_speech(text, language="en") == text
+
+
+def test_latin_kept_for_english_voice() -> None:
+    """Названия программ английскому голосу транслитерировать не надо."""
+    assert "OBS" in normalize_for_speech("Opening OBS now", language="en")

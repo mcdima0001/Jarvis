@@ -31,7 +31,8 @@ class FallbackResolver:
             return None
         return Intent(
             tool=self._tool,
-            arguments={"text": utterance.text},
+            # Язык передаётся дальше, чтобы модель ответила на языке вопроса.
+            arguments={"text": utterance.text, "language": utterance.language},
             confidence=self._confidence,
             resolver=self.name,
             utterance=utterance.text,

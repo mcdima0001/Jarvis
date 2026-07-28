@@ -43,7 +43,7 @@ class TelegramSkill(Skill):
         if not self._token:
             self.log.warning("Токен Telegram не задан — инструменты вернут ошибку")
 
-    @tool(phrases=["отправь сообщение {chat}"])
+    @tool(phrases=["отправь сообщение {chat}", "send a message to {chat}"])
     async def send_message(self, chat: str, text: str) -> ToolResult:
         """Отправить сообщение в чат.
 
@@ -53,16 +53,18 @@ class TelegramSkill(Skill):
         if not self._token:
             return ToolResult.failure(
                 "Нет токена Telegram: задай JARVIS_TELEGRAM_TOKEN в .env",
-                speech="Телеграм не подключён. Добавь токен бота в настройки.",
+                speech={"ru": "Телеграм не подключён. Добавь токен бота в настройки.",
+                       "en": "Telegram isn't connected. Add the bot token in settings."},
             )
         # TODO: Bot API sendMessage
         self.log.info("Сообщение в %s: %s", chat, text)
         return ToolResult.success(
             {"chat": chat, "text": text},
-            speech=f"Отправил сообщение в {chat}.",
+            speech={"ru": f"Отправил сообщение в {chat}.", "en": f"Message sent to {chat}."},
         )
 
-    @tool(phrases=["что нового в телеграме", "проверь телеграм", "новые сообщения"])
+    @tool(phrases=["что нового в телеграме", "проверь телеграм", "новые сообщения",
+                   "any new messages", "check telegram"])
     async def get_recent_chats(self, limit: int = 5) -> ToolResult:
         """Вернуть последние непрочитанные чаты.
 
@@ -71,15 +73,18 @@ class TelegramSkill(Skill):
         if not self._token:
             return ToolResult.failure(
                 "Нет токена Telegram: задай JARVIS_TELEGRAM_TOKEN в .env",
-                speech="Телеграм не подключён.",
+                speech={"ru": "Телеграм не подключён.", "en": "Telegram isn't connected."},
             )
         # TODO: Bot API getUpdates
         chats: list[dict[str, str]] = []
         if not chats:
-            return ToolResult.success([], speech="Новых сообщений нет.")
+            return ToolResult.success(
+                [], speech={"ru": "Новых сообщений нет.", "en": "No new messages."}
+            )
         return ToolResult.success(
             chats[:limit],
-            speech=f"Непрочитанных чатов: {len(chats)}.",
+            speech={"ru": f"Непрочитанных чатов: {len(chats)}.",
+                   "en": f"Unread chats: {len(chats)}."},
         )
 
     @tool()
@@ -95,7 +100,11 @@ class TelegramSkill(Skill):
         # TODO: получить историю через Bot API
         history = ""
         if not history:
-            return ToolResult.success("", speech=f"В чате {chat} нечего пересказывать.")
+            return ToolResult.success(
+                "",
+                speech={"ru": f"В чате {chat} нечего пересказывать.",
+                        "en": f"Nothing to summarize in {chat}."},
+            )
 
         summary = await self.context.llm.summarize(history)
         return ToolResult.success(summary, speech=summary)

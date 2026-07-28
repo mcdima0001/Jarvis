@@ -34,7 +34,7 @@ def _pipeline(registry: ToolRegistry, events: LocalEventBus, **wake: object) -> 
     config = AudioConfig(
         wake_word=WakeWordConfig(
             mode=str(wake.get("mode", "text")),
-            phrase=str(wake.get("phrase", "джарвис")),
+            phrases=tuple(wake.get("phrases", ("джарвис", "jarvis"))),
             aliases=tuple(wake.get("aliases", ("жарвис",))),
             similarity=float(wake.get("similarity", 0.7)),
             follow_up_s=float(wake.get("follow_up_s", 10.0)),
@@ -233,3 +233,54 @@ def test_audio_config_derives_frame_math() -> None:
     assert config.frame_bytes == 960
     assert config.silence_frames == 30
     assert config.max_utterance_bytes == 320000
+
+
+# --- два языка --------------------------------------------------------------
+
+
+def test_latin_name_recognised(pipeline: VoicePipeline) -> None:
+    """Обращение «Jarvis» латиницей засчитывается наравне с «Джарвис».
+
+    Нечёткое сравнение тут бессильно: у слов разные алфавиты и похожесть
+    близка к нулю, поэтому сравнение идёт с каждым написанием отдельно.
+    """
+    called, command = pipeline._strip_wake("Jarvis, turn on the light")
+    assert called
+    assert command == "turn on the light"
+
+
+def test_reply_follows_question_language(pipeline: VoicePipeline) -> None:
+    """Реплика выбирается по языку вопроса."""
+    result = ToolResult.success(True, speech={"ru": "Свет включён.", "en": "Light on."})
+
+    assert result.speech_for("ru") == "Свет включён."
+    assert result.speech_for("en") == "Light on."
+    assert result.speech_for("en-US") == "Light on."
+
+
+def test_single_string_speech_used_as_is() -> None:
+    """Одна строка остаётся строкой: не всякая реплика нуждается в переводе."""
+    result = ToolResult.success(1, speech="42")
+    assert result.speech_for("en") == "42"
+
+
+def test_unknown_language_falls_back() -> None:
+    """Для языка без варианта берётся основной."""
+    result = ToolResult.success(True, speech={"ru": "Готово.", "en": "Done."})
+    assert result.speech_for("de") == "Готово."
+
+
+def test_voice_chosen_per_language() -> None:
+    """Голос подбирается под язык, при отсутствии — язык по умолчанию."""
+    from jarvis.core.config import TTSConfig
+
+    config = TTSConfig(
+        voices={"ru": "ru_RU-denis-medium", "en": "en_US-ryan-high"},
+        default_language="ru",
+    )
+
+    assert config.voice_for("en") == ("en", "en_US-ryan-high")
+    assert config.voice_for("en-US") == ("en", "en_US-ryan-high")
+    assert config.voice_for("ru") == ("ru", "ru_RU-denis-medium")
+    # Немецкого голоса нет — лучше прочитать русским, чем промолчать.
+    assert config.voice_for("de") == ("ru", "ru_RU-denis-medium")

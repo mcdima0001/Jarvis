@@ -91,6 +91,36 @@ def _resolve(root: Path, value: Any) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _prompts(value: Any) -> dict[str, str]:
+    """Разобрать подсказку словаря: одна строка или карта по языкам."""
+    if not value:
+        return {}
+    if isinstance(value, str):
+        return {"*": value}
+    return {str(code): str(text) for code, text in value.items()}
+
+
+def _voices(section: Mapping[str, Any]) -> dict[str, str]:
+    """Разобрать голоса: карта язык -> голос, с поддержкой старого ``voice``."""
+    voices = {str(code): str(name) for code, name in (section.get("voices") or {}).items()}
+    single = section.get("voice")
+    if single and not voices:
+        # Конфиг с одним голосом: считаем его голосом языка по умолчанию.
+        voices[str(section.get("default_language", "ru"))] = str(single)
+    return voices
+
+
+def _wake_phrases(section: Mapping[str, Any]) -> tuple[str, ...]:
+    """Разобрать написания имени: список ``phrases`` или одиночное ``phrase``."""
+    listed = section.get("phrases")
+    if listed:
+        return tuple(str(item).lower() for item in listed)
+    single = section.get("phrase")
+    if single:
+        return (str(single).lower(),)
+    return ("джарвис", "jarvis")
+
+
 def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
     """Собрать конфигурацию LLM: провайдеры и профили задач."""
     providers: dict[str, ProviderConfig] = {}
@@ -199,13 +229,17 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             device=str(stt.get("device", "auto")),
             compute_type=str(stt.get("compute_type", "int8")),
             language=str(stt.get("language", "ru")),
+            languages=tuple(str(code) for code in stt.get("languages", ("ru", "en"))),
+            language_min_probability=float(stt.get("language_min_probability", 0.6)),
+            fallback_language=str(stt.get("fallback_language", "ru")),
             beam_size=int(stt.get("beam_size", 1)),
             models_dir=_resolve(project_root, stt.get("models_dir", "models/whisper")),
-            initial_prompt=str(stt.get("initial_prompt") or ""),
+            initial_prompt=_prompts(stt.get("initial_prompt")),
         ),
         tts=TTSConfig(
             engine=str(tts.get("engine", "piper")),
-            voice=str(tts.get("voice", "ru_RU-irina-medium")),
+            voices=_voices(tts),
+            default_language=str(tts.get("default_language", "ru")),
             models_dir=_resolve(project_root, tts.get("models_dir", "models/piper")),
             length_scale=float(tts.get("length_scale", 1.0)),
             sample_rate=int(tts.get("sample_rate", 22050)),
@@ -228,7 +262,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             ),
             wake_word=WakeWordConfig(
                 mode=str(_section(audio, "wake_word").get("mode") or "text"),
-                phrase=str(_section(audio, "wake_word").get("phrase", "джарвис")),
+                phrases=_wake_phrases(_section(audio, "wake_word")),
                 aliases=tuple(
                     str(a).lower() for a in (_section(audio, "wake_word").get("aliases") or ())
                 ),

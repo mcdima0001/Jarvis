@@ -89,18 +89,32 @@ stt:
   model: small
   device: auto             # auto | cpu | cuda — auto сам найдёт видеокарту
   compute_type: auto       # auto = float16 на GPU, int8 на CPU
-  language: ru
+  # auto — определять язык каждой фразы; можно жёстко задать ru или en.
+  language: auto
+  languages: [ru, en]      # что допускаем при auto
+  # Порог уверенности. Автоопределение на коротких фразах врёт: одиночное
+  # «Джарвис» относится к английскому с уверенностью 0.27. Ниже порога берём
+  # основной язык.
+  language_min_probability: 0.6
+  fallback_language: ru
   beam_size: 1             # 1 = максимальная скорость
   models_dir: models/whisper
-  # Подсказка словаря. Без неё Whisper слышит «жаркость» вместо «Джарвис»:
-  # имя редкое и не входит в обычный словарь. Сюда же — названия программ.
-  initial_prompt: "Джарвис, ассистент студии. Steam, OBS, XLR, ESP32."
+  # Подсказка словаря по языкам. Без неё Whisper слышит «жаркость» вместо
+  # «Джарвис»: имя редкое и не входит в обычный словарь.
+  initial_prompt:
+    ru: "Джарвис, ассистент студии. Steam, OBS, XLR, ESP32."
+    en: "Jarvis, the studio assistant. Steam, OBS, XLR, ESP32."
 
 tts:
   engine: piper            # piper | null
-  # Скачать: python -m jarvis --download-voice ru_RU-dmitri-medium
-  # Список:  python -m jarvis --download-voice
-  voice: ru_RU-dmitri-medium
+  # Голос под каждый язык: русский голос английский текст внятно не прочтёт.
+  # Послушать и выбрать:  python -m jarvis --try-voice ru
+  #                       python -m jarvis --try-voice en
+  # Список:               python -m jarvis --download-voice
+  voices:
+    ru: ru_RU-dmitri-medium
+    en: en_US-ryan-high
+  default_language: ru
   models_dir: models/piper
   length_scale: 1.0        # <1 быстрее речь, >1 медленнее
   sample_rate: 22050       # подсказка; настоящую частоту задаёт сам голос
@@ -131,10 +145,11 @@ audio:
     calibrate_seconds: 1.0
   wake_word:
     mode: text             # text — реагировать только на обращение по имени
-    phrase: джарвис
+    # Написания на всех языках, на которых зовёшь: сравнение идёт с каждым.
+    phrases: [джарвис, jarvis]
     # Подстраховка: варианты, которые засчитываются как обращение.
     # Если в логе повторяется «Похоже на обращение» — допиши услышанное сюда.
-    aliases: [жарвис, джарвес, жарвиз, дживс, жаркость]
+    aliases: [жарвис, джарвес, жарвиз, дживс, жаркость, jervis, service]
     similarity: 0.7
     follow_up_s: 10.0      # после голого «Джарвис» ждать команду без имени
 

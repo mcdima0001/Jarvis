@@ -36,7 +36,8 @@ class WindowsSkill(Skill):
         )
         self.log.info("Известных программ: %d", len(self._programs))
 
-    @tool(phrases=["открой {program}", "запусти {program}"])
+    @tool(phrases=["открой {program}", "запусти {program}",
+                   "open {program}", "launch {program}"])
     async def launch_program(self, program: str) -> ToolResult:
         """Запустить программу по имени.
 
@@ -47,10 +48,11 @@ class WindowsSkill(Skill):
         self.log.info("Запуск программы: %s", executable)
         return ToolResult.success(
             {"program": program, "executable": executable},
-            speech=f"Запускаю {program}.",
+            speech={"ru": f"Запускаю {program}.", "en": f"Launching {program}."},
         )
 
-    @tool(phrases=["закрой {program}", "заверши {program}"])
+    @tool(phrases=["закрой {program}", "заверши {program}",
+                   "close {program}", "quit {program}"])
     async def close_program(self, program: str) -> ToolResult:
         """Закрыть программу по имени.
 
@@ -61,15 +63,19 @@ class WindowsSkill(Skill):
         self.log.info("Закрытие программы: %s", executable)
         return ToolResult.success(
             {"program": program, "executable": executable},
-            speech=f"Закрываю {program}.",
+            speech={"ru": f"Закрываю {program}.", "en": f"Closing {program}."},
         )
 
-    @tool(phrases=["какие программы открыты", "что запущено"])
+    @tool(phrases=["какие программы открыты", "что запущено", "what is running"])
     async def list_programs(self) -> ToolResult:
         """Перечислить запущенные программы."""
         # TODO: psutil.process_iter
         running: list[str] = []
-        return ToolResult.success(running, speech="Список процессов пока не читается.")
+        return ToolResult.success(
+            running,
+            speech={"ru": "Список процессов пока не читается.",
+                    "en": "Process listing isn't implemented yet."},
+        )
 
     @tool()
     async def set_volume(self, level: int) -> ToolResult:
@@ -79,7 +85,10 @@ class WindowsSkill(Skill):
         """
         level = max(0, min(100, level))
         # TODO: pycaw
-        return ToolResult.success(level, speech=f"Громкость {level} процентов.")
+        return ToolResult.success(
+            level,
+            speech={"ru": f"Громкость {level} процентов.", "en": f"Volume {level} percent."},
+        )
 
     async def health(self) -> HealthStatus:
         """Скилл-заглушка всегда считается работоспособным."""

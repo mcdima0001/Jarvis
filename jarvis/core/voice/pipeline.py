@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 #: Сколько фрагментов держать в очереди на распознавание.
 _PENDING_LIMIT = 2
 #: Ответ на голое обращение по имени.
-_LISTENING_REPLY = "Слушаю."
+_LISTENING_REPLY = {"ru": "Слушаю.", "en": "I'm listening."}
 
 
 class VoicePipeline:
@@ -122,12 +122,14 @@ class VoicePipeline:
                 source=utterance.source,
             )
         result = await self._dispatcher.handle(utterance)
-        reply = result.speech or self._describe(result)
+        reply = result.speech_for(utterance.language) or self._describe(
+            result, utterance.language
+        )
         if reply:
-            await self._say(reply)
+            await self._say(reply, language=utterance.language)
         return result
 
-    async def _say(self, text: str) -> None:
+    async def _say(self, text: str, *, language: str | None = None) -> None:
         """Озвучить реплику, заглушив на это время микрофон.
 
         Без этого получается акустическая петля: колонки произносят ответ,
@@ -137,7 +139,7 @@ class VoicePipeline:
         """
         self._speaking = True
         try:
-            await self._tts.say(text)
+            await self._tts.say(text, language=language)
         finally:
             # Колонки ещё звучат, плюс реверберация комнаты.
             self._mute_until = time.time() + self._config.echo_tail_ms / 1000
@@ -153,12 +155,15 @@ class VoicePipeline:
         return self._speaking or time.time() < self._mute_until
 
     @staticmethod
-    def _describe(result: ToolResult) -> str:
+    def _describe(result: ToolResult, language: str | None = None) -> str:
         """Собрать реплику, если инструмент не предложил свою."""
+        english = (language or "ru").startswith("en")
         if not result.ok:
-            return result.error or "Не получилось выполнить команду."
+            if result.error:
+                return result.error
+            return "Couldn't do that." if english else "Не получилось выполнить команду."
         if result.value is None:
-            return "Готово."
+            return "Done." if english else "Готово."
         return str(result.value)
 
     # --- захват ------------------------------------------------------------
@@ -255,13 +260,16 @@ class VoicePipeline:
             logger.debug("Обращения по имени нет — пропускаю")
             return
 
+        language = transcript.language or "ru"
+
         if not command:
             # Позвали по имени и замолчали: отвечаем и ждём команду без имени.
             self._events.emit(
                 WakeWordDetected(source="voice", phrase=self._config.wake_word.phrase)
             )
             self._follow_up_until = time.time() + self._config.wake_word.follow_up_s
-            await self._say(_LISTENING_REPLY)
+            reply = _LISTENING_REPLY.get(language.split("-")[0], _LISTENING_REPLY["ru"])
+            await self._say(reply, language=language)
             return
 
         self._follow_up_until = 0.0
@@ -270,10 +278,12 @@ class VoicePipeline:
                 source="voice",
                 text=command,
                 confidence=transcript.confidence,
-                language=transcript.language,
+                language=language,
             )
         )
-        await self.handle(Utterance(text=command, source="voice"))
+        await self.handle(
+            Utterance(text=command, language=language, source="voice")
+        )
 
     def _strip_wake(self, text: str) -> tuple[bool, str]:
         """Отделить обращение по имени от самой команды.
@@ -289,11 +299,16 @@ class VoicePipeline:
         first = words[0].lower().strip(" .,!?;:—-")
         remainder = " ".join(words[1:]).strip(" ,")
 
-        if first in settings.aliases:
-            logger.debug("Имя распознано по списку вариантов: %r", first)
+        if first in settings.aliases or first in settings.phrases:
+            logger.debug("Имя распознано: %r", first)
             return True, remainder
 
-        ratio = difflib.SequenceMatcher(None, first, settings.phrase.lower()).ratio()
+        # Сравниваем с каждым написанием: «jarvis» и «джарвис» в разных
+        # алфавитах, и похожесть между ними нулевая.
+        ratio = max(
+            (difflib.SequenceMatcher(None, first, phrase).ratio() for phrase in settings.phrases),
+            default=0.0,
+        )
         if ratio >= settings.similarity:
             logger.debug("Имя распознано: %r (похожесть %.2f)", first, ratio)
             return True, remainder

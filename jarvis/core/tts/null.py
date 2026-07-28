@@ -36,10 +36,15 @@ class NullTTS:
     async def stop(self) -> None:
         """Останавливать нечего."""
 
-    async def synthesize(self, text: str) -> Speech:
+    async def synthesize(self, text: str, *, language: str | None = None) -> Speech:
         """Вернуть пустое аудио."""
-        return Speech(audio=b"", sample_rate=self._sample_rate, text=text)
+        return Speech(
+            audio=b"",
+            sample_rate=self._sample_rate,
+            text=text,
+            language=language or "",
+        )
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, language: str | None = None) -> None:
         """Записать реплику в лог."""
-        logger.info("[TTS] %s", text)
+        logger.info("[TTS%s] %s", f" {language}" if language else "", text)

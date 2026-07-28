@@ -27,6 +27,30 @@ RUSSIAN_VOICES = (
     "ru_RU-irina-medium",
 )
 
+#: Английские голоса. high звучит заметно чище medium, но и файл крупнее.
+ENGLISH_VOICES = (
+    "en_US-ryan-high",
+    "en_US-lessac-high",
+    "en_US-amy-medium",
+    "en_US-joe-medium",
+    "en_US-kristin-medium",
+    "en_GB-alan-medium",
+)
+
+#: Как называется каждый голос по-человечески.
+VOICE_NOTES: dict[str, str] = {
+    "ru_RU-dmitri-medium": "мужской, ровный",
+    "ru_RU-denis-medium": "мужской, мягче",
+    "ru_RU-ruslan-medium": "мужской, ниже",
+    "ru_RU-irina-medium": "женский",
+    "en_US-ryan-high": "мужской, американский",
+    "en_US-lessac-high": "женский, самый чистый",
+    "en_US-amy-medium": "женский, спокойный",
+    "en_US-joe-medium": "мужской, разговорный",
+    "en_US-kristin-medium": "женский, мягкий",
+    "en_GB-alan-medium": "мужской, британский",
+}
+
 
 def _voice_url(name: str) -> str:
     """Собрать адрес голоса по его имени вида ``ru_RU-dmitri-medium``."""
@@ -92,12 +116,69 @@ def download_voice(name: str, models_dir: Path) -> Path:
     return model
 
 
-def list_russian_voices() -> str:
-    """Текстовый список русских голосов для подсказки в CLI."""
-    lines = ["Русские голоса Piper:", ""]
+#: Что произносить при прослушивании голоса.
+SAMPLE_TEXT = {
+    "ru": "Привет. Я Джарвис. Включаю игровой режим, в студии двадцать два градуса.",
+    "en": "Hello. I am Jarvis. Switching to game mode, the studio is at twenty two degrees.",
+}
+
+
+def preview_voices(names: list[str], models_dir: Path, *, text: str | None = None) -> None:
+    """Скачать голоса и произнести ими образец, чтобы выбрать на слух.
+
+    :param names: имена голосов либо ``ru`` / ``en`` для всей группы.
+    :param models_dir: каталог из конфига ``tts.models_dir``.
+    :param text: своя фраза вместо образца.
+    """
+    import sounddevice as sd
+    from piper import PiperVoice, SynthesisConfig
+
+    expanded: list[str] = []
+    for name in names:
+        if name == "ru":
+            expanded.extend(RUSSIAN_VOICES)
+        elif name == "en":
+            expanded.extend(ENGLISH_VOICES)
+        else:
+            expanded.append(name)
+
+    for name in expanded:
+        model = download_voice(name, models_dir)
+        sample = text or SAMPLE_TEXT["en" if name.startswith("en") else "ru"]
+
+        print(f"\n▶ {name}  ({VOICE_NOTES.get(name, '')})")
+        print(f"  {sample}")
+        voice = PiperVoice.load(str(model))
+        chunks = list(voice.synthesize(sample, syn_config=SynthesisConfig()))
+        if not chunks:
+            print("  (пусто)")
+            continue
+
+        audio = b"".join(chunk.audio_int16_bytes for chunk in chunks)
+        rate = int(chunks[0].sample_rate)
+        with sd.RawOutputStream(samplerate=rate, channels=1, dtype="int16") as stream:
+            stream.write(audio)
+
+    print("\nПонравившийся впиши в config.yaml, секция tts.voices:")
+    print("  voices:")
+    print("    ru: ru_RU-denis-medium")
+    print("    en: en_US-ryan-high")
+
+
+def list_voices() -> str:
+    """Текстовый список голосов для подсказки в CLI."""
+    lines = ["Голоса Piper", "", "Русские:"]
     for voice in RUSSIAN_VOICES:
-        speaker = voice.split("-")[1]
-        gender = "женский" if speaker == "irina" else "мужской"
-        lines.append(f"  {voice:<24} {gender}")
-    lines += ["", "Скачать:  python -m jarvis --download-voice ru_RU-dmitri-medium"]
+        lines.append(f"  {voice:<24} {VOICE_NOTES.get(voice, '')}")
+    lines += ["", "Английские:"]
+    for voice in ENGLISH_VOICES:
+        lines.append(f"  {voice:<24} {VOICE_NOTES.get(voice, '')}")
+    lines += [
+        "",
+        "Послушать:  python -m jarvis --try-voice ru_RU-denis-medium",
+        "Все русские: python -m jarvis --try-voice ru",
+        "Скачать:    python -m jarvis --download-voice ru_RU-denis-medium",
+        "",
+        "Выбранные голоса впиши в config.yaml, секция tts.voices.",
+    ]
     return "\n".join(lines)

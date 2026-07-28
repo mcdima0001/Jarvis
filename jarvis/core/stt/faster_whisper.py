@@ -118,25 +118,58 @@ class FasterWhisperSTT:
             return Transcript(text="")
         return await self._worker.run(self._transcribe, audio)
 
+    def _pick_language(self, samples: Any) -> tuple[str, str | None]:
+        """Выбрать язык распознавания и подсказку словаря для него.
+
+        Автоопределение на коротких фразах ненадёжно: одиночное «Джарвис»
+        Whisper относит к английскому с уверенностью 0.27 и слышит «I miss».
+        Поэтому определение принимается, только если язык входит в разрешённые
+        и модель в нём достаточно уверена; иначе берётся основной язык.
+        """
+        config = self._config
+        if not config.auto_detect:
+            return config.language, config.prompt_for(config.language)
+
+        try:
+            detected, probability, _ = self._model.detect_language(samples)
+        except Exception as exc:  # noqa: BLE001 — определение не должно ронять распознавание
+            logger.debug("Определить язык не удалось (%s), беру основной", exc)
+            return config.fallback_language, config.prompt_for(config.fallback_language)
+
+        if detected in config.languages and probability >= config.language_min_probability:
+            logger.debug("Язык определён: %s (%.2f)", detected, probability)
+            return detected, config.prompt_for(detected)
+
+        logger.debug(
+            "Язык не определён уверенно (%s, %.2f при пороге %.2f) — беру %s",
+            detected,
+            probability,
+            config.language_min_probability,
+            config.fallback_language,
+        )
+        return config.fallback_language, config.prompt_for(config.fallback_language)
+
     def _transcribe(self, audio: bytes) -> Transcript:
         """Синхронное распознавание — выполняется в пуле потоков."""
         import numpy as np
 
         samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / _PCM16_SCALE
+        language, prompt = self._pick_language(samples)
+
         segments, info = self._model.transcribe(
             samples,
-            language=self._config.language or None,
+            language=language,
             beam_size=self._config.beam_size,
             vad_filter=False,
             # Смещает словарь модели в сторону имени ассистента и названий
             # программ студии: без этого «Джарвис» превращается в «жаркость».
-            initial_prompt=self._config.initial_prompt or None,
+            initial_prompt=prompt,
         )
         parts = [segment.text for segment in segments]
         text = " ".join(part.strip() for part in parts).strip()
         return Transcript(
             text=text,
-            language=getattr(info, "language", self._config.language),
+            language=getattr(info, "language", language) or language,
             confidence=float(getattr(info, "language_probability", 1.0)),
             duration=float(getattr(info, "duration", 0.0)),
         )

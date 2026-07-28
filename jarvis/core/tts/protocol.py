@@ -13,6 +13,7 @@ class Speech:
     audio: bytes
     sample_rate: int
     text: str = ""
+    language: str = ""
 
     @property
     def empty(self) -> bool:
@@ -42,10 +43,10 @@ class TTS(Protocol):
         """Освободить ресурсы."""
         ...
 
-    async def synthesize(self, text: str) -> Speech:
-        """Синтезировать речь из текста."""
+    async def synthesize(self, text: str, *, language: str | None = None) -> Speech:
+        """Синтезировать речь голосом нужного языка."""
         ...
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, language: str | None = None) -> None:
         """Синтезировать и произнести."""
         ...

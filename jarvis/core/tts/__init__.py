@@ -31,14 +31,32 @@ def build_tts(config: TTSConfig, worker: BlockingWorker, *, sink: AudioSink) -> 
             )
             return NullTTS(sample_rate=config.sample_rate)
 
-        model_path = config.models_dir / f"{config.voice}.onnx"
+        _, voice = config.voice_for(config.default_language)
+        if not voice:
+            logger.warning("В tts.voices не задан ни один голос — синтез отключён")
+            return NullTTS(sample_rate=config.sample_rate)
+
+        model_path = config.models_dir / f"{voice}.onnx"
         if not model_path.is_file():
             logger.warning(
                 "Голос Piper не найден: %s — синтез отключён. "
-                "Скачай модель с https://huggingface.co/rhasspy/piper-voices",
+                "Скачай: python -m jarvis --download-voice %s",
                 model_path,
+                voice,
             )
             return NullTTS(sample_rate=config.sample_rate)
+
+        missing = [
+            name
+            for code, name in config.voices.items()
+            if not (config.models_dir / f"{name}.onnx").is_file()
+        ]
+        if missing:
+            logger.warning(
+                "Не скачаны голоса: %s — на этих языках буду отвечать голосом «%s»",
+                ", ".join(missing),
+                voice,
+            )
 
         return PiperTTS(config, worker, sink=sink)
 

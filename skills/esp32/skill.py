@@ -60,8 +60,18 @@ class ESP32Skill(Skill):
 
     # --- инструменты -------------------------------------------------------
 
-    @tool(phrases=["включи свет", "включи свет в студии", "зажги свет"])
-    async def set_light(self, state: bool = True, zone: str = "studio", brightness: int = 100) -> ToolResult:
+    @tool(
+        phrases=[
+            "включи свет",
+            "включи свет в студии",
+            "зажги свет",
+            "turn on the light",
+            "lights on",
+        ]
+    )
+    async def set_light(
+        self, state: bool = True, zone: str = "studio", brightness: int = 100
+    ) -> ToolResult:
         """Включить или выключить свет в зоне студии.
 
         :param state: True — включить, False — выключить.
@@ -69,14 +79,24 @@ class ESP32Skill(Skill):
         :param brightness: яркость в процентах, от 0 до 100.
         """
         # TODO: POST http://{host}/light
-        action = "включён" if state else "выключен"
-        self.log.info("Свет %s: зона=%s яркость=%s%%", action, zone, brightness)
+        self.log.info("Свет %s: зона=%s яркость=%s%%", state, zone, brightness)
         return ToolResult.success(
             {"zone": zone, "state": state, "brightness": brightness},
-            speech=f"Свет в зоне {zone} {action}.",
+            speech={
+                "ru": f"Свет в зоне {zone} {'включён' if state else 'выключен'}.",
+                "en": f"Light in {zone} is {'on' if state else 'off'}.",
+            },
         )
 
-    @tool(phrases=["какая температура", "температура в студии", "сколько градусов"])
+    @tool(
+        phrases=[
+            "какая температура",
+            "температура в студии",
+            "сколько градусов",
+            "what's the temperature",
+            "how warm is it",
+        ]
+    )
     async def get_temperature(self, sensor: str = "studio") -> ToolResult:
         """Вернуть температуру с датчика в градусах Цельсия.
 
@@ -84,9 +104,22 @@ class ESP32Skill(Skill):
         """
         # TODO: GET http://{host}/sensors/{sensor}
         value = round(random.uniform(21.0, 24.0), 1)
-        return ToolResult.success(value, speech=f"В студии {value} градуса.")
+        return ToolResult.success(
+            value,
+            speech={
+                "ru": f"В студии {value} градуса.",
+                "en": f"It's {value} degrees in the studio.",
+            },
+        )
 
-    @tool(phrases=["включи {mode} режим", "переключись в режим {mode}"])
+    @tool(
+        phrases=[
+            "включи {mode} режим",
+            "переключись в режим {mode}",
+            "switch to {mode} mode",
+            "set {mode} mode",
+        ]
+    )
     async def set_mode(self, mode: str) -> ToolResult:
         """Переключить сценарий студии.
 
@@ -94,17 +127,21 @@ class ESP32Skill(Skill):
         """
         known = ("game", "record", "cinema", "work", "sleep")
         aliases = {
-            "игровой": "game",
-            "записи": "record",
-            "кино": "cinema",
-            "рабочий": "work",
-            "сна": "sleep",
+            "игровой": "game", "игровый": "game", "гейминг": "game",
+            "записи": "record", "запись": "record", "recording": "record",
+            "кино": "cinema", "киношный": "cinema", "movie": "cinema",
+            "рабочий": "work", "работы": "work",
+            "сна": "sleep", "ночной": "sleep",
         }
         resolved = aliases.get(mode.strip().lower(), mode.strip().lower())
         if resolved not in known:
             return ToolResult.failure(
                 f"Неизвестный режим {mode!r}",
-                speech=f"Не знаю режим {mode}. Есть игровой, записи, кино, рабочий и сна.",
+                speech={
+                    "ru": f"Не знаю режим {mode}. Есть игровой, записи, кино, рабочий и сна.",
+                    "en": f"I don't know the {mode} mode. "
+                    f"Available: game, record, cinema, work, sleep.",
+                },
             )
 
         previous, self._mode = self._mode, resolved
@@ -114,10 +151,10 @@ class ESP32Skill(Skill):
         )
         return ToolResult.success(
             {"mode": resolved, "previous": previous},
-            speech=f"Включаю режим {mode}.",
+            speech={"ru": f"Включаю режим {mode}.", "en": f"Switching to {resolved} mode."},
         )
 
-    @tool()
+    @tool(phrases=["какая влажность", "what's the humidity"])
     async def get_humidity(self, sensor: str = "studio") -> ToolResult:
         """Вернуть влажность с датчика в процентах.
 
@@ -125,7 +162,13 @@ class ESP32Skill(Skill):
         """
         # TODO: GET http://{host}/sensors/{sensor}
         value = round(random.uniform(40.0, 55.0), 1)
-        return ToolResult.success(value, speech=f"Влажность {value} процентов.")
+        return ToolResult.success(
+            value,
+            speech={
+                "ru": f"Влажность {value} процентов.",
+                "en": f"Humidity is {value} percent.",
+            },
+        )
 
     async def health(self) -> HealthStatus:
         """Проверить доступность контроллера."""

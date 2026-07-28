@@ -17,7 +17,10 @@ from .router import Router
 
 logger = logging.getLogger(__name__)
 
-_NOT_UNDERSTOOD = "Не понял команду. Повтори, пожалуйста, другими словами."
+_NOT_UNDERSTOOD = {
+    "ru": "Не понял команду. Повтори, пожалуйста, другими словами.",
+    "en": "Sorry, I didn't catch that. Could you rephrase?",
+}
 
 
 class Dispatcher:
@@ -50,9 +53,10 @@ class Dispatcher:
             logger.error("Роутер выбрал несуществующий инструмент: %s", exc)
             return ToolResult.failure(str(exc), tool=intent.tool, speech=_NOT_UNDERSTOOD)
 
-        if self._events is not None and result.speech:
+        spoken = result.speech_for(utterance.language)
+        if self._events is not None and spoken:
             self._events.emit(
-                AssistantReplied(source="dispatcher", text=result.speech, spoken=False)
+                AssistantReplied(source="dispatcher", text=spoken, spoken=False)
             )
         return result
 

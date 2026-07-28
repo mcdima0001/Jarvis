@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from jarvis.core.app import JarvisApp
-from jarvis.core.assets import download_voice, list_russian_voices
+from jarvis.core.assets import download_voice, list_voices, preview_voices
 from jarvis.core.audio import list_devices
 from jarvis.core.config import DEFAULT_CONFIG_PATH, load_config
 from jarvis.core.errors import AudioError, ConfigError, JarvisError
@@ -56,7 +56,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="ГОЛОС",
         nargs="?",
         const="",
-        help="скачать голос Piper (без имени — показать список русских голосов)",
+        help="скачать голос Piper (без имени — показать список голосов)",
+    )
+    parser.add_argument(
+        "--try-voice",
+        metavar="ГОЛОС",
+        nargs="+",
+        help="послушать голоса и выбрать: имена через пробел либо ru / en",
     )
     parser.add_argument(
         "--log-level",
@@ -111,9 +117,12 @@ async def _amain(args: argparse.Namespace) -> int:
         return 0
     if args.download_voice is not None:
         if not args.download_voice:
-            print(list_russian_voices())
+            print(list_voices())
             return 0
         download_voice(args.download_voice, config.tts.models_dir)
+        return 0
+    if args.try_voice:
+        preview_voices(args.try_voice, config.tts.models_dir)
         return 0
 
     app = JarvisApp.build(config)
