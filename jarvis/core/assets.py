@@ -52,6 +52,17 @@ KOKORO_VOICES = (
 #: Голоса Silero: 48 кГц, русский звучит живее, чем у Piper.
 SILERO_VOICES = ("eugene", "aidar", "baya", "kseniya", "xenia")
 
+#: Нейроголоса Microsoft: считаются в облаке, звучат естественнее всего
+#: локального. Ключ не нужен, но нужен интернет.
+EDGE_VOICES = (
+    "ru-RU-DmitryNeural",
+    "ru-RU-SvetlanaNeural",
+    "en-GB-RyanNeural",
+    "en-GB-ThomasNeural",
+    "en-GB-SoniaNeural",
+    "en-US-GuyNeural",
+)
+
 #: Что это за голос по-человечески.
 VOICE_NOTES: dict[str, str] = {
     "piper:ru_RU-dmitri-medium": "русский мужской, ровный",
@@ -69,6 +80,12 @@ VOICE_NOTES: dict[str, str] = {
     "kokoro:am_onyx": "американский мужской, глубокий",
     "kokoro:bf_emma": "британский женский",
     "kokoro:af_heart": "американский женский",
+    "edge:ru-RU-DmitryNeural": "русский мужской, облачный — самый естественный",
+    "edge:ru-RU-SvetlanaNeural": "русский женский, облачный",
+    "edge:en-GB-RyanNeural": "британский мужской, облачный",
+    "edge:en-GB-ThomasNeural": "британский мужской, облачный, суше",
+    "edge:en-GB-SoniaNeural": "британский женский, облачный",
+    "edge:en-US-GuyNeural": "американский мужской, облачный",
     "xtts:bm_george": "русский голосом bm_george — тот же тембр, что в английском",
     "silero:eugene": "русский мужской",
     "silero:aidar": "русский мужской, ровный",
@@ -128,9 +145,12 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "jarvis": ("kokoro:bm_george", "kokoro:bm_daniel", "kokoro:bm_lewis", "kokoro:bm_fable"),
     "en": tuple(f"kokoro:{v}" for v in KOKORO_VOICES)
     + ("piper:en_GB-alan-medium", "piper:en_US-ryan-high"),
-    "ru": tuple(f"silero:{v}" for v in SILERO_VOICES)
+    "ru": ("edge:ru-RU-DmitryNeural",)
+    + tuple(f"silero:{v}" for v in SILERO_VOICES)
     + ("piper:ru_RU-denis-medium", "piper:ru_RU-ruslan-medium"),
     "clone": ("xtts:bm_george",),
+    "cloud": tuple(f"edge:{v}" for v in EDGE_VOICES),
+    "edge": tuple(f"edge:{v}" for v in EDGE_VOICES),
     "kokoro": tuple(f"kokoro:{v}" for v in KOKORO_VOICES),
     "silero": tuple(f"silero:{v}" for v in SILERO_VOICES),
     "piper": tuple(f"piper:{v}" for v in PIPER_VOICES),
@@ -222,6 +242,10 @@ def download_voice(spec: str, models_dir: Path) -> Path:
                 _download(client, f"{_SILERO_REPO}/ru/v4_ru.pt", target)
                 return target
 
+            if engine == "edge":
+                # Модель живёт в облаке — скачивать нечего.
+                return models_dir
+
             if engine == "xtts":
                 # Саму модель тянет coqui-tts при первом синтезе; здесь нужен
                 # только эталон, снятый с другого голоса.
@@ -268,7 +292,11 @@ def preview_voices(names: list[str], models_dir: Path, *, text: str | None = Non
             print(f"\n✗ {spec}: {exc}")
             continue
 
-        russian = engine in ("silero", "xtts") or voice.startswith("ru_")
+        russian = (
+            engine in ("silero", "xtts")
+            or voice.startswith("ru_")
+            or voice.startswith("ru-")
+        )
         language = "ru" if russian else "en"
         sample = text or SAMPLE_TEXT[language]
 
@@ -298,8 +326,14 @@ def list_voices() -> str:
     lines = [
         "Голоса. Пишутся как движок:голос",
         "",
-        "Kokoro — 24 кГц, естественная интонация, модель 338 МБ:",
+        "Edge — нейроголоса Microsoft, считаются в облаке. Звучат естественнее",
+        "всего локального; ключ не нужен, нужен интернет и ~1 с на фразу:",
     ]
+    for voice in EDGE_VOICES:
+        spec = f"edge:{voice}"
+        lines.append(f"  {spec:<28} {VOICE_NOTES.get(spec, '')}")
+
+    lines += ["", "Kokoro — 24 кГц, естественная интонация, модель 338 МБ:"]
     for voice in KOKORO_VOICES:
         spec = f"kokoro:{voice}"
         lines.append(f"  {spec:<22} {VOICE_NOTES.get(spec, '')}")
@@ -329,6 +363,7 @@ def list_voices() -> str:
         "  python -m jarvis --try-voice ru       # русские",
         "  python -m jarvis --try-voice en       # английские",
         "  python -m jarvis --try-voice kokoro:bm_george silero:eugene",
+        "  python -m jarvis --try-voice cloud    # облачные нейроголоса",
         "  python -m jarvis --try-voice clone    # русский голосом bm_george",
     ]
     return "\n".join(lines)

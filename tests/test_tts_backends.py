@@ -71,3 +71,35 @@ def test_kokoro_speed_inverts_length_scale(tmp_path: Path) -> None:
     fast = build_backend("kokoro", tmp_path, length_scale=0.5)
 
     assert slow._speed < 1.0 < fast._speed
+
+
+# --- облачный движок --------------------------------------------------------
+
+
+def test_edge_engine_recognised() -> None:
+    """Облачный движок разбирается наравне с локальными."""
+    assert parse_voice("edge:ru-RU-DmitryNeural") == ("edge", "ru-RU-DmitryNeural")
+
+
+def test_edge_backend_needs_no_models_dir(tmp_path: Path) -> None:
+    """У облачного движка нет моделей на диске."""
+    from jarvis.core.tts.backends import EdgeBackend
+
+    backend = build_backend("edge", tmp_path)
+    assert isinstance(backend, EdgeBackend)
+    assert backend.engine == "edge"
+
+
+def test_edge_speed_converted_from_length_scale(tmp_path: Path) -> None:
+    """Одна настройка скорости работает и для облачного движка.
+
+    В конфиге скорость задана как length_scale (больше — медленнее),
+    а сервису нужен процент отклонения.
+    """
+    normal = build_backend("edge", tmp_path, length_scale=1.0)
+    slow = build_backend("edge", tmp_path, length_scale=1.5)
+    fast = build_backend("edge", tmp_path, length_scale=0.5)
+
+    assert normal._rate == "+0%"
+    assert slow._rate.startswith("-")
+    assert fast._rate.startswith("+")

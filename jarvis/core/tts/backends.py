@@ -283,8 +283,93 @@ class XttsBackend:
         return _to_pcm16(samples), self._SAMPLE_RATE
 
 
+class EdgeBackend:
+    """Нейроголоса Microsoft Edge: самое естественное звучание из доступного.
+
+    Единственный движок здесь, который считает не у нас, а в облаке. Это
+    осознанный размен: локальные модели упираются в потолок естественности,
+    а этот звучит как диктор. Ключ не нужен, тариф не нужен.
+
+    Чем платим:
+
+    * нужен интернет — без него движок молчит, поэтому в конфиге разумно
+      держать локальный голос запасным;
+    * задержка около секунды на фразу против мгновенного Kokoro;
+    * реплики уходят на сторону Microsoft. Для команд студии это не секреты,
+      но знать об этом стоит.
+
+    Голос задаётся полным именем: ``ru-RU-DmitryNeural``, ``en-GB-RyanNeural``.
+    """
+
+    #: Во что декодируем ответ: MP3 приходит с переменной частотой.
+    _SAMPLE_RATE = 24000
+
+    def __init__(self, *, length_scale: float = 1.0) -> None:
+        self._length_scale = length_scale
+
+    @property
+    def engine(self) -> str:
+        """Имя движка."""
+        return "edge"
+
+    @property
+    def _rate(self) -> str:
+        """Скорость речи в формате, который понимает Edge.
+
+        В конфиге скорость задана как length_scale (больше — медленнее),
+        а здесь нужен процент отклонения. Пересчитываем, чтобы одна настройка
+        работала для всех движков.
+        """
+        percent = round((1.0 / max(self._length_scale, 0.1) - 1.0) * 100)
+        return f"{percent:+d}%"
+
+    def prepare(self, voice: str, language: str) -> None:
+        """Ничего не грузит: модель живёт на стороне сервиса."""
+        import edge_tts  # noqa: F401 — проверяем, что пакет на месте
+
+    def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
+        """Запросить синтез и декодировать MP3 в PCM."""
+        import asyncio
+
+        # Метод синхронный и выполняется в отдельном потоке worker'а, поэтому
+        # своя петля событий здесь безопасна — чужую мы не трогаем.
+        mp3 = asyncio.run(self._request(text, voice))
+        return self._decode(mp3), self._SAMPLE_RATE
+
+    async def _request(self, text: str, voice: str) -> bytes:
+        """Получить MP3 от сервиса."""
+        import edge_tts
+
+        communicate = edge_tts.Communicate(text, voice, rate=self._rate)
+        chunks: list[bytes] = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                chunks.append(chunk["data"])
+        if not chunks:
+            raise RuntimeError(f"Сервис не вернул звук для голоса {voice!r}")
+        return b"".join(chunks)
+
+    def _decode(self, mp3: bytes) -> bytes:
+        """Развернуть MP3 в моно-PCM 16 бит нужной частоты."""
+        import io
+
+        import av
+
+        container = av.open(io.BytesIO(mp3))
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=self._SAMPLE_RATE
+        )
+        pcm = bytearray()
+        for frame in container.decode(audio=0):
+            for resampled in resampler.resample(frame):
+                # У кадра ровно один план (моно), обрезаем по числу сэмплов:
+                # буфер бывает выровнен с запасом.
+                pcm += bytes(resampled.planes[0])[: resampled.samples * 2]
+        return bytes(pcm)
+
+
 #: Известные движки.
-BACKENDS = ("piper", "kokoro", "silero", "xtts")
+BACKENDS = ("piper", "kokoro", "silero", "xtts", "edge")
 
 
 def parse_voice(spec: str, *, default_engine: str = "piper") -> tuple[str, str]:
@@ -317,4 +402,6 @@ def build_backend(
         return SileroBackend(models_dir / "silero")
     if engine == "xtts":
         return XttsBackend(models_dir / "xtts", device=device)
+    if engine == "edge":
+        return EdgeBackend(length_scale=length_scale)
     return PiperBackend(models_dir / "piper", length_scale=length_scale)

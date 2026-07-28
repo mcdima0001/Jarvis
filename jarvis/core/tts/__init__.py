@@ -13,7 +13,15 @@ from jarvis.core.audio import AudioSink
 from jarvis.core.config import TTSConfig
 from jarvis.core.runtime import BlockingWorker
 
-from .backends import BACKENDS, KokoroBackend, PiperBackend, SileroBackend, parse_voice
+from .backends import (
+    BACKENDS,
+    EdgeBackend,
+    KokoroBackend,
+    PiperBackend,
+    SileroBackend,
+    XttsBackend,
+    parse_voice,
+)
 from .composite import CompositeTTS
 from .normalize import normalize_for_speech
 from .null import NullTTS
@@ -26,6 +34,8 @@ _REQUIREMENTS = {
     "piper": ("piper", "tts"),
     "kokoro": ("kokoro_onnx", "kokoro"),
     "silero": ("torch", "silero"),
+    "xtts": ("TTS", "xtts"),
+    "edge": ("edge_tts", "edge"),
 }
 
 
@@ -67,11 +77,13 @@ __all__ = [
     "BACKENDS",
     "TTS",
     "CompositeTTS",
+    "EdgeBackend",
     "KokoroBackend",
     "NullTTS",
     "PiperBackend",
     "SileroBackend",
     "Speech",
+    "XttsBackend",
     "build_tts",
     "normalize_for_speech",
     "parse_voice",
