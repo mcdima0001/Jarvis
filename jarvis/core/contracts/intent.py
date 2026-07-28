@@ -12,6 +12,23 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
+def detect_language(text: str, *, default: str = "ru") -> str:
+    """Определить язык текста по алфавиту.
+
+    Для голоса язык приходит от Whisper, а у текстового ввода (``--say``,
+    Telegram) его никто не сообщает. Считать буквы дешевле и надёжнее, чем
+    гадать: русский и английский используют разные алфавиты, и этого хватает.
+
+    :param text: реплика пользователя.
+    :param default: что вернуть, если букв нет вовсе.
+    """
+    cyrillic = sum(1 for char in text if "а" <= char.lower() <= "я" or char.lower() == "ё")
+    latin = sum(1 for char in text if "a" <= char.lower() <= "z")
+    if not cyrillic and not latin:
+        return default
+    return "ru" if cyrillic >= latin else "en"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Utterance:
     """Реплика пользователя — вход роутера."""

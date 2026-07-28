@@ -53,6 +53,27 @@ def _to_pcm16(samples: Any) -> bytes:
     return (np.clip(array, -1.0, 1.0) * _PCM16_SCALE).astype(np.int16).tobytes()
 
 
+def _run_blocking(coro: Any) -> Any:
+    """Выполнить корутину из синхронного кода, где бы он ни вызывался.
+
+    Интерфейс движков синхронный, а облачный клиент внутри асинхронный. Обычно
+    синтез идёт в потоке `BlockingWorker`, где своей петли нет и хватает
+    `asyncio.run`. Но служебные команды вроде ``--try-voice`` дёргают движок
+    прямо из корутины CLI — там петля уже крутится, и `asyncio.run` падает.
+    Поэтому в таком случае уводим работу в отдельный поток.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 class PiperBackend:
     """Piper: лёгкий и быстрый, отдельный файл модели на каждый голос."""
 
@@ -329,11 +350,7 @@ class EdgeBackend:
 
     def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
         """Запросить синтез и декодировать MP3 в PCM."""
-        import asyncio
-
-        # Метод синхронный и выполняется в отдельном потоке worker'а, поэтому
-        # своя петля событий здесь безопасна — чужую мы не трогаем.
-        mp3 = asyncio.run(self._request(text, voice))
+        mp3 = _run_blocking(self._request(text, voice))
         return self._decode(mp3), self._SAMPLE_RATE
 
     async def _request(self, text: str, voice: str) -> bytes:

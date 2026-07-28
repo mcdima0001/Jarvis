@@ -103,3 +103,30 @@ def test_edge_speed_converted_from_length_scale(tmp_path: Path) -> None:
     assert normal._rate == "+0%"
     assert slow._rate.startswith("-")
     assert fast._rate.startswith("+")
+
+
+async def test_edge_works_inside_running_loop() -> None:
+    """Облачный движок должен работать и когда петля уже крутится.
+
+    Интерфейс движков синхронный, а клиент внутри асинхронный. Обычно синтез
+    идёт в потоке worker'а, где своей петли нет. Но служебные команды вроде
+    --try-voice дёргают движок прямо из корутины CLI — и наивный asyncio.run
+    там падает с «cannot be called from a running event loop».
+    """
+    from jarvis.core.tts.backends import _run_blocking
+
+    async def work() -> str:
+        return "готово"
+
+    # Тест сам выполняется внутри петли — ровно та ситуация, что упала у CLI.
+    assert _run_blocking(work()) == "готово"
+
+
+def test_run_blocking_without_loop() -> None:
+    """Без активной петли корутина выполняется напрямую."""
+    from jarvis.core.tts.backends import _run_blocking
+
+    async def work() -> int:
+        return 42
+
+    assert _run_blocking(work()) == 42

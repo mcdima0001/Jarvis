@@ -19,7 +19,8 @@ from pathlib import Path
 from jarvis.core.app import JarvisApp
 from jarvis.core.assets import download_voice, list_voices, make_reference, preview_voices
 from jarvis.core.audio import list_devices
-from jarvis.core.config import DEFAULT_CONFIG_PATH, load_config
+from jarvis.core.config import DEFAULT_CONFIG_PATH, JarvisConfig, load_config
+from jarvis.core.contracts import detect_language
 from jarvis.core.errors import AudioError, ConfigError, JarvisError
 from jarvis.core.logging import setup_logging
 
@@ -93,13 +94,16 @@ async def _say(app: JarvisApp, text: str) -> int:
     await app.start()
     try:
         result = await app.say(text)
+        # Реплика бывает набором вариантов по языкам — выбираем нужный,
+        # иначе в консоль уезжает сырой словарь.
+        spoken = result.speech_for(detect_language(text, default=app.config.app.language))
         print()
         print(f"Команда:    {text}")
         print(f"Инструмент: {result.tool or '—'}")
         print(f"Итог:       {'успех' if result.ok else 'ошибка'} за {result.duration:.2f} с")
-        if result.speech:
-            print(f"Ответ:      {result.speech}")
-        if result.value is not None and result.value != result.speech:
+        if spoken:
+            print(f"Ответ:      {spoken}")
+        if result.value is not None and result.value != spoken:
             print(f"Значение:   {result.value}")
         if result.error:
             print(f"Ошибка:     {result.error}")
@@ -108,16 +112,16 @@ async def _say(app: JarvisApp, text: str) -> int:
     return 0 if result.ok else 1
 
 
-async def _amain(args: argparse.Namespace) -> int:
-    """Асинхронная часть запуска."""
-    config = load_config(args.config)
-    if args.log_level:
-        config = replace(config, logging=replace(config.logging, level=args.log_level))
+def _run_utility(args: argparse.Namespace, config: JarvisConfig) -> int | None:
+    """Выполнить служебный режим, если он запрошен.
 
-    logger = setup_logging(config.logging)
-    logger.info("Конфигурация загружена: %s", config.source)
+    Эти команды не поднимают приложение и работают **до** запуска event loop:
+    они синхронные, а часть из них внутри сама обращается к асинхронным
+    клиентам. Если запускать их из корутины, такой клиент упирается в уже
+    работающую петлю.
 
-    # Служебные режимы не поднимают приложение целиком.
+    :return: код возврата, либо ``None``, если служебный режим не запрошен.
+    """
     if args.devices:
         print(list_devices())
         return 0
@@ -133,7 +137,11 @@ async def _amain(args: argparse.Namespace) -> int:
     if args.try_voice:
         preview_voices(args.try_voice, config.tts.models_dir)
         return 0
+    return None
 
+
+async def _amain(config: JarvisConfig, args: argparse.Namespace) -> int:
+    """Асинхронная часть запуска: поднимает приложение."""
     app = JarvisApp.build(config)
 
     if args.check:
@@ -149,7 +157,18 @@ def main(argv: list[str] | None = None) -> int:
     """Синхронная точка входа."""
     args = _parse_args(argv)
     try:
-        return asyncio.run(_amain(args))
+        config = load_config(args.config)
+        if args.log_level:
+            config = replace(config, logging=replace(config.logging, level=args.log_level))
+
+        logger = setup_logging(config.logging)
+        logger.info("Конфигурация загружена: %s", config.source)
+
+        utility = _run_utility(args, config)
+        if utility is not None:
+            return utility
+
+        return asyncio.run(_amain(config, args))
     except KeyboardInterrupt:
         print("\nОстановлено пользователем")
         return 130

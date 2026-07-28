@@ -284,3 +284,17 @@ def test_voice_chosen_per_language() -> None:
     assert config.voice_for("ru") == ("ru", "ru_RU-denis-medium")
     # Немецкого голоса нет — лучше прочитать русским, чем промолчать.
     assert config.voice_for("de") == ("ru", "ru_RU-denis-medium")
+
+
+def test_language_detected_by_alphabet() -> None:
+    """У текстового ввода язык определяется по алфавиту."""
+    from jarvis.core.contracts import detect_language
+
+    assert detect_language("какая температура") == "ru"
+    assert detect_language("what's the temperature") == "en"
+    assert detect_language("Джарвис, включи свет") == "ru"
+    assert detect_language("Jarvis, turn on the light") == "en"
+    # Смешанное: побеждает преобладающий алфавит.
+    assert detect_language("открой OBS") == "ru"
+    # Без букв — берётся значение по умолчанию.
+    assert detect_language("42", default="en") == "en"

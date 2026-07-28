@@ -275,9 +275,15 @@ def preview_voices(names: list[str], models_dir: Path, *, text: str | None = Non
     :param models_dir: каталог из конфига ``tts.models_dir``.
     :param text: своя фраза вместо образца.
     """
-    import sounddevice as sd
-
     from jarvis.core.tts.backends import build_backend
+
+    try:
+        import sounddevice as sd
+    except Exception as exc:  # noqa: BLE001 — пакет падает уже при импорте
+        raise JarvisError(
+            f"Нет звукового устройства ({type(exc).__name__}: {exc}). "
+            f"Прослушивание голосов работает только там, где есть колонки."
+        ) from exc
 
     expanded: list[str] = []
     for name in names:

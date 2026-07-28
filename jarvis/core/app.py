@@ -19,7 +19,13 @@ from jarvis.core.builtin import NAMESPACE as CORE_NAMESPACE
 from jarvis.core.builtin import CoreTools
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import JarvisConfig
-from jarvis.core.contracts import SystemStarted, SystemStopping, ToolResult, Utterance
+from jarvis.core.contracts import (
+    SystemStarted,
+    SystemStopping,
+    ToolResult,
+    Utterance,
+    detect_language,
+)
 from jarvis.core.lifecycle import ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
 from jarvis.core.memory import Memory, build_memory
@@ -188,9 +194,25 @@ class JarvisApp:
 
     # --- работа ------------------------------------------------------------
 
-    async def say(self, text: str, *, source: str = "text") -> ToolResult:
-        """Обработать текстовую команду тем же путём, что и голосовую."""
-        return await self.pipeline.handle(Utterance(text=text, source=source))
+    async def say(
+        self,
+        text: str,
+        *,
+        source: str = "text",
+        language: str | None = None,
+    ) -> ToolResult:
+        """Обработать текстовую команду тем же путём, что и голосовую.
+
+        Язык у текста никто не сообщает — в отличие от голоса, где его даёт
+        Whisper. Определяем по алфавиту, чтобы ответ пришёл на языке вопроса.
+        """
+        return await self.pipeline.handle(
+            Utterance(
+                text=text,
+                language=language or detect_language(text, default=self.config.app.language),
+                source=source,
+            )
+        )
 
     def summary(self) -> str:
         """Человекочитаемый отчёт о состоянии сборки (режим ``--check``)."""
