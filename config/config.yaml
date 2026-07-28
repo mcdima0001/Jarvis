@@ -66,33 +66,49 @@ llm:
         HTTP-Referer: https://github.com/mcdima0001/Jarvis
         X-Title: Jarvis
   # Разные модели под разные задачи. Меняются на лету: llm.set_model("code", "...")
-  # Точные идентификаторы смотри на https://openrouter.ai/models
+  # Точные идентификаторы смотри на https://openrouter.ai/models — они бывают
+  # неочевидны: у Anthropic это claude-haiku-4.5 через ТОЧКУ, а не через дефис.
+  #
+  # Расход считается сам и виден в логе после каждого запроса, целиком — по
+  # команде «сколько потрачено». Дороже всего обходится intent: он срабатывает
+  # на каждой фразе, которую не узнали фразы и синонимы, и тащит с собой каталог
+  # инструментов (~2500 токенов). Поэтому здесь стоит самая дешёвая модель, а
+  # экономить лучше всего, добавляя фразы в скиллы — до модели они не доходят.
+  #
+  # Цены за миллион токенов на 28.07.2026, вход/выход:
+  #   qwen/qwen3.7-flash            0.03 / 0.13   — дёшево, поддерживает вызовы
+  #   google/gemini-2.5-flash-lite  0.10 / 0.40   — надёжнее на разборе команд
+  #   google/gemini-2.5-flash       0.30 / 2.50
+  #   anthropic/claude-haiku-4.5    1.00 / 5.00
+  #   anthropic/claude-sonnet-5     2.00 / 10.00  — было здесь раньше
   profiles:
     dialog:
       provider: openrouter
-      model: anthropic/claude-sonnet-5
+      model: google/gemini-2.5-flash
       temperature: 0.7
-      max_tokens: 1024
+      # Ответ произносится вслух: длинный никто не дослушает, а выход стоит
+      # в разы дороже входа. 1024 токена тут были запасом впустую.
+      max_tokens: 300
     code:
       provider: openrouter
-      model: anthropic/claude-opus-5
+      model: anthropic/claude-sonnet-5
       temperature: 0.2
       max_tokens: 4096
     summarize:
       provider: openrouter
-      model: anthropic/claude-haiku-4-5
+      model: google/gemini-2.5-flash-lite
       temperature: 0.3
-      max_tokens: 1024
-    intent:                   # самая дешёвая модель: только разбор команд
+      max_tokens: 300
+    intent:                   # самая частая и потому самая дорогая задача
       provider: openrouter
-      model: anthropic/claude-haiku-4-5
+      model: google/gemini-2.5-flash-lite
       temperature: 0.0
-      max_tokens: 512
+      max_tokens: 200
     analysis:
       provider: openrouter
-      model: anthropic/claude-sonnet-5
+      model: google/gemini-2.5-flash
       temperature: 0.4
-      max_tokens: 2048
+      max_tokens: 1024
 
 stt:
   engine: faster-whisper   # faster-whisper | null

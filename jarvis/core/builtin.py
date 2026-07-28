@@ -148,7 +148,7 @@ class CoreTools:
             },
         )
 
-    @tool(name="reload_skill")
+    @tool(name="reload_skill", routable=False)
     async def reload_skill(self, skill: str) -> ToolResult:
         """Перезагрузить скилл с диска без перезапуска приложения.
 
@@ -172,7 +172,7 @@ class CoreTools:
             },
         )
 
-    @tool(name="set_model")
+    @tool(name="set_model", routable=False)
     async def set_model(self, task: str, model: str) -> ToolResult:
         """Сменить модель для типа задач во время работы.
 
@@ -202,20 +202,58 @@ class CoreTools:
         """Показать состояние скиллов и подключённых моделей."""
         health = await self._skills.health()
         broken = [name for name, state in health.items() if not state.ok]
+        spending = self._llm.spending
         payload = {
             "skills": {name: state.ok for name, state in health.items()},
             "tools": len(self._registry),
             "models": self._llm.models(),
             "llm_available": self._llm.available,
+            "llm_calls": spending.calls,
+            "llm_tokens": spending.total_tokens,
+            "llm_cost": round(spending.cost, 5),
+            "llm_by_task": dict(spending.by_task),
         }
+        # Расход проговариваем только когда он есть: в тишине это лишний шум.
+        cost = ""
+        if spending.calls:
+            cost = (
+                f" Модель: {spending.calls} запросов, {spending.total_tokens} токенов."
+            )
         if broken:
             speech = {
-                "ru": f"Есть проблемы в модулях: {', '.join(broken)}.",
-                "en": f"Problems in modules: {', '.join(broken)}.",
+                "ru": f"Есть проблемы в модулях: {', '.join(broken)}.{cost}",
+                "en": f"Problems in modules: {', '.join(broken)}.{cost}",
             }
         else:
             speech = {
-                "ru": f"Всё работает: {len(health)} модулей, {len(self._registry)} команд.",
-                "en": f"All good: {len(health)} modules, {len(self._registry)} commands.",
+                "ru": f"Всё работает: {len(health)} модулей, "
+                      f"{len(self._registry)} команд.{cost}",
+                "en": f"All good: {len(health)} modules, "
+                      f"{len(self._registry)} commands.{cost}",
             }
         return ToolResult.success(payload, speech=speech)
+
+    @tool(name="spending", phrases=["сколько потрачено", "расход токенов",
+                                    "how much have you spent", "token usage"])
+    async def spending(self) -> ToolResult:
+        """Показать расход токенов с момента запуска."""
+        report = self._llm.spending
+        return ToolResult.success(
+            {
+                "calls": report.calls,
+                "prompt_tokens": report.prompt_tokens,
+                "completion_tokens": report.completion_tokens,
+                "cost": round(report.cost, 5),
+                "by_task": dict(report.by_task),
+            },
+            speech={
+                "ru": f"С запуска: {report.calls} запросов к модели, "
+                      f"{report.total_tokens} токенов."
+                if report.calls
+                else "Модель ещё ни разу не вызывалась.",
+                "en": f"Since start: {report.calls} model calls, "
+                      f"{report.total_tokens} tokens."
+                if report.calls
+                else "The model hasn't been called yet.",
+            },
+        )

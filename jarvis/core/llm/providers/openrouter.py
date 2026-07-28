@@ -68,6 +68,10 @@ class OpenRouterProvider:
             "messages": [message.as_dict() for message in request.messages],
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
+            # OpenRouter вернёт не только число токенов, но и цену запроса в
+            # долларах. Считать её самим — значит держать в коде прайс-лист и
+            # ошибаться при каждом его изменении.
+            "usage": {"include": True},
         }
         if request.tools:
             payload["tools"] = list(request.tools)

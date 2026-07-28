@@ -132,3 +132,70 @@ def test_registration_revoke_removes_tool(registry: ToolRegistry) -> None:
     for registration in registrations:
         registration.revoke()
     assert len(registry) == 0
+
+
+# --- экономия токенов -------------------------------------------------------
+
+
+def test_service_tools_hidden_from_model() -> None:
+    """Служебные инструменты не уходят в модель.
+
+    Каталог отправляется на каждой неузнанной фразе, поэтому каждый лишний
+    инструмент — это входные токены в каждом запросе. Голосом перезагрузку
+    скилла никто не просит, а по имени она по-прежнему доступна.
+    """
+
+    class Admin:
+        """Скилл с обычным и служебным инструментом."""
+
+        @tool(phrases=["включи свет"])
+        async def on(self) -> ToolResult:
+            """Включить свет."""
+            return ToolResult.success(True)
+
+        @tool(routable=False)
+        async def reload(self, skill: str) -> ToolResult:
+            """Перезагрузить скилл.
+
+            :param skill: имя скилла.
+            """
+            return ToolResult.success(True)
+
+    registry = ToolRegistry()
+    for item in collect_tools(Admin(), namespace="admin"):
+        registry.register(item)
+
+    catalog = registry.catalog()
+    names = {schema["function"]["name"] for schema in catalog.function_schemas()}
+
+    assert "admin__on" in names
+    assert "admin__reload" not in names
+    # Но вызвать его по имени всё ещё можно.
+    assert "admin.reload" in {spec.name for spec in catalog.specs}
+
+
+def test_spending_accumulates_by_task() -> None:
+    """Расход считается по задачам: видно, куда именно уходят токены."""
+    from jarvis.core.llm.service import Spending
+
+    spending = Spending()
+    spending.add("intent", {"prompt_tokens": 2400, "completion_tokens": 20, "cost": 0.00025})
+    spending.add("intent", {"prompt_tokens": 2400, "completion_tokens": 20, "cost": 0.00025})
+    spending.add("dialog", {"prompt_tokens": 300, "completion_tokens": 100})
+
+    assert spending.calls == 3
+    assert spending.total_tokens == 5240
+    assert spending.by_task["intent"] == 4840
+    assert round(spending.cost, 5) == 0.0005
+    assert "intent" in spending.summary()
+
+
+def test_spending_survives_missing_usage() -> None:
+    """Не всякий провайдер сообщает расход — счётчик не должен падать."""
+    from jarvis.core.llm.service import Spending
+
+    spending = Spending()
+    spending.add("dialog", {})
+
+    assert spending.calls == 1
+    assert spending.total_tokens == 0

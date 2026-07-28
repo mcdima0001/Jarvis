@@ -58,6 +58,16 @@ class LLMResolver:
             logger.warning("Модель предложила неизвестный инструмент %r", call.name)
             return None
 
+        # Подсказка на будущее: каждая такая фраза стоит денег, потому что
+        # тащит в модель весь каталог инструментов. Если формулировка
+        # повторяется — ей место в phrases скилла, и тогда она бесплатна.
+        logger.info(
+            "Фраза %r разобрана моделью в %s. Повторяется — добавь её в phrases скилла, "
+            "тогда обращения к модели не будет",
+            utterance.text,
+            tool_name,
+        )
+
         return Intent(
             tool=tool_name,
             arguments=call.arguments,

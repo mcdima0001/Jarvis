@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from jarvis.core.errors import LLMError, LLMNotConfigured
@@ -33,6 +34,50 @@ _SUMMARY_SYSTEM = (
 )
 
 
+@dataclass
+class Spending:
+    """Сколько израсходовано с момента запуска.
+
+    Токены не бесконечные, поэтому расход виден в логе после каждого запроса и
+    целиком — в `core.status`. Без счётчика любая экономия остаётся верой.
+    """
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    #: Стоимость в долларах — её сообщает сам OpenRouter, мы не считаем.
+    cost: float = 0.0
+    #: Разбивка по задачам: где именно уходит.
+    by_task: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def total_tokens(self) -> int:
+        """Всего токенов, вход плюс выход."""
+        return self.prompt_tokens + self.completion_tokens
+
+    def add(self, task: str, usage: Mapping[str, object]) -> None:
+        """Учесть один ответ модели."""
+        prompt = int(usage.get("prompt_tokens", 0) or 0)
+        completion = int(usage.get("completion_tokens", 0) or 0)
+        self.calls += 1
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.cost += float(usage.get("cost", 0.0) or 0.0)
+        self.by_task[task] = self.by_task.get(task, 0) + prompt + completion
+
+    def summary(self) -> str:
+        """Однострочный отчёт для статуса."""
+        if not self.calls:
+            return "модель ещё не вызывалась"
+        parts = ", ".join(
+            f"{task} {tokens}" for task, tokens in sorted(
+                self.by_task.items(), key=lambda item: -item[1]
+            )
+        )
+        money = f", ${self.cost:.4f}" if self.cost else ""
+        return f"{self.calls} запрос(ов), {self.total_tokens} токенов{money} ({parts})"
+
+
 class LLMService:
     """Задачи поверх набора провайдеров."""
 
@@ -44,6 +89,12 @@ class LLMService:
     ) -> None:
         self._providers = dict(providers)
         self._profiles = profiles
+        self._spending = Spending()
+
+    @property
+    def spending(self) -> Spending:
+        """Расход токенов с момента запуска."""
+        return self._spending
 
     @property
     def service_name(self) -> str:
@@ -118,7 +169,20 @@ class LLMService:
             tool_choice=tool_choice,
         )
         logger.debug("LLM запрос: задача=%s модель=%s", profile.task, profile.model)
-        return await provider.complete(request)
+        response = await provider.complete(request)
+
+        self._spending.add(profile.task, response.usage)
+        usage = response.usage
+        logger.info(
+            "LLM %s (%s): %s+%s токенов%s, всего за сеанс %s",
+            profile.task,
+            profile.model,
+            usage.get("prompt_tokens", "?"),
+            usage.get("completion_tokens", "?"),
+            f", ${float(usage['cost']):.5f}" if usage.get("cost") else "",
+            self._spending.total_tokens,
+        )
+        return response
 
     # --- задачи ------------------------------------------------------------
 

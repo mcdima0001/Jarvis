@@ -34,6 +34,7 @@ class _ToolMarker:
     description: str | None
     phrases: tuple[str, ...]
     timeout: float | None
+    routable: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -45,6 +46,10 @@ class ToolSpec:
     parameters: Mapping[str, Any]
     phrases: tuple[str, ...] = ()
     skill: str = ""
+    #: Показывать ли инструмент языковой модели при разборе команды.
+    #: Служебные операции голосом не вызывают, а место в каждом запросе они
+    #: занимают — каталог уезжает в модель целиком и на каждой фразе.
+    routable: bool = True
 
     def as_function_schema(self) -> dict[str, Any]:
         """Представление для function-calling API языковой модели."""
@@ -78,6 +83,7 @@ def tool(
     description: str | None = None,
     phrases: Sequence[str] = (),
     timeout: float | None = None,
+    routable: bool = True,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Пометить метод скилла как инструмент.
 
@@ -85,6 +91,10 @@ def tool(
     :param description: описание; по умолчанию — первая строка докстринга.
     :param phrases: фразы, по которым команду можно узнать без обращения к LLM.
     :param timeout: свой предел ожидания вместо общего из конфига.
+    :param routable: показывать ли инструмент языковой модели. Служебные
+        операции (перезагрузка скилла, смена модели) голосом не вызывают, а
+        каталог уходит в модель на каждой неузнанной фразе — и это платный
+        вход. Такие инструменты остаются доступны по точному имени и фразам.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -96,6 +106,7 @@ def tool(
                 description=description,
                 phrases=tuple(phrases),
                 timeout=timeout,
+                routable=routable,
             ),
         )
         return func
@@ -135,6 +146,7 @@ def collect_tools(instance: Any, *, namespace: str) -> list[Tool]:
                     parameters=build_schema(attribute),
                     phrases=marker.phrases,
                     skill=namespace,
+                    routable=marker.routable,
                 ),
                 handler=bound,
                 timeout=marker.timeout,
@@ -150,8 +162,13 @@ class ToolCatalog:
     specs: tuple[ToolSpec, ...] = field(default_factory=tuple)
 
     def function_schemas(self) -> list[dict[str, Any]]:
-        """Схемы всех инструментов для function-calling."""
-        return [spec.as_function_schema() for spec in self.specs]
+        """Схемы инструментов для function-calling.
+
+        Служебные (``routable=False``) не попадают: каталог уходит в модель на
+        каждой неузнанной фразе, и каждый лишний инструмент — это входные
+        токены в каждом запросе до конца жизни проекта.
+        """
+        return [spec.as_function_schema() for spec in self.specs if spec.routable]
 
     def describe(self) -> str:
         """Компактное текстовое описание каталога — для промпта."""

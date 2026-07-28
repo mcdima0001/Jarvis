@@ -38,6 +38,10 @@ _DDG_LINK = re.compile(r'<a[^>]+class="result-link"[^>]*href="([^"]+)"[^>]*>(.*?
 _DDG_SNIPPET = re.compile(r'class="result-snippet"[^>]*>(.*?)</td>', re.S)
 _TAGS = re.compile(r"<[^>]+>")
 
+#: Сколько символов выдержки отдавать модели на пересказ. Первого абзаца
+#: Википедии хватает на ответ в два-три предложения, а платим мы за каждый.
+_DIGEST_CHARS = 700
+
 
 def _plain(markup: str) -> str:
     """Выкинуть теги и восстановить HTML-мнемоники."""
@@ -270,8 +274,12 @@ class SearchSkill(Skill):
                 },
             )
 
+        # Выдержки обрезаются: ответ всё равно нужен в два-три предложения, а
+        # каждый лишний абзац — это входные токены в каждом таком вопросе.
         digest = "\n\n".join(
-            f"{page['title']}\n{page['snippet']}" for page in pages if page["snippet"]
+            f"{page['title']}\n{page['snippet'][:_DIGEST_CHARS]}"
+            for page in pages
+            if page["snippet"]
         )
         if not self.context.llm.available:
             # Без модели отдаём первый абзац как есть — это уже связный текст.
