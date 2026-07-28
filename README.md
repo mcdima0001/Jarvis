@@ -325,8 +325,8 @@ class TimerSkill(Skill):
 | STT (faster-whisper), TTS (5 движков) | работает |
 | VAD | энергетический с калибровкой; Silero VAD — на будущее |
 | Wake word | по тексту; openWakeWord — только протокол |
-| Скиллы Memory, Search, Weather | работают |
-| Скиллы ESP32/Windows/Telegram/YouTube | заглушки с `TODO` |
+| Скиллы Memory, Search, Weather, Windows | работают |
+| Скиллы ESP32/Telegram/YouTube | заглушки с `TODO` |
 
 Поиск и погода ключей не требуют: Википедия, DuckDuckGo и Open-Meteo отвечают
 без регистрации. Источники поиска перечисляются в
