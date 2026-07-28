@@ -127,6 +127,65 @@ async def test_mode_none_reacts_without_name(
     assert pipeline._extract_command("включи свет") == "включи свет"
 
 
+# --- своя речь --------------------------------------------------------------
+
+
+async def test_own_speech_is_not_captured(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Пока Jarvis говорит, микрофон не слушает.
+
+    Без этого получается петля: колонки произносят ответ, микрофон его слышит,
+    Whisper расшифровывает, и ассистент разбирает собственную реплику как
+    команду.
+    """
+    import asyncio
+
+    from jarvis.core.audio import AudioFrame
+
+    pipeline = _pipeline(registry, events)
+
+    class TalkingSource:
+        """Источник, который отдаёт громкие кадры без остановки."""
+
+        @property
+        def service_name(self) -> str:
+            return "fake"
+
+        async def start(self) -> None: ...
+
+        async def stop(self) -> None: ...
+
+        async def frames(self):
+            while True:
+                yield _frame(20000)
+                await asyncio.sleep(0)
+
+    pipeline._source = TalkingSource()
+    pipeline._speaking = True
+
+    task = asyncio.create_task(pipeline._listen())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert pipeline._pending.empty(), "своя речь не должна попадать на распознавание"
+
+
+async def test_mute_released_after_speaking(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """После реплики микрофон глохнет ещё на хвост и потом включается."""
+    pipeline = _pipeline(registry, events)
+    assert not pipeline._muted
+
+    await pipeline._say("Готово.")
+
+    assert pipeline._muted, "сразу после речи микрофон ещё заглушен"
+    pipeline._mute_until = 0.0
+    assert not pipeline._muted
+
+
 # --- VAD --------------------------------------------------------------------
 
 

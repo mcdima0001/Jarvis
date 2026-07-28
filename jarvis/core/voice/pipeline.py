@@ -74,6 +74,8 @@ class VoicePipeline:
         self._pending: asyncio.Queue[bytes] = asyncio.Queue(maxsize=_PENDING_LIMIT)
         self._tasks: list[asyncio.Task[None]] = []
         self._follow_up_until = 0.0
+        self._speaking = False
+        self._mute_until = 0.0
 
     @property
     def service_name(self) -> str:
@@ -126,11 +128,29 @@ class VoicePipeline:
         return result
 
     async def _say(self, text: str) -> None:
-        """Озвучить реплику и сообщить об этом в шину."""
-        await self._tts.say(text)
+        """Озвучить реплику, заглушив на это время микрофон.
+
+        Без этого получается акустическая петля: колонки произносят ответ,
+        микрофон его слышит, Whisper расшифровывает — и ассистент разбирает
+        собственную реплику как команду. В окне ответа, где имя не требуется,
+        он её ещё и выполнит.
+        """
+        self._speaking = True
+        try:
+            await self._tts.say(text)
+        finally:
+            # Колонки ещё звучат, плюс реверберация комнаты.
+            self._mute_until = time.time() + self._config.echo_tail_ms / 1000
+            self._speaking = False
+
         self._events.emit(
             AssistantReplied(source="voice", text=text, spoken=self._tts.ready)
         )
+
+    @property
+    def _muted(self) -> bool:
+        """Глушить ли сейчас микрофон (говорим сами или ещё звучит хвост)."""
+        return self._speaking or time.time() < self._mute_until
 
     @staticmethod
     def _describe(result: ToolResult) -> str:
@@ -151,6 +171,17 @@ class VoicePipeline:
 
         try:
             async for frame in self._source.frames():
+                # Пока говорим сами — кадры читаем, но выбрасываем: иначе
+                # очередь захвата забьётся собственной речью.
+                if self._muted:
+                    if speaking:
+                        logger.debug("Свою речь не слушаю, накопленное отбрасываю")
+                    buffer.clear()
+                    silence = 0
+                    speaking = False
+                    self._vad.reset()
+                    continue
+
                 if self._vad.is_speech(frame):
                     if not speaking:
                         logger.debug("Начало речи")

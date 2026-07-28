@@ -168,6 +168,9 @@ class AudioConfig:
     max_utterance_s: float = 15.0
     #: Минимальная длина фрагмента, который вообще имеет смысл распознавать.
     min_utterance_ms: int = 300
+    #: Сколько ещё глушить микрофон после своей реплики: колонки продолжают
+    #: звучать, а в комнате остаётся реверберация.
+    echo_tail_ms: int = 500
     vad: VADConfig = field(default_factory=VADConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
 
