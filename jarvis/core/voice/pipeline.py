@@ -23,7 +23,7 @@ import difflib
 import logging
 import time
 
-from jarvis.core.audio import VAD, AudioSink, AudioSource, WakeWord
+from jarvis.core.audio import VAD, AudioSink, AudioSource, WakeWord, load_sound
 from jarvis.core.bus import EventBus
 from jarvis.core.config import AudioConfig
 from jarvis.core.contracts import (
@@ -71,11 +71,19 @@ class VoicePipeline:
         self._events = events
         self._config = config
 
-        self._pending: asyncio.Queue[bytes] = asyncio.Queue(maxsize=_PENDING_LIMIT)
+        # Вместе со звуком храним момент, когда он прозвучал: окно ответа
+        # должно отсчитываться от речи, а не от того, когда до неё дошли руки.
+        self._pending: asyncio.Queue[tuple[bytes, float]] = asyncio.Queue(
+            maxsize=_PENDING_LIMIT
+        )
         self._tasks: list[asyncio.Task[None]] = []
         self._follow_up_until = 0.0
         self._speaking = False
         self._mute_until = 0.0
+        #: Отклик на распознанную команду: PCM и частота, либо None.
+        self._activation: tuple[bytes, int] | None = None
+        #: Ссылку держим, чтобы задачу не собрал сборщик мусора на полпути.
+        self._sound_task: asyncio.Task[None] | None = None
 
     @property
     def service_name(self) -> str:
@@ -86,6 +94,20 @@ class VoicePipeline:
         """Запустить прослушивание и разбор."""
         if self._tasks:
             return
+        # Звук читаем один раз при старте: раскодировать его на каждой команде
+        # значило бы добавлять задержку ровно там, где нужен мгновенный отклик.
+        if self._config.activation_sound is not None:
+            self._activation = await asyncio.to_thread(
+                load_sound, self._config.activation_sound
+            )
+            if self._activation is not None:
+                seconds = len(self._activation[0]) / 2 / self._activation[1]
+                logger.info(
+                    "Звук активации готов: %s (%.2f с)",
+                    self._config.activation_sound.name,
+                    seconds,
+                )
+
         self._tasks = [
             asyncio.create_task(self._listen(), name="voice-listen"),
             asyncio.create_task(self._consume(), name="voice-recognize"),
@@ -98,6 +120,8 @@ class VoicePipeline:
 
     async def stop(self) -> None:
         """Остановить прослушивание и разбор."""
+        if self._sound_task is not None:
+            self._sound_task.cancel()
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -155,6 +179,24 @@ class VoicePipeline:
         self._events.emit(
             AssistantReplied(source="voice", text=text, spoken=spoken and self._tts.ready)
         )
+
+    async def _play_activation(self) -> None:
+        """Отозваться коротким звуком на распознанную команду.
+
+        Микрофон на это время глушится так же, как на собственную речь: иначе
+        отклик попадёт в следующий фрагмент и Whisper начнёт искать в нём слова.
+        """
+        if self._activation is None:
+            return
+        audio, rate = self._activation
+        self._speaking = True
+        try:
+            await self._sink.play(audio, sample_rate=rate)
+        except Exception as exc:  # noqa: BLE001 — звук не повод рвать команду
+            logger.warning("Не удалось воспроизвести отклик: %s", exc)
+        finally:
+            self._mute_until = time.time() + self._config.echo_tail_ms / 1000
+            self._speaking = False
 
     @property
     def _muted(self) -> bool:
@@ -224,12 +266,19 @@ class VoicePipeline:
             logger.exception("Цикл прослушивания остановлен из-за ошибки")
 
     def _submit(self, audio: bytes) -> None:
-        """Отправить фрагмент на распознавание, не блокируя захват."""
+        """Отправить фрагмент на распознавание, не блокируя захват.
+
+        Вместе с фрагментом запоминается момент, когда он **начал** звучать.
+        Без этого окно ответа проверялось бы по времени разбора, а между речью
+        и разбором лежит распознавание — несколько секунд. Пока Whisper думал,
+        окно успевало закрыться, и ответ на «Слушаю» терялся.
+        """
         if len(audio) < self._config.min_utterance_bytes:
             logger.debug("Фрагмент слишком короткий (%d байт), пропускаю", len(audio))
             return
+        spoken_at = time.time() - len(audio) / 2 / self._config.sample_rate
         try:
-            self._pending.put_nowait(audio)
+            self._pending.put_nowait((audio, spoken_at))
         except asyncio.QueueFull:
             logger.warning("Не успеваю распознавать — фрагмент отброшен")
 
@@ -238,16 +287,21 @@ class VoicePipeline:
     async def _consume(self) -> None:
         """Разбирать накопленные фрагменты по одному."""
         while True:
-            audio = await self._pending.get()
+            audio, spoken_at = await self._pending.get()
             try:
-                await self._process(audio)
+                await self._process(audio, spoken_at)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Ошибка при разборе фрагмента")
 
-    async def _process(self, audio: bytes) -> None:
-        """Распознать фрагмент и обработать реплику."""
+    async def _process(self, audio: bytes, spoken_at: float) -> None:
+        """Распознать фрагмент и обработать реплику.
+
+        :param spoken_at: когда фраза прозвучала. Именно по этому времени
+            проверяется окно ответа: распознавание идёт секунды, и сверяться
+            с часами после него — значит закрывать окно раньше времени.
+        """
         seconds = len(audio) / 2 / self._config.sample_rate
         started = time.perf_counter()
         transcript = await self._stt.transcribe(audio, sample_rate=self._config.sample_rate)
@@ -262,7 +316,7 @@ class VoicePipeline:
             transcript.text,
         )
 
-        command = self._extract_command(transcript.text)
+        command = self._extract_command(transcript.text, spoken_at=spoken_at)
         if command is None:
             logger.debug("Обращения по имени нет — пропускаю")
             return
@@ -274,12 +328,22 @@ class VoicePipeline:
             self._events.emit(
                 WakeWordDetected(source="voice", phrase=self._config.wake_word.phrase)
             )
-            self._follow_up_until = time.time() + self._config.wake_word.follow_up_s
             reply = _LISTENING_REPLY.get(language.split("-")[0], _LISTENING_REPLY["ru"])
             await self._say(reply, language=language)
+            # Окно открывается только теперь, когда «Слушаю» отзвучало и стих
+            # хвост. Если отсчитывать от распознавания, треть времени съедает
+            # собственная реплика, и обещанные секунды оказываются короче.
+            self._follow_up_until = self._mute_until + self._config.wake_word.follow_up_s
+            logger.info(
+                "Жду команду без имени %.0f с", self._config.wake_word.follow_up_s
+            )
             return
 
         self._follow_up_until = 0.0
+        # Отклик играет параллельно с выполнением, а не до него: он говорит
+        # «услышал», и задерживать ради него саму команду незачем. Ответ всё
+        # равно прозвучит после — динамик занят по очереди.
+        self._sound_task = asyncio.create_task(self._play_activation())
         self._events.emit(
             VoiceCommandRecognized(
                 source="voice",
@@ -332,9 +396,11 @@ class VoicePipeline:
             )
         return False, cleaned
 
-    def _extract_command(self, text: str) -> str | None:
+    def _extract_command(self, text: str, *, spoken_at: float | None = None) -> str | None:
         """Решить, обращались ли к ассистенту, и вернуть команду.
 
+        :param spoken_at: когда фраза прозвучала; по умолчанию — сейчас
+            (текстовый ввод приходит без задержки на распознавание).
         :return: текст команды; пустая строка, если позвали только по имени;
             ``None``, если обращения не было и окно ответа закрыто.
         """
@@ -346,8 +412,12 @@ class VoicePipeline:
         if called:
             return command
 
-        if time.time() < self._follow_up_until:
-            logger.debug("Окно ответа открыто — имя не требуется")
+        moment = time.time() if spoken_at is None else spoken_at
+        if moment < self._follow_up_until:
+            logger.debug(
+                "Окно ответа открыто ещё %.1f с — имя не требуется",
+                self._follow_up_until - moment,
+            )
             return command
 
         return None

@@ -298,3 +298,104 @@ def test_language_detected_by_alphabet() -> None:
     assert detect_language("открой OBS") == "ru"
     # Без букв — берётся значение по умолчанию.
     assert detect_language("42", default="en") == "en"
+
+
+# --- окно ответа ------------------------------------------------------------
+
+
+def test_follow_up_measured_from_speech_not_from_parsing(
+    pipeline: VoicePipeline,
+) -> None:
+    """Окно отсчитывается от момента, когда фразу произнесли.
+
+    Настоящий сбой: между речью и разбором лежит распознавание — несколько
+    секунд. Если сверяться с часами после Whisper, окно успевает закрыться,
+    пока фраза ещё расшифровывается, и ответ на «Слушаю» теряется.
+    """
+    now = time.time()
+    pipeline._follow_up_until = now + 1.0
+
+    # Фраза прозвучала внутри окна, а разбирается уже после его закрытия.
+    assert pipeline._extract_command("включи свет", spoken_at=now) == "включи свет"
+    assert pipeline._extract_command("включи свет", spoken_at=now + 5) is None
+
+
+async def test_window_opens_after_the_reply_is_spoken(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Отсчёт начинается, когда «Слушаю» отзвучало и стих хвост.
+
+    Иначе собственная реплика и распознавание съедают часть обещанного
+    времени, и «шесть секунд» на деле оказываются короче.
+    """
+    import asyncio
+
+    from jarvis.core.stt import Transcript
+
+    class SlowNameSTT:
+        """Слышит одно имя и делает это не мгновенно, как настоящий Whisper."""
+
+        @property
+        def service_name(self) -> str:
+            return "fake-stt"
+
+        @property
+        def ready(self) -> bool:
+            return True
+
+        async def start(self) -> None: ...
+
+        async def stop(self) -> None: ...
+
+        async def transcribe(self, audio: bytes, *, sample_rate: int) -> Transcript:
+            await asyncio.sleep(0.05)
+            return Transcript(text="Джарвис", language="ru", confidence=1.0)
+
+    pipeline = _pipeline(registry, events, follow_up_s=6.0)
+    pipeline._stt = SlowNameSTT()
+
+    spoken_at = time.time()
+    await pipeline._process(b"\x00" * 32000, spoken_at)
+
+    # Окно открыто от «сейчас», а не от момента речи, случившегося раньше.
+    assert pipeline._follow_up_until >= pipeline._mute_until + 6.0
+    assert pipeline._follow_up_until > spoken_at + 6.0
+
+
+# --- звук активации ---------------------------------------------------------
+
+
+def test_silence_trimmed_from_sound() -> None:
+    """Хвост тишины в файле — это время, когда микрофон уже не слушает.
+
+    В activation.mp3 из корня проекта звук занимает 0.8 секунды из четырёх.
+    """
+    import array
+
+    from jarvis.core.audio import trim_silence
+
+    rate = 24000
+    quiet = array.array("h", [0] * rate)          # секунда тишины
+    loud = array.array("h", [8000, -8000] * 2400)  # 0.2 с звука
+    audio = (quiet + loud + quiet).tobytes()
+
+    trimmed = trim_silence(audio, rate)
+
+    # Остаётся сам звук плюс небольшой запас по краям, но не секунды тишины.
+    assert 0.2 <= len(trimmed) / 2 / rate <= 0.4
+
+
+def test_pure_silence_gives_nothing() -> None:
+    """Файл из одной тишины воспроизводить нечего."""
+    import array
+
+    from jarvis.core.audio import trim_silence
+
+    assert trim_silence(array.array("h", [0] * 24000).tobytes(), 24000) == b""
+
+
+def test_missing_sound_file_is_not_an_error(tmp_path) -> None:
+    """Отсутствие звука не должно мешать запуску: он необязателен."""
+    from jarvis.core.audio import load_sound
+
+    assert load_sound(tmp_path / "нет-такого.mp3") is None

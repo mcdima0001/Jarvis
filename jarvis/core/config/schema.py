@@ -223,6 +223,8 @@ class AudioConfig:
     #: Сколько ещё глушить микрофон после своей реплики: колонки продолжают
     #: звучать, а в комнате остаётся реверберация.
     echo_tail_ms: int = 500
+    #: Короткий звук-отклик, когда команда распознана. Пусто — молча.
+    activation_sound: Path | None = None
     vad: VADConfig = field(default_factory=VADConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
 

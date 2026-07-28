@@ -256,6 +256,11 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             max_utterance_s=float(audio.get("max_utterance_s", 15.0)),
             min_utterance_ms=int(audio.get("min_utterance_ms", 300)),
             echo_tail_ms=int(audio.get("echo_tail_ms", 500)),
+            activation_sound=(
+                _resolve(project_root, audio["activation_sound"])
+                if audio.get("activation_sound")
+                else None
+            ),
             vad=VADConfig(
                 engine=str(_section(audio, "vad").get("engine") or "energy"),
                 threshold=float(_section(audio, "vad").get("threshold", 0.0)),

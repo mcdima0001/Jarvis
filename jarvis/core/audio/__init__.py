@@ -10,6 +10,7 @@ from jarvis.core.errors import AudioError
 
 from .devices import SoundDeviceSink, SoundDeviceSource, list_devices
 from .null import AlwaysActiveWakeWord, NullAudioSink, NullAudioSource, PassthroughVAD
+from .sound import load_sound, trim_silence
 from .protocol import VAD, AudioFrame, AudioSink, AudioSource, WakeWord
 from .vad import EnergyVAD, frame_rms
 
@@ -102,6 +103,8 @@ def build_audio(config: AudioConfig) -> AudioStack:
 
 
 __all__ = [
+    "load_sound",
+    "trim_silence",
     "VAD",
     "AlwaysActiveWakeWord",
     "AudioFrame",
