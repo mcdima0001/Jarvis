@@ -111,6 +111,9 @@ class STTConfig:
     language: str = "ru"
     beam_size: int = 1
     models_dir: Path = Path("models/whisper")
+    #: Подсказка словаря. Имя «Джарвис» и названия программ модель сама по себе
+    #: слышит плохо («жаркость», «жар виск»); с подсказкой — уверенно.
+    initial_prompt: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -128,29 +131,65 @@ class TTSConfig:
 class VADConfig:
     """Детектор речи."""
 
-    engine: str | None = None
-    aggressiveness: int = 2
+    engine: str = "energy"
+    #: Порог громкости 0..1. Ноль включает автокалибровку по фону комнаты.
+    threshold: float = 0.0
+    #: Сколько секунд слушать фон перед калибровкой.
+    calibrate_seconds: float = 1.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WakeWordConfig:
     """Активационная фраза."""
 
-    engine: str | None = None
+    #: ``text`` — проверять по распознанному тексту, ``none`` — реагировать на всё.
+    mode: str = "text"
     phrase: str = "джарвис"
-    threshold: float = 0.5
+    #: Варианты, которые засчитываются как обращение без нечёткого сравнения.
+    aliases: tuple[str, ...] = ()
+    #: Насколько похожим должно быть первое слово (Whisper часто пишет имя иначе).
+    similarity: float = 0.7
+    #: Сколько секунд после голого «Джарвис» ждать команду без повторного имени.
+    follow_up_s: float = 10.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AudioConfig:
     """Захват и воспроизведение звука."""
 
+    engine: str = "sounddevice"
     input_device: str | int | None = None
     output_device: str | int | None = None
     sample_rate: int = 16000
     frame_ms: int = 30
+    #: Сколько тишины считать концом фразы.
+    silence_ms: int = 800
+    #: Предохранитель от бесконечной записи.
+    max_utterance_s: float = 15.0
+    #: Минимальная длина фрагмента, который вообще имеет смысл распознавать.
+    min_utterance_ms: int = 300
     vad: VADConfig = field(default_factory=VADConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
+
+    @property
+    def frame_bytes(self) -> int:
+        """Размер одного кадра в байтах (моно, 16 бит)."""
+        return int(self.sample_rate * self.frame_ms / 1000) * 2
+
+    @property
+    def silence_frames(self) -> int:
+        """Сколько подряд тихих кадров означают конец фразы."""
+        return max(1, int(self.silence_ms / self.frame_ms))
+
+    @property
+    def max_utterance_bytes(self) -> int:
+        """Максимальный размер накопленной фразы в байтах."""
+        return int(self.sample_rate * self.max_utterance_s) * 2
+
+    @property
+    def min_utterance_bytes(self) -> int:
+        """Минимальный размер фрагмента для распознавания."""
+        return int(self.sample_rate * self.min_utterance_ms / 1000) * 2
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -201,6 +201,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             language=str(stt.get("language", "ru")),
             beam_size=int(stt.get("beam_size", 1)),
             models_dir=_resolve(project_root, stt.get("models_dir", "models/whisper")),
+            initial_prompt=str(stt.get("initial_prompt") or ""),
         ),
         tts=TTSConfig(
             engine=str(tts.get("engine", "piper")),
@@ -210,18 +211,27 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             sample_rate=int(tts.get("sample_rate", 22050)),
         ),
         audio=AudioConfig(
+            engine=str(audio.get("engine", "sounddevice")),
             input_device=audio.get("input_device"),
             output_device=audio.get("output_device"),
             sample_rate=int(audio.get("sample_rate", 16000)),
             frame_ms=int(audio.get("frame_ms", 30)),
+            silence_ms=int(audio.get("silence_ms", 800)),
+            max_utterance_s=float(audio.get("max_utterance_s", 15.0)),
+            min_utterance_ms=int(audio.get("min_utterance_ms", 300)),
             vad=VADConfig(
-                engine=(_section(audio, "vad").get("engine") or None),
-                aggressiveness=int(_section(audio, "vad").get("aggressiveness", 2)),
+                engine=str(_section(audio, "vad").get("engine") or "energy"),
+                threshold=float(_section(audio, "vad").get("threshold", 0.0)),
+                calibrate_seconds=float(_section(audio, "vad").get("calibrate_seconds", 1.0)),
             ),
             wake_word=WakeWordConfig(
-                engine=(_section(audio, "wake_word").get("engine") or None),
+                mode=str(_section(audio, "wake_word").get("mode") or "text"),
                 phrase=str(_section(audio, "wake_word").get("phrase", "джарвис")),
-                threshold=float(_section(audio, "wake_word").get("threshold", 0.5)),
+                aliases=tuple(
+                    str(a).lower() for a in (_section(audio, "wake_word").get("aliases") or ())
+                ),
+                similarity=float(_section(audio, "wake_word").get("similarity", 0.7)),
+                follow_up_s=float(_section(audio, "wake_word").get("follow_up_s", 10.0)),
             ),
         ),
         memory=MemoryConfig(

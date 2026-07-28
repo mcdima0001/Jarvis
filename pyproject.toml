@@ -11,7 +11,7 @@ dependencies = [
 [project.optional-dependencies]
 stt = ["faster-whisper>=1.0"]
 tts = ["piper-tts>=1.2"]
-audio = ["sounddevice>=0.4", "numpy>=1.26"]
+audio = ["sounddevice>=0.4"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]

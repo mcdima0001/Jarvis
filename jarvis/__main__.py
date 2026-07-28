@@ -17,8 +17,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from jarvis.core.app import JarvisApp
+from jarvis.core.assets import download_voice, list_russian_voices
+from jarvis.core.audio import list_devices
 from jarvis.core.config import DEFAULT_CONFIG_PATH, load_config
-from jarvis.core.errors import ConfigError, JarvisError
+from jarvis.core.errors import AudioError, ConfigError, JarvisError
 from jarvis.core.logging import setup_logging
 
 
@@ -43,6 +45,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--say",
         metavar="ТЕКСТ",
         help="выполнить одну текстовую команду и выйти",
+    )
+    parser.add_argument(
+        "--devices",
+        action="store_true",
+        help="показать звуковые устройства и выйти",
+    )
+    parser.add_argument(
+        "--download-voice",
+        metavar="ГОЛОС",
+        nargs="?",
+        const="",
+        help="скачать голос Piper (без имени — показать список русских голосов)",
     )
     parser.add_argument(
         "--log-level",
@@ -91,6 +105,17 @@ async def _amain(args: argparse.Namespace) -> int:
     logger = setup_logging(config.logging)
     logger.info("Конфигурация загружена: %s", config.source)
 
+    # Служебные режимы не поднимают приложение целиком.
+    if args.devices:
+        print(list_devices())
+        return 0
+    if args.download_voice is not None:
+        if not args.download_voice:
+            print(list_russian_voices())
+            return 0
+        download_voice(args.download_voice, config.tts.models_dir)
+        return 0
+
     app = JarvisApp.build(config)
 
     if args.check:
@@ -113,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         return 2
+    except AudioError as exc:
+        print(f"Ошибка звука: {exc}", file=sys.stderr)
+        return 3
     except JarvisError as exc:
         logging.getLogger("jarvis").error("Ошибка: %s", exc)
         return 1

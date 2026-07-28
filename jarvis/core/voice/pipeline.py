@@ -1,7 +1,16 @@
-"""Голосовой конвейер: микрофон -> VAD -> wake word -> STT -> роутер -> TTS.
+"""Голосовой конвейер: микрофон -> VAD -> STT -> имя -> роутер -> TTS.
 
-Каждое звено — отдельный протокол, поэтому заменяется поштучно: поставить
-Silero вместо пропускающего VAD или другой STT можно, не трогая остальное.
+Каждое звено — отдельный протокол, поэтому заменяется поштучно.
+
+Два практических решения, которые видны только на живой речи:
+
+* **Распознавание не блокирует прослушивание.** Whisper работает секунды;
+  если ждать его в цикле чтения кадров, следующая фраза потеряется. Поэтому
+  фрагменты уходят в очередь, а разбирает их отдельная задача.
+* **Активация проверяется по тексту, а не по звуку.** Распознавание идёт
+  локально и бесплатно, так что дешевле расшифровать фразу и посмотреть, начата
+  ли она с имени, чем держать отдельную модель wake word. Сравнение нечёткое:
+  Whisper пишет то «Джарвис», то «Джарвес», то «Жарвис».
 
 Текстовая команда (``--say``, Telegram, веб) идёт по тому же пути начиная с
 роутера — общий код, одинаковое поведение.
@@ -10,10 +19,12 @@ Silero вместо пропускающего VAD или другой STT мо�
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import time
 
-from jarvis.core.audio import VAD, AudioFrame, AudioSink, AudioSource, WakeWord
+from jarvis.core.audio import VAD, AudioSink, AudioSource, WakeWord
+from jarvis.core.bus import EventBus
 from jarvis.core.config import AudioConfig
 from jarvis.core.contracts import (
     AssistantReplied,
@@ -22,17 +33,16 @@ from jarvis.core.contracts import (
     VoiceCommandRecognized,
     WakeWordDetected,
 )
-from jarvis.core.bus import EventBus
 from jarvis.core.router import Dispatcher
 from jarvis.core.stt import STT
 from jarvis.core.tts import TTS
 
 logger = logging.getLogger(__name__)
 
-#: Сколько кадров тишины подряд считать концом фразы.
-_SILENCE_FRAMES = 25
-#: Предохранитель от бесконечной записи, кадров.
-_MAX_FRAMES = 600
+#: Сколько фрагментов держать в очереди на распознавание.
+_PENDING_LIMIT = 2
+#: Ответ на голое обращение по имени.
+_LISTENING_REPLY = "Слушаю."
 
 
 class VoicePipeline:
@@ -60,7 +70,10 @@ class VoicePipeline:
         self._dispatcher = dispatcher
         self._events = events
         self._config = config
-        self._task: asyncio.Task[None] | None = None
+
+        self._pending: asyncio.Queue[bytes] = asyncio.Queue(maxsize=_PENDING_LIMIT)
+        self._tasks: list[asyncio.Task[None]] = []
+        self._follow_up_until = 0.0
 
     @property
     def service_name(self) -> str:
@@ -68,33 +81,56 @@ class VoicePipeline:
         return "voice"
 
     async def start(self) -> None:
-        """Запустить цикл прослушивания в фоне."""
-        if self._task is None:
-            self._task = asyncio.create_task(self._listen(), name="voice-pipeline")
-            logger.debug("Голосовой конвейер запущен")
+        """Запустить прослушивание и разбор."""
+        if self._tasks:
+            return
+        self._tasks = [
+            asyncio.create_task(self._listen(), name="voice-listen"),
+            asyncio.create_task(self._consume(), name="voice-recognize"),
+        ]
+        phrase = self._config.wake_word.phrase
+        if self._config.wake_word.mode == "text":
+            logger.info("Слушаю. Обращение по имени: «%s»", phrase)
+        else:
+            logger.info("Слушаю. Реагирую на любую распознанную фразу")
 
     async def stop(self) -> None:
-        """Остановить цикл прослушивания."""
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        """Остановить прослушивание и разбор."""
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
 
     # --- общий путь для голоса и текста ------------------------------------
 
     async def handle(self, utterance: Utterance) -> ToolResult:
-        """Провести реплику через роутер и озвучить ответ."""
+        """Провести реплику через роутер и озвучить ответ.
+
+        Обращение по имени вырезается независимо от источника: и «Джарвис,
+        включи свет» из микрофона, и то же самое текстом должны попасть в
+        роутер как «включи свет».
+        """
+        _, command = self._strip_wake(utterance.text)
+        if command != utterance.text:
+            utterance = Utterance(
+                text=command,
+                language=utterance.language,
+                confidence=utterance.confidence,
+                source=utterance.source,
+            )
         result = await self._dispatcher.handle(utterance)
         reply = result.speech or self._describe(result)
         if reply:
-            await self._tts.say(reply)
-            self._events.emit(
-                AssistantReplied(source="voice", text=reply, spoken=self._tts.ready)
-            )
+            await self._say(reply)
         return result
+
+    async def _say(self, text: str) -> None:
+        """Озвучить реплику и сообщить об этом в шину."""
+        await self._tts.say(text)
+        self._events.emit(
+            AssistantReplied(source="voice", text=text, spoken=self._tts.ready)
+        )
 
     @staticmethod
     def _describe(result: ToolResult) -> str:
@@ -105,58 +141,160 @@ class VoicePipeline:
             return "Готово."
         return str(result.value)
 
-    # --- цикл прослушивания ------------------------------------------------
+    # --- захват ------------------------------------------------------------
 
     async def _listen(self) -> None:
-        """Слушать микрофон и обрабатывать распознанные фразы."""
+        """Читать кадры и собирать из них фразы."""
         buffer = bytearray()
         silence = 0
-        armed = False
+        speaking = False
 
         try:
             async for frame in self._source.frames():
-                if not armed:
-                    if not self._wake_word.detect(frame):
-                        continue
-                    armed = True
-                    self._wake_word.reset()
-                    self._events.emit(
-                        WakeWordDetected(source="voice", phrase=self._wake_word.phrase)
-                    )
-
                 if self._vad.is_speech(frame):
+                    if not speaking:
+                        logger.debug("Начало речи")
                     buffer.extend(frame.data)
                     silence = 0
-                elif buffer:
-                    silence += 1
+                    speaking = True
+                    continue
 
-                too_long = len(buffer) >= _MAX_FRAMES * len(frame.data or b"\0")
-                if buffer and (silence >= _SILENCE_FRAMES or too_long):
-                    await self._process(bytes(buffer))
+                if not speaking:
+                    continue
+
+                # Немного тишины оставляем в конце: Whisper лучше слышит границу.
+                buffer.extend(frame.data)
+                silence += 1
+
+                too_long = len(buffer) >= self._config.max_utterance_bytes
+                if silence >= self._config.silence_frames or too_long:
+                    if too_long:
+                        logger.debug("Фраза достигла предела длины, отправляю как есть")
+                    self._submit(bytes(buffer))
                     buffer.clear()
                     silence = 0
-                    armed = False
+                    speaking = False
                     self._vad.reset()
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Голосовой конвейер остановлен из-за ошибки")
+            logger.exception("Цикл прослушивания остановлен из-за ошибки")
+
+    def _submit(self, audio: bytes) -> None:
+        """Отправить фрагмент на распознавание, не блокируя захват."""
+        if len(audio) < self._config.min_utterance_bytes:
+            logger.debug("Фрагмент слишком короткий (%d байт), пропускаю", len(audio))
+            return
+        try:
+            self._pending.put_nowait(audio)
+        except asyncio.QueueFull:
+            logger.warning("Не успеваю распознавать — фрагмент отброшен")
+
+    # --- распознавание и разбор --------------------------------------------
+
+    async def _consume(self) -> None:
+        """Разбирать накопленные фрагменты по одному."""
+        while True:
+            audio = await self._pending.get()
+            try:
+                await self._process(audio)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Ошибка при разборе фрагмента")
 
     async def _process(self, audio: bytes) -> None:
-        """Распознать накопленный фрагмент и обработать реплику."""
+        """Распознать фрагмент и обработать реплику."""
+        seconds = len(audio) / 2 / self._config.sample_rate
         started = time.perf_counter()
         transcript = await self._stt.transcribe(audio, sample_rate=self._config.sample_rate)
         if transcript.empty:
-            logger.debug("Распознавание не дало текста")
+            logger.debug("Фрагмент %.1f с не дал текста", seconds)
             return
 
-        logger.info("Распознано за %.2f с: %r", time.perf_counter() - started, transcript.text)
+        logger.info(
+            "Распознано (%.1f с речи за %.1f с): %r",
+            seconds,
+            time.perf_counter() - started,
+            transcript.text,
+        )
+
+        command = self._extract_command(transcript.text)
+        if command is None:
+            logger.debug("Обращения по имени нет — пропускаю")
+            return
+
+        if not command:
+            # Позвали по имени и замолчали: отвечаем и ждём команду без имени.
+            self._events.emit(
+                WakeWordDetected(source="voice", phrase=self._config.wake_word.phrase)
+            )
+            self._follow_up_until = time.time() + self._config.wake_word.follow_up_s
+            await self._say(_LISTENING_REPLY)
+            return
+
+        self._follow_up_until = 0.0
         self._events.emit(
             VoiceCommandRecognized(
                 source="voice",
-                text=transcript.text,
+                text=command,
                 confidence=transcript.confidence,
                 language=transcript.language,
             )
         )
-        await self.handle(Utterance(text=transcript.text, source="voice"))
+        await self.handle(Utterance(text=command, source="voice"))
+
+    def _strip_wake(self, text: str) -> tuple[bool, str]:
+        """Отделить обращение по имени от самой команды.
+
+        :return: пара «звали по имени» и текст команды без имени.
+        """
+        settings = self._config.wake_word
+        cleaned = " ".join(text.split()).strip(" .,!?;:")
+        words = cleaned.split()
+        if not words:
+            return False, ""
+
+        first = words[0].lower().strip(" .,!?;:—-")
+        remainder = " ".join(words[1:]).strip(" ,")
+
+        if first in settings.aliases:
+            logger.debug("Имя распознано по списку вариантов: %r", first)
+            return True, remainder
+
+        ratio = difflib.SequenceMatcher(None, first, settings.phrase.lower()).ratio()
+        if ratio >= settings.similarity:
+            logger.debug("Имя распознано: %r (похожесть %.2f)", first, ratio)
+            return True, remainder
+
+        # Почти совпало — скорее всего звали, но модель ослышалась.
+        # Показываем на уровне INFO: иначе непонятно, почему ассистент молчит.
+        if ratio >= 0.45:
+            logger.info(
+                "Похоже на обращение, но не уверен: %r ~ %r (%.2f). "
+                "Добавь вариант в audio.wake_word.aliases, если повторяется",
+                first,
+                settings.phrase,
+                ratio,
+            )
+        return False, cleaned
+
+    def _extract_command(self, text: str) -> str | None:
+        """Решить, обращались ли к ассистенту, и вернуть команду.
+
+        :return: текст команды; пустая строка, если позвали только по имени;
+            ``None``, если обращения не было и окно ответа закрыто.
+        """
+        called, command = self._strip_wake(text)
+
+        if self._config.wake_word.mode != "text":
+            return command if called else text.strip()
+
+        if called:
+            return command
+
+        if time.time() < self._follow_up_until:
+            logger.debug("Окно ответа открыто — имя не требуется")
+            return command
+
+        return None

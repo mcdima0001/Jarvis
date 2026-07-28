@@ -84,32 +84,48 @@ llm:
 
 stt:
   engine: faster-whisper   # faster-whisper | null
-  model: base              # tiny | base | small | medium | large-v3
-  device: auto             # auto | cpu | cuda
-  compute_type: int8       # int8 — быстрее на CPU, float16 — точнее на GPU
+  # tiny | base | small | medium | large-v3 — меняется одной строкой.
+  # small — разумный компромисс; на GTX можно смело ставить medium.
+  model: small
+  device: auto             # auto | cpu | cuda — auto сам найдёт видеокарту
+  compute_type: auto       # auto = float16 на GPU, int8 на CPU
   language: ru
   beam_size: 1             # 1 = максимальная скорость
   models_dir: models/whisper
+  # Подсказка словаря. Без неё Whisper слышит «жаркость» вместо «Джарвис»:
+  # имя редкое и не входит в обычный словарь. Сюда же — названия программ.
+  initial_prompt: "Джарвис, ассистент студии. Steam, OBS, XLR, ESP32."
 
 tts:
   engine: piper            # piper | null
-  voice: ru_RU-irina-medium
+  # Скачать: python -m jarvis --download-voice ru_RU-dmitri-medium
+  # Список:  python -m jarvis --download-voice
+  voice: ru_RU-dmitri-medium
   models_dir: models/piper
   length_scale: 1.0        # <1 быстрее речь, >1 медленнее
-  sample_rate: 22050
+  sample_rate: 22050       # подсказка; настоящую частоту задаёт сам голос
 
 audio:
-  input_device: null       # null = устройство по умолчанию
+  engine: sounddevice      # sounddevice | null (null — работа без звука)
+  input_device: null       # null = по умолчанию; номер или имя из --devices
   output_device: null
-  sample_rate: 16000
+  sample_rate: 16000       # Whisper работает на 16 кГц
   frame_ms: 30
+  silence_ms: 800          # столько тишины считается концом фразы
+  max_utterance_s: 15.0    # предохранитель от бесконечной записи
+  min_utterance_ms: 300    # короче — не распознаём, это щелчок или кашель
   vad:
-    engine: null           # null пропускает всё; сюда встанет silero
-    aggressiveness: 2
+    engine: energy         # energy | null; сюда же встанет silero
+    threshold: 0.0         # 0 = замерить фон комнаты и выставить порог самому
+    calibrate_seconds: 1.0
   wake_word:
-    engine: null           # null = без активационной фразы
+    mode: text             # text — реагировать только на обращение по имени
     phrase: джарвис
-    threshold: 0.5
+    # Подстраховка: варианты, которые засчитываются как обращение.
+    # Если в логе повторяется «Похоже на обращение» — допиши услышанное сюда.
+    aliases: [жарвис, джарвес, жарвиз, дживс, жаркость]
+    similarity: 0.7
+    follow_up_s: 10.0      # после голого «Джарвис» ждать команду без имени
 
 memory:
   dir: memory
