@@ -9,6 +9,7 @@ import pytest
 from jarvis.core.contracts import ToolResult
 from jarvis.core.errors import ToolNotFound
 from jarvis.core.tools import ToolRegistry, collect_tools, tool
+from jarvis.core.tools.schema import validate_arguments
 
 
 class Demo:
@@ -199,3 +200,66 @@ def test_spending_survives_missing_usage() -> None:
 
     assert spending.calls == 1
     assert spending.total_tokens == 0
+
+
+# --- числа из речи ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("spoken", "expected"),
+    [
+        ("50", 50),
+        ("на 50", 50),          # шаблон «громкость {level}» отдаёт «на 50»
+        ("до 50", 50),
+        ("50 процентов", 50),
+        ("на 50 процентов", 50),
+        ("пятьдесят", 50),      # Whisper пишет числа то цифрами, то прописью
+        ("двадцать пять", 25),
+        ("fifty", 50),
+        ("-10", -10),
+    ],
+)
+def test_number_extracted_from_speech(spoken: str, expected: int) -> None:
+    """Число из речи приходит с лишними словами вокруг.
+
+    Настоящий случай: «Джарвис, громкость на 50» — шаблон «громкость {level}»
+    передаёт в аргумент «на 50», и строгое приведение типа отбивало команду.
+    Требовать от человека говорить ровно как в шаблоне бессмысленно.
+    """
+    schema = {
+        "type": "object",
+        "properties": {"level": {"type": "integer"}},
+        "required": ["level"],
+        "additionalProperties": False,
+    }
+    assert validate_arguments(schema, {"level": spoken}) == {"level": expected}
+
+
+@pytest.mark.parametrize("spoken", ["громкость", "хрень какая-то", "на 50 и 70", ""])
+def test_ambiguous_numbers_refused(spoken: str) -> None:
+    """Если числа нет или их несколько — отказ, а не догадка.
+
+    Выбрать одно из двух названных чисел наугад хуже, чем переспросить.
+    """
+    from jarvis.core.errors import ToolInvalidArguments
+
+    schema = {
+        "type": "object",
+        "properties": {"level": {"type": "integer"}},
+        "required": ["level"],
+        "additionalProperties": False,
+    }
+    with pytest.raises(ToolInvalidArguments):
+        validate_arguments(schema, {"level": spoken})
+
+
+def test_plain_numbers_still_work() -> None:
+    """Обычные числа от LLM разбираются без изменений."""
+    schema = {
+        "type": "object",
+        "properties": {"level": {"type": "integer"}, "ratio": {"type": "number"}},
+        "required": [],
+        "additionalProperties": False,
+    }
+    assert validate_arguments(schema, {"level": 50, "ratio": 0.5}) == {"level": 50, "ratio": 0.5}
+    assert validate_arguments(schema, {"level": "50"}) == {"level": 50}

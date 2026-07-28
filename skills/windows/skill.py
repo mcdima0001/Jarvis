@@ -573,7 +573,8 @@ class WindowsSkill(Skill):
             },
         )
 
-    @tool(phrases=["поставь громкость {level}", "громкость {level}",
+    @tool(phrases=["поставь громкость {level}", "сделай громкость {level}",
+                   "громкость {level}", "звук {level}",
                    "set volume to {level}", "volume {level}"])
     async def set_volume(self, level: int) -> ToolResult:
         """Установить громкость системы.

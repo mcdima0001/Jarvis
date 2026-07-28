@@ -14,6 +14,7 @@ import types
 import typing
 from typing import Any, Callable, Mapping, get_args, get_origin, get_type_hints
 
+from jarvis.core.contracts.intent import parse_number
 from jarvis.core.errors import ToolInvalidArguments
 
 # ":param имя: описание" — тот же стиль, что и во всём проекте.
@@ -108,6 +109,26 @@ def build_schema(func: Callable[..., Any]) -> dict[str, Any]:
     }
 
 
+def _number(value: Any, *, field: str, kind: str) -> float:
+    """Получить число из того, что прислал резолвер.
+
+    Из речи число приходит не одиноким: шаблон «громкость {level}» на фразе
+    «громкость на 50» отдаёт в аргумент «на 50». Сначала пробуем разобрать
+    значение как есть, и только если не вышло — вытаскиваем число из текста.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+
+    parsed = parse_number(str(value)) if isinstance(value, str) else None
+    if parsed is None:
+        raise ToolInvalidArguments(
+            f"Параметр {field!r}: ожидался тип {kind}, получено {value!r}"
+        )
+    return parsed
+
+
 def _coerce(value: Any, schema: Mapping[str, Any], *, field: str) -> Any:
     """Мягко привести значение к типу из схемы.
 
@@ -121,9 +142,13 @@ def _coerce(value: Any, schema: Mapping[str, Any], *, field: str) -> Any:
         if kind == "string":
             return value if isinstance(value, str) else str(value)
         if kind == "integer":
-            return value if isinstance(value, int) and not isinstance(value, bool) else int(value)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+            return int(_number(value, field=field, kind=kind))
         if kind == "number":
-            return value if isinstance(value, (int, float)) else float(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return value
+            return _number(value, field=field, kind=kind)
         if kind == "boolean":
             if isinstance(value, bool):
                 return value
