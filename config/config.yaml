@@ -122,8 +122,8 @@ tts:
   #   python -m jarvis --try-voice jarvis   # британские локальные
   #   python -m jarvis --download-voice     # полный список
   voices:
-    ru: vosk:male_0
-    en: kokoro:bm_george
+    ru: vosk:male_1
+    en: xtts:male_1
     # Один тембр на обоих языках: XTTS договаривает вставки голосом с образца.
     # Основной язык русский, поэтому эталон снимается с русского голоса:
     #   python -m jarvis --make-reference vosk:male_0
