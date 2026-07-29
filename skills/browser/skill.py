@@ -951,13 +951,16 @@ class BrowserSkill(Skill):
     # скилл `page` — про то, что делать внутри страницы.
 
     @tool(routable=False)
-    async def page_target(self, site: str = "") -> ToolResult:
+    async def page_target(self, site: str = "", active: bool = False) -> ToolResult:
         """Сказать, к какой вкладке относится команда о странице.
 
         :param site: название сайта; пусто — та вкладка, откуда идёт звук, а
             если тихо везде — та, в которой сейчас работают.
+        :param active: брать вкладку в фокусе, даже если звук идёт из другой.
+            «Нажми первую ссылку» относится к тому, куда смотрят, а не к тому,
+            что играет в соседнем окне.
         """
-        return await self._page_call("target", {}, site=site, tab=0)
+        return await self._page_call("target", {"active": active}, site=site, tab=0)
 
     @tool(routable=False)
     async def page_run(self, plan: list[dict], site: str = "", tab: int = 0) -> ToolResult:

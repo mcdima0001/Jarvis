@@ -49,6 +49,31 @@ from jarvis.core.voice import VoicePipeline
 logger = logging.getLogger(__name__)
 
 
+def _quiet_broken_connections() -> None:
+    """Не показывать стек, когда собеседник просто закрыл соединение.
+
+    Расширение браузера отключается когда угодно — служебный поток уснул,
+    вкладка закрылась, браузер вышел. На Windows это прилетает уже после
+    закрытия транспорта, в служебном обработчике asyncio, и тот печатает
+    полный стек `ConnectionResetError`. Событие рядовое, а выглядит как
+    авария; в логе, который читают глазами, это дороже, чем кажется.
+    """
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def handler(target: asyncio.AbstractEventLoop, context: dict) -> None:
+        error = context.get("exception")
+        if isinstance(error, (ConnectionResetError, ConnectionAbortedError)):
+            logger.debug("Соединение оборвал собеседник: %s", error)
+            return
+        if previous is None:
+            target.default_exception_handler(context)
+        else:
+            previous(target, context)
+
+    loop.set_exception_handler(handler)
+
+
 @dataclass(slots=True)
 class JarvisApp:
     """Собранное приложение и его жизненный цикл."""
@@ -184,6 +209,7 @@ class JarvisApp:
             система собирается за секунду вместо двух минут — этого хватает,
             чтобы проверить конфиг, скиллы и каталог инструментов.
         """
+        _quiet_broken_connections()
         await self.runner.start_all(skip_heavy=not models)
         self.models_loaded = models
 

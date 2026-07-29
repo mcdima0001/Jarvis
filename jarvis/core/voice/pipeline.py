@@ -179,6 +179,10 @@ class VoicePipeline:
         """
         if not text:
             return
+        # Что именно сказал ассистент, по логу иначе не восстановить: в нём
+        # видно команду и её результат, а произнесённой фразы — нет. А разбирать
+        # приходится как раз расхождение между ними.
+        logger.info("Отвечаю: %s", text)
         self._speaking = True
         spoken = True
         try:
@@ -188,7 +192,6 @@ class VoicePipeline:
             # хотя бы видно в логе, и ассистент продолжает слушать.
             spoken = False
             logger.error("Не удалось озвучить реплику (%s): %s", type(exc).__name__, exc)
-            logger.info("Ответ (без голоса): %s", text)
         finally:
             # Колонки ещё звучат, плюс реверберация комнаты.
             self._mute_until = time.time() + self._config.echo_tail_ms / 1000

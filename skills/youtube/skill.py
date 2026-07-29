@@ -50,18 +50,18 @@ class YouTubeSkill(Skill):
         )
 
     @tool(phrases=["включи видео {query}", "поставь {query} на ютубе",
+                   "включи на ютубе {query}", "включи трейлер {query}",
                    "play {query} on youtube"])
     async def play_video(self, query: str) -> ToolResult:
-        """Найти видео и запустить его на компьютере студии.
+        """Найти видео на YouTube и включить первое из найденного.
 
-        Пример вызова чужого инструмента по имени: скилл не импортирует
-        BrowserSkill, а просит реестр выполнить нужную команду. Собирать ссылку
-        и открывать её самому не нужно — этим занимается браузерный скилл, и он
-        же кодирует запрос.
+        Пример вызова чужих инструментов по имени: скилл не импортирует ни
+        браузер, ни страницу, а просит реестр выполнить две команды подряд —
+        открыть выдачу и нажать первый ролик. Ключ API для этого не нужен:
+        выдачу открывает браузер, а нажимает расширение.
 
         :param query: название или поисковый запрос.
         """
-        # TODO: получить прямую ссылку на видео через search_video и открывать её
         if not self.tools.has("browser.search"):
             return ToolResult.failure(
                 "открывать ссылки умеет скилл browser, а он не подключён",
@@ -73,9 +73,29 @@ class YouTubeSkill(Skill):
         )
         if not result.ok:
             return result
+
+        # Нажать первый ролик умеет скилл страницы, и только с расширением.
+        # Не вышло — выдача всё равно открыта, поэтому это не провал команды, а
+        # другой ответ: обещать «включаю», когда играть нечего, нельзя.
+        played = (
+            await self.tools.invoke("page.open_first", {})
+            if self.tools.has("page.open_first")
+            else None
+        )
+        if played is not None and played.ok:
+            return ToolResult.success(
+                {"query": query, **(played.value if isinstance(played.value, dict) else {})},
+                speech={"ru": f"Включаю {query}.", "en": f"Playing {query}."},
+            )
+
+        self.log.info("Ролик сам не включился (%s) — оставляю выдачу открытой",
+                      played.error if played is not None else "нет скилла page")
         return ToolResult.success(
             result.value,
-            speech={"ru": f"Включаю {query}.", "en": f"Playing {query}."},
+            speech={
+                "ru": f"Нашёл на Ютубе: {query}. Скажи «включи первое видео».",
+                "en": f"Found {query} on YouTube. Say “play the first video”.",
+            },
         )
 
     # Пауза жила здесь заглушкой: отвечала «Пауза.» и не делала ничего.

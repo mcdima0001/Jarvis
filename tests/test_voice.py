@@ -137,6 +137,34 @@ async def test_handle_strips_name_for_text_input(pipeline: VoicePipeline) -> Non
     assert result.tool == "lights.on"
 
 
+async def test_reply_lands_in_the_log(
+    pipeline: VoicePipeline, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Сказанное ассистентом видно в логе.
+
+    Иначе по логу восстанавливается только команда и её результат, а
+    произнесённая фраза — нет. Разбирать же приходится ровно расхождение
+    между ними: «сказал, что включил» против «ничего не включилось».
+    """
+    with caplog.at_level("INFO", logger="jarvis.core.voice.pipeline"):
+        await pipeline.handle(Utterance(text="Джарвис, включи свет", source="text"))
+
+    assert "Отвечаю: Свет включён." in caplog.text
+
+
+async def test_chat_never_pretends_to_act() -> None:
+    """Свободный разговор обязан честно признаваться, что ничего не делает.
+
+    Сюда попадают только реплики, которые не удалось выполнить командой. Модель
+    же охотно отвечает «включаю видео» — и получается ассистент, который
+    отчитывается о работе, которой не было. Поймано на живой демонстрации.
+    """
+    from jarvis.core.builtin import _DIALOG_SYSTEM
+
+    assert "не отвечай «включаю»" in _DIALOG_SYSTEM["ru"]
+    assert "no actions" in _DIALOG_SYSTEM["en"] or "perform no actions" in _DIALOG_SYSTEM["en"]
+
+
 async def test_mode_none_reacts_without_name(
     registry: ToolRegistry, events: LocalEventBus
 ) -> None:

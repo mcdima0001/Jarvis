@@ -208,9 +208,9 @@ class FakeBrowserSkill(Skill):
     meta = SkillMeta(name="browser", description="Подделка браузера")
 
     @tool(routable=False)
-    async def page_target(self, site: str = "") -> ToolResult:
+    async def page_target(self, site: str = "", active: bool = False) -> ToolResult:
         """Вкладка, к которой относится команда."""
-        CALLS.append(("target", site))
+        CALLS.append(("target", site, active))
         if site and site in MISSING:
             return ToolResult.failure("нет подходящей вкладки")
         return ToolResult.success(dict(TARGET))
@@ -227,6 +227,12 @@ class FakeBrowserSkill(Skill):
         """Кнопки страницы."""
         CALLS.append(("probe", tab))
         return ToolResult.success({"controls": [dict(item) for item in CONTROLS]})
+
+    @tool()
+    async def search(self, query: str, engine: str = "") -> ToolResult:
+        """Открыть выдачу поиска."""
+        CALLS.append(("search", query, engine))
+        return ToolResult.success({"query": query, "engine": engine})
 '''
 
 
@@ -288,6 +294,9 @@ def loaded(tmp_path: Path, sites_memory, smart_llm: LLMService):
     directory = tmp_path / "skills"
     directory.mkdir()
     shutil.copy(_ROOT / "skills" / "page" / "skill.py", directory / "page.py")
+    # YouTube тут настоящий: «включи трейлер X» — это две команды подряд,
+    # поиск и нажатие первого ролика, и связка проверяется целиком.
+    shutil.copy(_ROOT / "skills" / "youtube" / "skill.py", directory / "youtube.py")
     (directory / "browser.py").write_text(_FAKE_BROWSER, encoding="utf-8")
 
     events = LocalEventBus()
@@ -434,6 +443,86 @@ async def test_press_does_not_wander_to_another_site(loaded) -> None:
     assert not result.ok
     assert [call[0] for call in fake.CALLS] == ["target"]
     fake.MISSING.clear()
+    await manager.stop()
+
+
+async def test_first_video_looks_where_you_look(loaded) -> None:
+    """«Включи первое видео» относится к вкладке в фокусе, а не к звучащей.
+
+    Команда идёт следом за поиском, а музыка в это время может играть в
+    соседнем окне — нажимать надо там, куда смотрят.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.TARGET["url"] = "https://www.youtube.com/results?search_query=мегамозг"
+    fake.REPLIES[:] = [{"done": "click", "detail": "Мегамозг, трейлер"}]
+
+    result = await registry.invoke("page.open_first")
+
+    assert result.ok
+    assert fake.CALLS[0] == ("target", "", True), "нужна вкладка в фокусе"
+    assert fake.CALLS[1][1][0]["click"][0].startswith("ytd-video-renderer")
+    fake.TARGET["url"] = "https://music.yandex.ru/home"
+    await manager.stop()
+
+
+async def test_pause_follows_the_sound(loaded) -> None:
+    """А «пауза», наоборот, идёт туда, откуда звук."""
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "media", "detail": "пауза"}]
+
+    await registry.invoke("page.pause")
+
+    assert fake.CALLS[0] == ("target", "", False)
+    await manager.stop()
+
+
+async def test_youtube_plays_the_first_result(loaded) -> None:
+    """«Включи трейлер X» открывает выдачу и нажимает первый ролик.
+
+    Ключ API для этого не нужен: выдачу открывает браузер, нажимает
+    расширение. Скиллы друг друга не импортируют — только зовут по имени.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.CONTROLS.clear()
+    fake.TARGET["url"] = "https://www.youtube.com/results?search_query=мегамозг"
+    fake.REPLIES[:] = [{"done": "click", "detail": "Мегамозг, трейлер"}]
+
+    result = await registry.invoke("youtube.play_video", {"query": "трейлер мегамозг"})
+
+    assert result.ok
+    assert result.speech_for("ru").startswith("Включаю")
+    assert [call[0] for call in fake.CALLS] == ["search", "target", "run"]
+    assert fake.CALLS[0][2] == "youtube"
+    fake.TARGET["url"] = "https://music.yandex.ru/home"
+    await manager.stop()
+
+
+async def test_youtube_does_not_promise_what_it_did_not_do(loaded) -> None:
+    """Не нажалось — значит открыта только выдача, так и надо сказать.
+
+    Обещать «включаю», когда играть нечего, — ровно то, чем провинился
+    свободный разговор: слова вместо дела.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.CONTROLS.clear()
+    fake.REPLIES.clear()
+
+    result = await registry.invoke("youtube.play_video", {"query": "трейлер мегамозг"})
+
+    assert result.ok
+    assert "Нашёл на Ютубе" in result.speech_for("ru")
     await manager.stop()
 
 

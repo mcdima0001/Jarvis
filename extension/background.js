@@ -183,6 +183,11 @@ function byProximity(tabs, spot) {
  * в первой попавшейся вкладке вместо него было бы хуже, чем честно отказать.
  */
 async function pickTab(params) {
+  const chosen = await chooseTab(params);
+  return chosen ? await loaded(chosen) : null;
+}
+
+async function chooseTab(params) {
   if (params.tabId) {
     try {
       return await chrome.tabs.get(params.tabId);
@@ -198,14 +203,45 @@ async function pickTab(params) {
     return byProximity(tabs.filter((tab) => sameSite(tab.url || "", params.url)), spot)[0] || null;
   }
 
-  const audible = byProximity(tabs.filter((tab) => tab.audible), spot)[0];
-  if (audible) {
-    return audible;
+  // «Нажми первую ссылку» относится к тому, куда смотрят, даже если в соседней
+  // вкладке играет музыка. Поэтому звучащую вкладку иногда нужно пропустить.
+  if (!params.active) {
+    const audible = byProximity(tabs.filter((tab) => tab.audible), spot)[0];
+    if (audible) {
+      return audible;
+    }
   }
   if (spot) {
     return tabs.find((tab) => tab.id === spot.tabId) || null;
   }
   return tabs.find((tab) => tab.active) || null;
+}
+
+/**
+ * Дождаться, пока страница догрузится.
+ *
+ * Команда часто идёт сразу за открытием вкладки («включи первое видео» после
+ * поиска), а нажимать не на чем: разметки ещё нет. Ждём недолго — если за это
+ * время страница не открылась, дело не в спешке.
+ */
+function loaded(tab, timeout = 5000) {
+  if (tab.status === "complete") {
+    return Promise.resolve(tab);
+  }
+  return new Promise((resolve) => {
+    const finish = (result) => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const listener = (id, change) => {
+      if (id === tab.id && change.status === "complete") {
+        chrome.tabs.get(tab.id).then(finish, () => finish(tab));
+      }
+    };
+    const timer = setTimeout(() => finish(tab), timeout);
+    chrome.tabs.onUpdated.addListener(listener);
+  });
 }
 
 /**

@@ -71,12 +71,15 @@ ACTION = Literal[
     "next",
     "previous",
     "like",
+    "unlike",
+    "dislike",
     "mute",
     "unmute",
     "louder",
     "quieter",
     "forward",
     "back",
+    "first",
 ]
 
 #: Как выполнять действие на любом сайте.
@@ -121,6 +124,25 @@ ACTIONS: dict[str, tuple[dict[str, Any], ...]] = {
             ],
         },
     ),
+    # Снять лайк — это нажать ту же кнопку ещё раз, но подпись у неё уже
+    # другая: «Убрать отметку „Нравится“». Отдельное действие, а не «лайк
+    # наоборот».
+    "unlike": (
+        {
+            "label": ["убрать отметку", "убрать лайк", "убрать из", "unlike", "remove like"],
+            "avoid": ["не нравится", "dislike"],
+        },
+    ),
+    "dislike": (
+        {
+            "label": ["не нравится", "дизлайк", "dislike"],
+            "avoid": ["убрать", "отменить", "снять", "remove", "undo"],
+        },
+    ),
+    # Первый результат поиска или первый ролик в подборке. Общего способа тут
+    # нет и быть не может: у каждого сайта своя разметка выдачи, поэтому
+    # работает по рецепту сайта либо по выученному.
+    "first": (),
     "mute": ({"media": "mute"}, {"label": ["выключить звук", "mute", "без звука"]}),
     "unmute": ({"media": "unmute"}, {"label": ["включить звук", "unmute"]}),
     "louder": ({"media": "louder"},),
@@ -141,6 +163,15 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
         "like": (
             {"click": ["like-button-view-model button", "#segmented-like-button button"]},
         ),
+        "first": (
+            {
+                "click": [
+                    "ytd-video-renderer a#video-title",
+                    "ytd-rich-item-renderer a#video-title-link",
+                    "a#video-title",
+                ]
+            },
+        ),
     },
     "music.yandex.ru": {
         "next": ({"click": ['[data-test-id="NEXT_TRACK_BUTTON"]']},),
@@ -153,6 +184,15 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
         "next": ({"click": [".audio_page_player_next"]},),
         "previous": ({"click": [".audio_page_player_prev"]},),
     },
+    # Первая ссылка в выдаче. Разметка поисковиков меняется чаще всего, поэтому
+    # вариантов по несколько: не подошёл ни один — останется спросить у модели
+    # и запомнить ответ, как и на любом незнакомом сайте.
+    "yandex.ru": {
+        "first": (
+            {"click": ["li.serp-item a.OrganicTitle-Link", ".serp-item h2 a", ".Organic-Title"]},
+        ),
+    },
+    "google.com": {"first": ({"click": ["#rso h3", "#search h3"]},)},
 }
 
 #: Что сказать вслух. Реплики короткие: команда и так видна по результату.
@@ -163,6 +203,9 @@ SPEECH: dict[str, tuple[str, str]] = {
     "next": ("Следующий.", "Next one."),
     "previous": ("Предыдущий.", "Previous one."),
     "like": ("Лайкнул.", "Liked."),
+    "unlike": ("Убрал лайк.", "Like removed."),
+    "dislike": ("Поставил дизлайк.", "Disliked."),
+    "first": ("Включаю.", "Playing it."),
     "mute": ("Заглушил вкладку.", "Tab muted."),
     "unmute": ("Вернул звук.", "Sound is back."),
     "louder": ("Громче.", "Louder."),
@@ -179,6 +222,9 @@ INTENT_TEXT: dict[str, str] = {
     "next": "включить следующий трек или видео",
     "previous": "вернуться к предыдущему треку или видео",
     "like": "поставить лайк текущему треку или видео",
+    "unlike": "убрать ранее поставленный лайк",
+    "dislike": "поставить дизлайк текущему треку или видео",
+    "first": "открыть первый результат поиска или первое видео в списке",
     "mute": "выключить звук",
     "unmute": "включить звук",
     "louder": "сделать громче",
@@ -467,11 +513,16 @@ class PageSkill(Skill):
         """
         return await self._act("pause", site=site, soft=True)
 
+    # «Включи видео» и «включи музыку» стоят тут, а не у поиска: когда вкладка
+    # уже открыта, это просьба нажать «плей», а не найти что-нибудь новое.
+    # Точная фраза побеждает шаблон, поэтому «включи видео {query}» из скилла
+    # youtube остаётся рабочим.
     @tool(routable=False, phrases=["сними с паузы", "включи воспроизведение",
                                    "продолжи воспроизведение", "продолжай играть",
                                    "сними музыку с паузы", "сними видео с паузы",
                                    "продолжи музыку", "продолжи видео",
-                                   "сними {site} с паузы",
+                                   "включи видео", "включи музыку", "включи трек",
+                                   "включи песню", "сними {site} с паузы",
                                    "resume", "continue playing"])
     async def play(self, site: str = "") -> ToolResult:
         """Продолжить воспроизведение.
@@ -501,6 +552,30 @@ class PageSkill(Skill):
     async def like(self) -> ToolResult:
         """Поставить лайк тому, что играет."""
         return await self._act("like")
+
+    @tool(routable=False, phrases=["убери лайк", "сними лайк", "убери лайк с видео",
+                                   "убери лайк с трека", "unlike"])
+    async def unlike(self) -> ToolResult:
+        """Убрать ранее поставленный лайк."""
+        return await self._act("unlike")
+
+    @tool(routable=False, phrases=["дизлайк", "поставь дизлайк", "мне не нравится",
+                                   "dislike"])
+    async def dislike(self) -> ToolResult:
+        """Поставить дизлайк."""
+        return await self._act("dislike")
+
+    @tool(routable=False, phrases=["включи первое видео", "открой первое видео",
+                                   "включи первый результат", "открой первую ссылку",
+                                   "включи первое", "play the first video"])
+    async def open_first(self, site: str = "") -> ToolResult:
+        """Открыть первый результат на странице выдачи.
+
+        :param site: где именно; пусто — в той вкладке, куда сейчас смотришь.
+        """
+        # Именно вкладка в фокусе: команда идёт следом за поиском, а звук в это
+        # время может идти из соседнего окна — туда нажимать нельзя.
+        return await self._act("first", site=site, focused=True)
 
     @tool(routable=False, phrases=["выключи звук во вкладке", "заглуши вкладку",
                                    "mute the tab"])
@@ -546,6 +621,7 @@ class PageSkill(Skill):
         want: str = "",
         speech: tuple[str, str] | None = None,
         soft: bool = False,
+        focused: bool = False,
     ) -> ToolResult:
         """Выполнить действие в подходящей вкладке.
 
@@ -558,6 +634,9 @@ class PageSkill(Skill):
             из-за неудачно названного сайта тут хуже, чем выполнить. Для
             `press` и явного `control` название остаётся требованием: нажать
             кнопку не на том сайте — это уже не мелочь.
+        :param focused: работать с вкладкой в фокусе, даже если звук идёт из
+            другой. Для команд про содержимое («включи первое видео») это
+            единственно верно: смотрят в одну вкладку, а играет другая.
         """
         if not self.tools.has("browser.page_run"):
             return ToolResult.failure(
@@ -570,10 +649,11 @@ class PageSkill(Skill):
 
         # Вкладку узнаём заранее: без неё неизвестен сайт, а значит и рецепт.
         # Это один обмен по локальному сокету, зато дальше всё однозначно.
-        found = await self.tools.invoke("browser.page_target", {"site": site})
+        where = {"site": site, "active": focused}
+        found = await self.tools.invoke("browser.page_target", where)
         if not found.ok and site and soft:
             self.log.info("Вкладки %r не нашлось — работаю с той, что звучит", site)
-            found = await self.tools.invoke("browser.page_target", {})
+            found = await self.tools.invoke("browser.page_target", {"active": focused})
         if not found.ok or not isinstance(found.value, Mapping):
             return found if not found.ok else self._nothing(action)
         target = dict(found.value)

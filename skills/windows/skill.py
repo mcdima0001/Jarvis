@@ -668,7 +668,8 @@ class WindowsSkill(Skill):
         )
 
     @tool(phrases=["заблокируй компьютер", "заблокируй пк", "заблокируй экран",
-                   "заблокируй", "lock the computer", "lock the pc", "lock screen"])
+                   "заблокируй ноутбук", "заблокируй комп", "заблокируй",
+                   "lock the computer", "lock the pc", "lock screen"])
     async def lock(self) -> ToolResult:
         """Заблокировать компьютер."""
         import ctypes

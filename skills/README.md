@@ -73,7 +73,7 @@ class TimerSkill(Skill):
 | `memory`   | **работает** | `remember`, `recall`, `set_preference`, `about_me` |
 | `esp32`    | заглушка  | `set_light`, `get_temperature`, `set_mode`, `get_humidity` |
 | `telegram` | заглушка  | `send_message`, `get_recent_chats`, `summarize_chat` |
-| `youtube`  | заглушка, кроме `play_video` | `search_video`, `play_video` |
+| `youtube`  | `play_video` **работает** (поиск + нажатие первого ролика), `search_video` ждёт ключа | `search_video`, `play_video` |
 
 Места, где нужна реальная интеграция, помечены в коде как `TODO`.
 
