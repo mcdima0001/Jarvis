@@ -57,10 +57,26 @@ class FasterWhisperSTT:
             try:
                 import ctranslate2
 
-                device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+                found = ctranslate2.get_cuda_device_count()
             except Exception as exc:  # noqa: BLE001 — проверка не должна ронять старт
-                logger.debug("Не удалось определить наличие CUDA (%s), беру cpu", exc)
-                device = "cpu"
+                logger.warning(
+                    "Не удалось спросить про видеокарту (%s) — работаю на процессоре", exc
+                )
+                found = 0
+
+            device = "cuda" if found > 0 else "cpu"
+            if not found:
+                # Раньше это писалось в debug, и молчаливый переход на
+                # процессор выглядел как «видеокарта не нужна». Между тем
+                # разница в скорости — раз в пять, а причина обычно одна:
+                # ctranslate2 не видит библиотеки CUDA.
+                logger.info(
+                    "Видеокарта не найдена (ctranslate2 насчитал 0 устройств) — "
+                    "работаю на процессоре. Проверить: python -c \"import "
+                    "ctranslate2; print(ctranslate2.get_cuda_device_count())\". "
+                    "Нужны cuBLAS и cuDNN: pip install nvidia-cublas-cu12 "
+                    "nvidia-cudnn-cu12"
+                )
 
         if compute in ("", "auto"):
             compute = "float16" if device == "cuda" else "int8"

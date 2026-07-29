@@ -364,22 +364,31 @@ NO_GROUP = -1
 def by_proximity(tabs: list[dict], current: dict | None) -> list[dict]:
     """Расставить вкладки от ближних к дальним относительно текущей.
 
-    У браузера бывают десятки вкладок одного сайта, разложенных по группам, и
-    «переключись на гитхаб» должно вести в тот гитхаб, рядом с которым сейчас
-    работают. Порядок: своя группа, своё окно, всё остальное. Группа живёт
-    внутри окна, поэтому первое условие строже второго, а не рядом с ним.
+    У браузера бывают десятки вкладок с похожими заголовками, разложенных по
+    группам, и «переключись на гитхаб» должно вести в тот гитхаб, рядом с
+    которым сейчас работают. Признаков два:
+
+    * **близость** — своя группа, своё окно, всё остальное. Группа живёт внутри
+      окна, поэтому первое условие строже второго, а не рядом с ним;
+    * **давность** — среди одинаково близких побеждает та вкладка, в которую
+      смотрели позже. Название «МаршалТех» может носить и страница сервера, и
+      таблица про него; из двух разных страниц с одним именем нужна почти
+      всегда та, с которой недавно работали.
     """
-    if not current:
-        return list(tabs)
+    window = (current or {}).get("windowId")
+    group = (current or {}).get("groupId", NO_GROUP)
 
-    window = current.get("windowId")
-    group = current.get("groupId", NO_GROUP)
-
-    def rank(tab: dict) -> int:
-        same_window = tab.get("windowId") == window
-        if same_window and group != NO_GROUP and tab.get("groupId") == group:
-            return 0
-        return 1 if same_window else 2
+    def rank(tab: dict) -> tuple[int, float]:
+        if not current:
+            distance = 0
+        else:
+            same_window = tab.get("windowId") == window
+            if same_window and group != NO_GROUP and tab.get("groupId") == group:
+                distance = 0
+            else:
+                distance = 1 if same_window else 2
+        # Позже открытая — меньше по ключу, значит раньше в списке.
+        return distance, -float(tab.get("lastAccessed") or 0)
 
     return sorted(tabs, key=rank)
 
@@ -817,11 +826,21 @@ class BrowserSkill(Skill):
 
         # Открытая вкладка: «переключись на Marshall Tech».
         listed = await self._extension.call("tabs") or {}
-        matching = tabs_by_title(
-            listed.get("tabs", []), spoken, listed.get("current")
-        )
+        open_tabs = listed.get("tabs", [])
+        matching = tabs_by_title(open_tabs, spoken, listed.get("current"))
         if not matching:
             return None
+
+        if len(matching) > 1:
+            # Одно название носят разные страницы: сайт, таблица про него,
+            # статья о нём. Выбор виден в логе — иначе разбирать такие случаи
+            # приходится вслепую.
+            titles = {tab.get("tabId"): tab.get("title", "") for tab in open_tabs}
+            self.log.info(
+                "Подошло вкладок: %d — %s",
+                len(matching),
+                "; ".join(repr(titles.get(item, "")) for item in matching[:4]),
+            )
 
         result = await self._extension.call("activate", tabId=matching[0])
         if result is None:

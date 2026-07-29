@@ -647,3 +647,43 @@ def test_latin_title_found_by_russian_speech() -> None:
 
     assert browser.tabs_by_title(tabs, "апи кей") == [7]
     assert browser.tabs_by_title(tabs, "apk settings") == [7]
+
+
+def test_recent_tab_wins_among_equally_close() -> None:
+    """Одно название носят разные страницы: сайт, таблица про него, статья.
+
+    Из них почти всегда нужна та, с которой недавно работали.
+    """
+    tabs = [
+        {"tabId": 1, "title": "МаршалТех — Google Таблицы", "windowId": 1,
+         "groupId": 3, "lastAccessed": 100},
+        {"tabId": 2, "title": "МаршалТех — статистика", "windowId": 1,
+         "groupId": 3, "lastAccessed": 900},
+    ]
+    here = {"windowId": 1, "groupId": 3}
+
+    assert browser.by_proximity(tabs, here)[0]["tabId"] == 2
+    assert browser.tabs_by_title(tabs, "МаршалТех", here)[0] == 2
+
+
+def test_closeness_still_beats_recency() -> None:
+    """Но своя группа важнее давности: сначала смотрим рядом."""
+    tabs = [
+        {"tabId": 1, "title": "GitHub", "windowId": 2, "groupId": 4,
+         "lastAccessed": 900},
+        {"tabId": 2, "title": "GitHub", "windowId": 1, "groupId": 3,
+         "lastAccessed": 100},
+    ]
+    here = {"windowId": 1, "groupId": 3}
+
+    assert browser.by_proximity(tabs, here)[0]["tabId"] == 2
+
+
+def test_recency_works_without_a_current_tab() -> None:
+    """Расширение старое и про группы не рассказало — хоть давность учтём."""
+    tabs = [
+        {"tabId": 1, "title": "GitHub", "lastAccessed": 100},
+        {"tabId": 2, "title": "GitHub", "lastAccessed": 900},
+    ]
+
+    assert browser.by_proximity(tabs, None)[0]["tabId"] == 2

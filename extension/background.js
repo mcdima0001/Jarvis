@@ -151,9 +151,15 @@ function distance(tab, spot) {
   return sameWindow ? 1 : 2;
 }
 
-/** Отсортировать вкладки от ближних к дальним. */
+/**
+ * Отсортировать вкладки от ближних к дальним, а равные по близости — от
+ * недавно открытых к забытым.
+ */
 function byProximity(tabs, spot) {
-  return tabs.slice().sort((first, second) => distance(first, spot) - distance(second, spot));
+  return tabs.slice().sort((first, second) => {
+    const closer = distance(first, spot) - distance(second, spot);
+    return closer || (second.lastAccessed || 0) - (first.lastAccessed || 0);
+  });
 }
 
 /** Показать вкладку и поднять её окно на передний план. */
@@ -180,6 +186,9 @@ async function run(action, params) {
         title: tab.title,
         url: tab.url,
         active: tab.active,
+        // Когда в неё смотрели: из нескольких похожих вкладок почти всегда
+        // нужна та, с которой недавно работали.
+        lastAccessed: tab.lastAccessed || 0,
       })),
     };
   }
