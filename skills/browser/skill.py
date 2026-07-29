@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import re
 import webbrowser
 from urllib.parse import quote_plus, urlsplit
@@ -62,20 +63,38 @@ ENGINE_ALIASES: dict[str, str] = {
     "maps": "maps",
 }
 
-#: Сайты, которые зовут по-русски. Дополняется через ``sites`` в конфиге.
+#: Сайты и то, как их называют. Написания идут и русские, и латинские: Whisper
+#: пишет английские названия латиницей ровно тогда, когда ему так послышалось,
+#: и «зайди на YouTube» приходит в том же виде, что произнесено.
+#: Дополняется через ``sites`` в конфиге.
 SITES: dict[str, str] = {
     "ютуб": "https://www.youtube.com",
+    "ютьюб": "https://www.youtube.com",
+    "youtube": "https://www.youtube.com",
     "гугл": "https://www.google.com",
+    "google": "https://www.google.com",
     "яндекс": "https://ya.ru",
+    "yandex": "https://ya.ru",
     "почта": "https://mail.google.com",
+    "gmail": "https://mail.google.com",
     "гитхаб": "https://github.com",
+    "github": "https://github.com",
     "телеграм": "https://web.telegram.org",
+    "telegram": "https://web.telegram.org",
     "твич": "https://www.twitch.tv",
+    "twitch": "https://www.twitch.tv",
     "стим": "https://store.steampowered.com",
+    "steam": "https://store.steampowered.com",
     "википедия": "https://ru.wikipedia.org",
+    "вики": "https://ru.wikipedia.org",
+    "wikipedia": "https://ru.wikipedia.org",
     "чат гпт": "https://chatgpt.com",
+    "чатгпт": "https://chatgpt.com",
+    "chatgpt": "https://chatgpt.com",
     "клод": "https://claude.ai",
+    "claude": "https://claude.ai",
     "реддит": "https://www.reddit.com",
+    "reddit": "https://www.reddit.com",
     "карты": "https://yandex.ru/maps",
     "переводчик": "https://translate.google.com",
 }
@@ -106,6 +125,9 @@ _MIN_PREFIX = 4
 
 #: Гласные на конце: по ним и различаются падежи — «почта», «почту», «почте».
 _ENDINGS = "аеёиоуыэюяaeiouy"
+
+#: Насколько похожим должно быть название, чтобы считаться тем же сайтом.
+_SIMILARITY = 0.8
 
 
 def _stem(text: str) -> str:
@@ -141,12 +163,19 @@ def site_url(name: str, sites: dict[str, str]) -> str | None:
     # Названия склоняют: «на ютубе», «в гитхабе», «открой почту».
     stem = _stem(text)
     if len(stem) >= _MIN_PREFIX:
-        for spoken, url in sites.items():
-            other = _stem(spoken)
+        stems = {_stem(spoken): url for spoken, url in sites.items()}
+        for other, url in stems.items():
             if len(other) >= _MIN_PREFIX and (
                 stem.startswith(other) or other.startswith(stem)
             ):
                 return safe_url(url)
+
+        # Whisper путает звонкие с глухими на конце: «гитхаб» слышится как
+        # «гитхап», «твич» — как «твитч». Порог высокий: сайт открывается
+        # молча, и промахнуться тут неприятнее, чем переспросить.
+        close = difflib.get_close_matches(stem, list(stems), n=1, cutoff=_SIMILARITY)
+        if close:
+            return safe_url(stems[close[0]])
 
     if "://" in text:
         return safe_url(text)
@@ -285,7 +314,11 @@ class BrowserSkill(Skill):
             speech={"ru": f"Открываю {name}.", "en": f"Opening {name}."},
         )
 
-    @tool(phrases=["загугли {query}", "найди в {engine} {query}",
+    # «За гугли» и «за гугл» — не опечатка: Whisper слышит «загугли» как два
+    # слова и разбор уходил в платную модель. Дописать услышанное дешевле,
+    # чем платить за каждую такую фразу.
+    @tool(phrases=["загугли {query}", "за гугли {query}", "за гугл {query}",
+                   "погугли {query}", "найди в {engine} {query}",
                    "найди на {engine} {query}", "поищи в {engine} {query}",
                    "покажи в браузере {query}",
                    "google {query}", "search {engine} for {query}"])

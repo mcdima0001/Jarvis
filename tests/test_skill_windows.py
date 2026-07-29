@@ -589,3 +589,28 @@ async def _should_not_wait(image: str, *, timeout: float = 4.0) -> bool:
 def _should_not_close(pids: set[int]) -> int:
     """Окна на этом пути трогать не должны."""
     raise AssertionError(f"лишнее закрытие окон: {pids}")
+
+
+# --- чужое не хватать -------------------------------------------------------
+
+
+@pytest.mark.parametrize("query", ["гитхап", "гитхаб", "ютуб", "почта", "твич"])
+def test_site_names_do_not_match_programs(query: str) -> None:
+    """Название сайта не должно находить программу с похожим словом внутри.
+
+    Настоящий сбой: «открой гитхап» запускало «Ample Guitar» — «githap»
+    похоже на «guitar» на 0.73. Нечёткое сравнение теперь идёт только с
+    названием целиком: отдельное слово внутри длинного названия — слишком
+    слабое основание, чтобы что-то запускать.
+    """
+    catalog = {**CATALOG, "Ample Guitar": "C:/Menu/Ample Guitar.url"}
+
+    assert windows.match_program(query, catalog) is None
+
+
+def test_guitar_still_found_by_its_own_name() -> None:
+    """При этом сама программа по своему названию находится."""
+    catalog = {**CATALOG, "Ample Guitar": "C:/Menu/Ample Guitar.url"}
+
+    assert windows.match_program("гитар", catalog)[0] == "Ample Guitar"
+    assert windows.match_program("ампл гитар", catalog)[0] == "Ample Guitar"

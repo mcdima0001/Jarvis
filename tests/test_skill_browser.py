@@ -199,3 +199,39 @@ def test_running_browser_found_among_processes() -> None:
 def test_no_browser_among_processes() -> None:
     """Если браузера нет, закрывать нечего."""
     assert browser.running_browser(["explorer.exe", "steam.exe"]) is None
+
+
+# --- ослышки Whisper --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "misheard, expected",
+    [
+        ("гитхап", "https://github.com"),
+        ("твитч", "https://www.twitch.tv"),
+        ("ютьюб", "https://www.youtube.com"),
+    ],
+)
+def test_misheard_name_still_found(misheard: str, expected: str) -> None:
+    """Whisper глушит звонкие на конце: «гитхаб» приходит как «гитхап».
+
+    Порог похожести высокий: сайт открывается молча, и промахнуться тут
+    неприятнее, чем переспросить.
+    """
+    assert browser.site_url(misheard, SITES) == expected
+
+
+@pytest.mark.parametrize("spoken", ["YouTube", "GitHub", "Telegram", "Steam"])
+def test_latin_spelling_recognised(spoken: str) -> None:
+    """Английские названия Whisper пишет латиницей — как их и произносят.
+
+    «Зайди на YouTube» приходило именно так и не находилось: в каталоге были
+    только русские написания.
+    """
+    assert browser.site_url(spoken, SITES) is not None
+
+
+@pytest.mark.parametrize("spoken", ["борщ", "анталия", "мама", "как дела", "питон"])
+def test_ordinary_words_are_not_sites(spoken: str) -> None:
+    """Нечёткое сравнение не должно превращать любое слово в сайт."""
+    assert browser.site_url(spoken, SITES) is None

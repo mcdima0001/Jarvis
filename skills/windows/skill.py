@@ -200,9 +200,15 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     if not wanted:
         return None
 
-    prepared = [(name, target, _keys(name)) for name, target in catalog.items()]
+    # Отдельно название целиком и отдельно его слова: по словам можно искать
+    # точно и краем, но не нечётко — иначе «гитхап» находит «guitar» внутри
+    # «Ample Guitar».
+    prepared = [
+        (name, target, _keys(name), _keys(name, split=False))
+        for name, target in catalog.items()
+    ]
 
-    for name, target, keys in prepared:
+    for name, target, keys, _ in prepared:
         if any(key in wanted for key in keys):
             return name, target
 
@@ -213,7 +219,7 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     # в «OBS Studio Portable Edition».
     contained = [
         (name, target)
-        for name, target, keys in prepared
+        for name, target, keys, _ in prepared
         if any(_touches(part, key) for key in keys for part in wanted)
     ]
     if contained:
@@ -224,7 +230,7 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     skeletons = {_skeleton(query)} - {""}
     by_skeleton = [
         (name, target)
-        for name, target, _ in prepared
+        for name, target, _, _ in prepared
         if _skeletons(name) & skeletons
     ]
     if by_skeleton:
@@ -233,9 +239,14 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     # Нечёткое сравнение — последняя попытка. Транслитерация огрубляет слова
     # («стим» → «stim» против «steam»), поэтому порог невысокий, зато берётся
     # лучшее совпадение из всех, а не первое подошедшее.
+    #
+    # Сравнивается только название целиком. Отдельное слово внутри длинного
+    # названия — слишком слабое основание: «открой гитхап» запускало «Ample
+    # Guitar», потому что «githap» похоже на «guitar» на 0.73. Точное
+    # совпадение и совпадение краем по словам работают выше и там уместны.
     best: tuple[float, str, str] | None = None
-    for name, target, keys in prepared:
-        for key in keys:
+    for name, target, _, whole in prepared:
+        for key in whole:
             for part in wanted:
                 # Сравнивать имеет смысл слова сопоставимой длины: короткое
                 # «окно» иначе находит «блокнот» с похожестью 0.73.
@@ -562,6 +573,15 @@ class WindowsSkill(Skill):
         """
         found = match_program(program, self._catalog)
         if found is None:
+            # Программы с таким названием нет — возможно, это сайт. «Открой
+            # гитхаб» и «открой почту» разумнее открыть в браузере, чем
+            # ответить отказом. Порядок именно такой: установленная программа
+            # важнее сайта, у Steam и Telegram есть и то, и другое.
+            if self.tools.has("browser.open_site"):
+                site = await self.tools.invoke("browser.open_site", {"site": program})
+                if site.ok:
+                    return site
+
             # Услышанное в оболочку не уходит: незнакомое имя — это отказ.
             suggestions = difflib.get_close_matches(program, self._catalog, n=3, cutoff=0.4)
             hint = f" Может быть: {', '.join(suggestions)}?" if suggestions else ""
