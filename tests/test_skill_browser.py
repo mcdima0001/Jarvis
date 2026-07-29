@@ -249,3 +249,67 @@ def test_google_the_verb_is_not_google_the_engine() -> None:
 def test_named_engine_beats_the_default() -> None:
     """А вот «найди в гугле» — это уже прямое указание, и оно сильнее."""
     assert browser.pick_engine("гугле", ENGINES, "yandex") == "google"
+
+
+# --- переключение на уже открытое -------------------------------------------
+
+
+_WINDOWS = [
+    {"title": "YouTube - Яндекс Браузер", "image": "browser.exe", "pid": 2000},
+    {"title": "Почта - Яндекс Браузер", "image": "browser.exe", "pid": 2000},
+    {"title": "FL Studio 21", "image": "FL64.exe", "pid": 5678},
+]
+
+
+def test_browser_name_is_stripped_from_the_title() -> None:
+    """Имя браузера стоит в заголовке каждого окна и мешает сравнению.
+
+    Без этого «зайди на яндекс» находило бы любое окно Яндекс Браузера.
+    """
+    assert browser.page_title("YouTube - Яндекс Браузер") == "YouTube"
+    assert browser.page_title("Почта — Яндекс Браузер") == "Почта"
+    assert browser.page_title("Блокнот") == "Блокнот"
+
+
+def test_site_keys_collect_every_spelling() -> None:
+    """Сайт узнаётся по любому своему написанию из каталога."""
+    keys = browser.site_keys("https://www.youtube.com", SITES, "ютуб")
+    assert {"ютуб", "ютьюб", "youtube"} <= keys
+
+
+def test_site_keys_ignore_the_domain_of_known_sites() -> None:
+    """Домен почты дал бы «google», и она нашлась бы в любом окне с гуглом."""
+    keys = browser.site_keys("https://mail.google.com", SITES, "почта")
+    assert "google" not in keys
+
+
+def test_domain_used_when_the_site_has_no_name() -> None:
+    """У сайта, названного доменом, других написаний просто нет."""
+    assert "example" in browser.site_keys("https://example.com", SITES)
+
+
+def test_open_window_found_by_title() -> None:
+    """Открытая вкладка видна по заголовку окна."""
+    keys = browser.site_keys("https://www.youtube.com", SITES, "ютуб")
+    assert browser.find_open_window(_WINDOWS, keys) == "YouTube - Яндекс Браузер"
+
+
+def test_window_of_another_program_is_not_a_tab() -> None:
+    """Окно с похожим заголовком, но не браузера, вкладкой не считается."""
+    windows = [{"title": "YouTube", "image": "explorer.exe", "pid": 1}]
+    keys = browser.site_keys("https://www.youtube.com", SITES, "ютуб")
+    assert browser.find_open_window(windows, keys) is None
+
+
+def test_no_open_window_means_open_a_new_one() -> None:
+    """Ничего похожего не открыто — переключаться не на что."""
+    keys = browser.site_keys("https://github.com", SITES, "гитхаб")
+    assert browser.find_open_window(_WINDOWS, keys) is None
+
+
+def test_word_inside_another_word_does_not_count() -> None:
+    """«Youtube» внутри «myyoutubedownloader» — это не открытый YouTube."""
+    windows = [{"title": "myyoutubedownloader - Яндекс Браузер",
+                "image": "browser.exe", "pid": 2000}]
+    keys = browser.site_keys("https://www.youtube.com", SITES, "ютуб")
+    assert browser.find_open_window(windows, keys) is None

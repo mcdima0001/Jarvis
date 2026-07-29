@@ -219,6 +219,61 @@ def search_url(query: str, template: str) -> str | None:
     return safe_url(template.format(query=quote_plus(text)))
 
 
+#: Чем браузер подписывает своё имя в конце заголовка: «YouTube — Яндекс Браузер».
+_TITLE_TAIL = re.compile(r"\s+[-–—]\s+")
+
+#: Из заголовка берём слова целиком: «YouTube» в «Как удалить YouTube» — это
+#: всё же про YouTube, а вот «youtube» внутри «myyoutube.ru» — нет.
+_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+
+def page_title(title: str) -> str:
+    """Отбросить имя браузера в конце заголовка окна.
+
+    «YouTube — Яндекс Браузер» превращается в «YouTube». Без этого любое окно
+    Яндекс Браузера считалось бы открытым Яндексом: имя браузера стоит в
+    заголовке каждого окна.
+    """
+    parts = _TITLE_TAIL.split(title.strip())
+    return parts[0].strip() if len(parts) > 1 else title.strip()
+
+
+def site_keys(url: str, sites: dict[str, str], spoken: str = "") -> set[str]:
+    """Слова, по которым сайт узнаётся в заголовке окна.
+
+    Берутся все его написания из каталога — «ютуб», «ютьюб», «youtube», — плюс
+    то, как его назвали. Домен не разбираем: у `mail.google.com` он дал бы
+    «google», и почта нашлась бы в любом окне с гуглом.
+    """
+    keys = {name.strip().lower() for name, target in sites.items() if target == url}
+    if spoken.strip():
+        keys.add(spoken.strip().lower())
+    if not keys:
+        # Сайт назвали доменом: «зайди на example.com».
+        host = urlsplit(url).netloc.lower().removeprefix("www.")
+        keys.add(host.split(".")[0])
+    return {key for key in keys if len(key) >= 3}
+
+
+def find_open_window(windows: list[dict], keys: set[str]) -> str | None:
+    """Найти окно браузера, в котором этот сайт уже открыт.
+
+    Видно только активную вкладку каждого окна — заголовок окна её и
+    показывает. Вкладка, спрятанная в глубине чужого окна, снаружи браузера
+    не видна никак, без расширения её не достать.
+
+    :return: заголовок найденного окна либо ``None``.
+    """
+    for item in windows:
+        if str(item.get("image", "")).lower() not in BROWSERS:
+            continue
+        title = str(item.get("title", ""))
+        words = {word.lower() for word in _WORD.findall(page_title(title))}
+        if keys & words:
+            return title
+    return None
+
+
 def browser_process(name: str) -> str | None:
     """Имя процесса браузера по тому, как его назвали."""
     text = " ".join(name.strip().lower().split())
@@ -253,6 +308,7 @@ class BrowserSkill(Skill):
         self._home = str(self.context.setting("home", DEFAULT_HOME))
         self._default_engine = str(self.context.setting("engine", "google"))
         self._browser = str(self.context.setting("browser", "") or "")
+        self._reuse = bool(self.context.setting("reuse", True))
 
         self._sites = {
             **SITES,
@@ -310,6 +366,12 @@ class BrowserSkill(Skill):
                     "en": f"I don't know a site called {site}.",
                 },
             )
+
+        if self._reuse and site.strip():
+            opened = await self._focus_open(url, site)
+            if opened is not None:
+                return opened
+
         if not await self._open(url):
             return self._no_browser()
 
@@ -391,6 +453,40 @@ class BrowserSkill(Skill):
         # Своего кода закрытия здесь нет намеренно: окна умеет закрывать скилл
         # windows, и повторять его логику — значит чинить её потом дважды.
         return await self.tools.invoke("windows.close_program", {"program": image})
+
+    async def _focus_open(self, url: str, spoken: str) -> ToolResult | None:
+        """Переключиться на уже открытое окно с этим сайтом.
+
+        :return: готовый ответ, если окно нашлось и поднялось; иначе ``None``,
+            и сайт открывается как обычно.
+        """
+        if not self.tools.has("windows.list_windows"):
+            return None
+
+        listed = await self.tools.invoke("windows.list_windows", {})
+        if not listed.ok or not isinstance(listed.value, list):
+            return None
+
+        title = find_open_window(listed.value, site_keys(url, self._sites, spoken))
+        if title is None:
+            return None
+
+        self.log.info("Сайт уже открыт в окне %r — переключаюсь", title)
+        raised = await self.tools.invoke("windows.focus_window", {"title": title})
+        if not raised.ok:
+            # Окно есть, но поднять его не вышло — лучше открыть новое, чем
+            # отчитаться об успехе, которого пользователь не увидит.
+            self.log.warning("Не удалось поднять окно %r, открою новое", title)
+            return None
+
+        name = spoken.strip()
+        return ToolResult.success(
+            {"url": url, "window": title, "reused": True},
+            speech={
+                "ru": f"{name} уже открыт, переключаюсь.",
+                "en": f"{name} is already open, switching to it.",
+            },
+        )
 
     async def _running(self) -> str | None:
         """Найти запущенный браузер через список процессов."""

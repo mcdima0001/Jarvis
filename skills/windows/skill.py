@@ -506,6 +506,93 @@ def close_windows(pids: set[int], *, title: str | None = None) -> int:
 #: Сообщение «закройся», которое Windows шлёт окну по Alt+F4.
 _WM_CLOSE = 0x0010
 
+#: ShowWindow: развернуть свёрнутое окно, не трогая уже развёрнутое.
+_SW_RESTORE = 9
+
+
+def enum_windows() -> list[tuple[int, str]]:
+    """Видимые окна системы: номер процесса и заголовок.
+
+    Нужно там, где `tasklist` бессилен: он показывает по одному заголовку на
+    процесс, а у браузера все окна — один процесс. Чтобы понять, открыт ли
+    где-то YouTube, окна надо перебирать поштучно.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found: list[tuple[int, str]] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(handle: int, _: int) -> bool:
+        """Запомнить одно окно, если оно видимое и подписанное."""
+        if not user32.IsWindowVisible(handle):
+            return True
+        length = user32.GetWindowTextLengthW(handle)
+        if length <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(handle, buffer, length + 1)
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        found.append((owner.value, buffer.value))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def raise_window(title: str) -> bool:
+    """Поднять окно с таким заголовком на передний план.
+
+    Windows не даёт программе перехватывать фокус просто так — иначе окна
+    дрались бы за него. Обходной приём стандартный: на время вызова свой поток
+    ввода привязывается к потоку окна, которое сейчас впереди, и запрет
+    снимается. Прав администратора это не требует и не заменяет.
+
+    :return: удалось ли поднять окно.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    target: int | None = None
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(handle: int, _: int) -> bool:
+        """Найти первое видимое окно с нужным заголовком."""
+        nonlocal target
+        if target is not None or not user32.IsWindowVisible(handle):
+            return True
+        length = user32.GetWindowTextLengthW(handle)
+        if length <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(handle, buffer, length + 1)
+        if buffer.value.startswith(title):
+            target = handle
+        return True
+
+    user32.EnumWindows(visit, 0)
+    if target is None:
+        return False
+
+    user32.ShowWindow(target, _SW_RESTORE)
+    if user32.SetForegroundWindow(target):
+        return True
+
+    foreground = user32.GetForegroundWindow()
+    theirs = user32.GetWindowThreadProcessId(foreground, None)
+    ours = kernel32.GetCurrentThreadId()
+    user32.AttachThreadInput(ours, theirs, True)
+    try:
+        user32.BringWindowToTop(target)
+        return bool(user32.SetForegroundWindow(target))
+    finally:
+        user32.AttachThreadInput(ours, theirs, False)
+
 
 def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт только в pycaw
     """Получить регулятор громкости системы через pycaw.
@@ -681,6 +768,31 @@ class WindowsSkill(Skill):
         :param program: название программы.
         """
         return await self._shutdown(program, force=True)
+
+    # Голосом это не зовут — инструмент нужен другим скиллам, поэтому в каталог
+    # для модели он не попадает: каждая запись там стоит токенов на каждой фразе.
+    @tool(name="list_windows", routable=False)
+    async def list_windows(self) -> ToolResult:
+        """Перечислить открытые окна: заголовок, программа, номер процесса."""
+        windows = await asyncio.to_thread(enum_windows)
+        images = {process.pid: process.image for process in await self._processes()}
+        return ToolResult.success(
+            [
+                {"title": title, "image": images.get(pid, ""), "pid": pid}
+                for pid, title in windows
+            ]
+        )
+
+    @tool(name="focus_window", routable=False)
+    async def focus_window(self, title: str) -> ToolResult:
+        """Поднять окно с указанным заголовком на передний план.
+
+        :param title: заголовок окна, как его вернул list_windows.
+        """
+        if not await asyncio.to_thread(raise_window, title):
+            return ToolResult.failure(f"окно {title!r} не удалось поднять")
+        self.log.info("Окно на переднем плане: %r", title)
+        return ToolResult.success({"window": title})
 
     async def _shutdown(self, program: str, *, force: bool) -> ToolResult:
         """Общая часть закрытия и убийства: найти процесс и доложить итог."""
