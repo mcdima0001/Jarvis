@@ -95,6 +95,15 @@ function isWebUrl(url) {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
+/**
+ * Служебные страницы самого браузера — настройки, расширения, история.
+ * Список схем закрытый: file:// и javascript: сюда не попадут ни при каких
+ * условиях, даже если такая ссылка придёт по сокету.
+ */
+function isInternalUrl(url) {
+  return typeof url === "string" && /^(browser|chrome|edge|opera):\/\/|^about:/i.test(url);
+}
+
 /** Один ли это сайт. www отбрасывается: ya.ru и www.ya.ru — одно и то же. */
 function sameSite(first, second) {
   try {
@@ -130,6 +139,29 @@ async function run(action, params) {
         active: tab.active,
       })),
     };
+  }
+
+  if (action === "open" && Array.isArray(params.urls)) {
+    // Служебная страница браузера: схема у каждого своя (browser://, chrome://,
+    // about:), поэтому Jarvis присылает список, а мы пробуем по очереди.
+    let failure = null;
+    for (const candidate of params.urls) {
+      if (!isInternalUrl(candidate)) {
+        continue;
+      }
+      const existing = (await chrome.tabs.query({})).find((tab) => tab.url === candidate);
+      if (existing) {
+        return { ...(await focusTab(existing)), reused: true, url: candidate };
+      }
+      try {
+        const tab = await chrome.tabs.create({ url: candidate, active: true });
+        await chrome.windows.update(tab.windowId, { focused: true });
+        return { tabId: tab.id, windowId: tab.windowId, url: candidate, reused: false };
+      } catch (error) {
+        failure = error;
+      }
+    }
+    throw new Error(failure ? String(failure.message || failure) : "страница недоступна");
   }
 
   if (action === "open") {

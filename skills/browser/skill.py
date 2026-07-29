@@ -120,6 +120,24 @@ BROWSERS: dict[str, tuple[str, ...]] = {
     "vivaldi.exe": ("вивальди", "vivaldi"),
 }
 
+#: Служебные страницы самого браузера. Открыть их можно только изнутри —
+#: системе такую ссылку не отдашь, — поэтому они работают лишь с расширением.
+#: У каждой несколько адресов: схема зависит от браузера (Яндекс понимает
+#: browser://, Chrome — chrome://, Firefox — about:), и расширение пробует их
+#: по очереди. Список закрытый: произвольную служебную ссылку из речи
+#: открывать нельзя.
+INTERNAL_PAGES: dict[str, tuple[str, ...]] = {
+    "расширения": ("browser://extensions", "chrome://extensions", "about:addons"),
+    "настройки браузера": (
+        "browser://settings",
+        "chrome://settings",
+        "about:preferences",
+    ),
+    "история": ("browser://history", "chrome://history", "about:history"),
+    "загрузки": ("browser://downloads", "chrome://downloads", "about:downloads"),
+    "закладки": ("browser://bookmarks", "chrome://bookmarks", "about:bookmarks"),
+}
+
 #: Страница, которая открывается на голое «открой браузер».
 DEFAULT_HOME = "https://www.google.com"
 
@@ -132,6 +150,15 @@ _DOMAIN = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(/[^\s]*)?$", re.IGNORECAS
 
 #: Короче четырёх букв сравнивать началом бессмысленно: «я» подойдёт к «яндекс».
 _MIN_PREFIX = 4
+
+#: Кавычки, которые Whisper ставит вокруг названий: «открой вкладку «Marshall
+#: Tech»» приходит именно так, вместе с ёлочками.
+_QUOTES = " «»\"'`.,!?;:()[]"
+
+
+def clean_spoken(text: str) -> str:
+    """Убрать кавычки и лишние пробелы вокруг названия."""
+    return " ".join(text.split()).strip(_QUOTES)
 
 #: Гласные на конце: по ним и различаются падежи — «почта», «почту», «почте».
 _ENDINGS = "аеёиоуыэюяaeiouy"
@@ -162,7 +189,7 @@ def site_url(name: str, sites: dict[str, str]) -> str | None:
     Три случая: известное название («ютуб»), готовая ссылка и голый домен
     («example.com»). Всё остальное — не сайт.
     """
-    text = " ".join(name.strip().lower().split())
+    text = clean_spoken(name).lower()
     if not text:
         return None
 
@@ -290,6 +317,25 @@ def find_open_window(windows: list[dict], keys: set[str]) -> str | None:
     return None
 
 
+def internal_page(name: str) -> tuple[str, ...]:
+    """Служебная страница браузера по названию: «расширения», «история»."""
+    text = clean_spoken(name).lower()
+    if not text:
+        return ()
+    if text in INTERNAL_PAGES:
+        return INTERNAL_PAGES[text]
+
+    stem = _stem(text)
+    if len(stem) < _MIN_PREFIX:
+        return ()
+    matches = [
+        page
+        for page in INTERNAL_PAGES
+        if _stem(page).startswith(stem) or stem.startswith(_stem(page))
+    ]
+    return INTERNAL_PAGES[max(matches, key=len)] if matches else ()
+
+
 def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
     """Номера вкладок, чей заголовок похож на сказанное.
 
@@ -297,7 +343,7 @@ def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
     настройки браузера, локальная разработка, открытый документ. «Закрой
     вкладку Extensions» иначе упиралось в «не знаю такого сайта».
     """
-    wanted = " ".join(spoken.strip().lower().split())
+    wanted = clean_spoken(spoken).lower()
     if len(wanted) < 3:
         return []
 
@@ -315,7 +361,7 @@ def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
 
 def browser_process(name: str) -> str | None:
     """Имя процесса браузера по тому, как его назвали."""
-    text = " ".join(name.strip().lower().split())
+    text = clean_spoken(name).lower()
     if not text:
         return None
     for image, spoken_names in BROWSERS.items():
@@ -549,25 +595,36 @@ class BrowserSkill(Skill):
     @tool(phrases=["открой браузер", "открой сайт {site}", "зайди на {site}",
                    "открой в браузере {site}", "открой {site} в браузере",
                    "запусти {site} в браузере", "покажи {site} в браузере",
+                   "открой вкладку {site}", "переключись на {site}",
+                   "покажи вкладку {site}",
                    "open the browser", "open site {site}", "go to {site}",
-                   "open {site} in the browser"])
+                   "open {site} in the browser", "open the {site} tab",
+                   "switch to {site}"])
     async def open_site(self, site: str = "") -> ToolResult:
-        """Открыть сайт в браузере.
+        """Открыть сайт, служебную страницу браузера или открытую вкладку.
 
-        :param site: название сайта («ютуб») или адрес; пусто — домашняя страница.
+        :param site: название сайта («ютуб»), служебной страницы («расширения»),
+            заголовок открытой вкладки или адрес; пусто — домашняя страница.
         """
-        url = self._home if not site.strip() else site_url(site, self._sites)
+        name = clean_spoken(site) or "браузер"
+        spoken = clean_spoken(site)
+
+        url = self._home if not spoken else site_url(spoken, self._sites)
         if url is None:
+            # Не сайт — может быть, служебная страница браузера или уже
+            # открытая вкладка. И то, и другое умеет только расширение.
+            through_extension = await self._open_special(spoken, name)
+            if through_extension is not None:
+                return through_extension
             return ToolResult.failure(
                 f"не понял, какой сайт открывать: {site!r}",
                 speech={
-                    "ru": f"Не знаю такого сайта: {site}.",
-                    "en": f"I don't know a site called {site}.",
+                    "ru": f"Не знаю такого сайта: {name}.",
+                    "en": f"I don't know a site called {name}.",
                 },
             )
 
-        name = site.strip() or "браузер"
-        reuse = self._reuse and bool(site.strip())
+        reuse = self._reuse and bool(spoken)
 
         # С расширением всё делается вкладкой в уже открытом окне; без него
         # остаются окна и заголовки — путь хуже, но рабочий.
@@ -662,6 +719,41 @@ class BrowserSkill(Skill):
         # Своего кода закрытия здесь нет намеренно: окна умеет закрывать скилл
         # windows, и повторять его логику — значит чинить её потом дважды.
         return await self.tools.invoke("windows.close_program", {"program": image})
+
+    async def _open_special(self, spoken: str, name: str) -> ToolResult | None:
+        """Служебная страница браузера или уже открытая вкладка по заголовку.
+
+        Обе вещи снаружи браузера недоступны в принципе: `browser://extensions`
+        системе не отдашь, а заголовки чужих вкладок ей неизвестны. Поэтому
+        путь один — расширение; без него возвращаем ``None`` и отказываем.
+        """
+        if not spoken or self._extension is None or not self._extension.connected:
+            return None
+
+        pages = internal_page(spoken)
+        if pages:
+            result = await self._extension.call("open", urls=list(pages))
+            if result is not None:
+                self.log.info("Служебная страница: %s", result.get("url", pages[0]))
+                return ToolResult.success(
+                    result,
+                    speech={"ru": f"Открываю {name}.", "en": f"Opening {name}."},
+                )
+
+        # Открытая вкладка: «переключись на Marshall Tech».
+        listed = await self._extension.call("tabs")
+        matching = tabs_by_title((listed or {}).get("tabs", []), spoken)
+        if not matching:
+            return None
+
+        result = await self._extension.call("activate", tabId=matching[0])
+        if result is None:
+            return None
+        self.log.info("Переключаюсь на вкладку %r", result.get("title", name))
+        return ToolResult.success(
+            result,
+            speech={"ru": f"Показываю {name}.", "en": f"Switching to {name}."},
+        )
 
     async def _open_tab(self, url: str, name: str, *, reuse: bool) -> ToolResult | None:
         """Открыть адрес вкладкой через расширение.

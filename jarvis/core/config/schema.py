@@ -225,6 +225,10 @@ class AudioConfig:
     echo_tail_ms: int = 500
     #: Короткий звук-отклик, когда команда распознана. Пусто — молча.
     activation_sound: Path | None = None
+    #: Сколько фрагментов ждут распознавания. Очередь длиннее означает, что
+    #: команда выполнится с опозданием; короче — что при фоновой речи
+    #: фрагменты теряются чаще.
+    pending_limit: int = 2
     vad: VADConfig = field(default_factory=VADConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
 

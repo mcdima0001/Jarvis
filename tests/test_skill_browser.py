@@ -474,3 +474,43 @@ def test_short_words_close_nothing(spoken: str) -> None:
 def test_unrelated_title_is_not_closed() -> None:
     """Случайное слово не должно совпасть ни с одной вкладкой."""
     assert browser.tabs_by_title(_TABS, "борщ") == []
+
+
+# --- служебные страницы и переключение на вкладку ----------------------------
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    ["расширения", "расширение", "Расширения", "историю", "загрузки", "закладки"],
+)
+def test_internal_page_recognised(spoken: str) -> None:
+    """Служебные страницы браузера открываются только изнутри него.
+
+    `browser://extensions` системе не отдашь: она такую схему не знает.
+    Поэтому список закрытый, а адреса перебираются — у Яндекса browser://,
+    у Chrome chrome://, у Firefox about:.
+    """
+    assert browser.internal_page(spoken)
+
+
+@pytest.mark.parametrize("spoken", ["ютуб", "борщ", "", "и"])
+def test_not_an_internal_page(spoken: str) -> None:
+    """Обычный сайт служебной страницей не считается."""
+    assert browser.internal_page(spoken) == ()
+
+
+def test_internal_pages_are_not_web_urls() -> None:
+    """Ни одна служебная страница не должна пройти как обычная ссылка.
+
+    Иначе она уехала бы в `os.startfile`, а это уже запуск обработчика схемы.
+    """
+    for urls in browser.INTERNAL_PAGES.values():
+        assert all(browser.safe_url(url) is None for url in urls)
+
+
+def test_quotes_around_the_name_are_stripped() -> None:
+    """Whisper ставит ёлочки: «открой вкладку «Marshall Tech»»."""
+    assert browser.clean_spoken("«Marshall Tech»") == "Marshall Tech"
+    assert browser.site_url("«Ютуб»", SITES) == "https://www.youtube.com"
+    tabs = [{"tabId": 9, "title": "Marshall Tech - YouTube"}]
+    assert browser.tabs_by_title(tabs, "«Marshall Tech»") == [9]
