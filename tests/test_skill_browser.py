@@ -235,3 +235,17 @@ def test_latin_spelling_recognised(spoken: str) -> None:
 def test_ordinary_words_are_not_sites(spoken: str) -> None:
     """Нечёткое сравнение не должно превращать любое слово в сайт."""
     assert browser.site_url(spoken, SITES) is None
+
+
+def test_google_the_verb_is_not_google_the_engine() -> None:
+    """«Загугли» — это «поищи», а не требование конкретного поисковика.
+
+    Фраза не называет поисковик, поэтому берётся тот, что стоит в конфиге.
+    Владелец пользуется Яндексом, и «загугли борщ» должно открывать его.
+    """
+    assert browser.pick_engine("", ENGINES, "yandex") == "yandex"
+
+
+def test_named_engine_beats_the_default() -> None:
+    """А вот «найди в гугле» — это уже прямое указание, и оно сильнее."""
+    assert browser.pick_engine("гугле", ENGINES, "yandex") == "google"

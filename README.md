@@ -206,7 +206,8 @@ persona:
 
 ```yaml
 browser:
-  engine: yandex                   # где искать, если не сказано иначе
+  engine: yandex                   # где искать, если поисковик не назван
+  home: https://ya.ru              # что открывать на «открой браузер»
   sites:
     работа: https://mail.yandex.ru
   engines:
