@@ -55,17 +55,28 @@ class YouTubeSkill(Skill):
         """Найти видео и запустить его на компьютере студии.
 
         Пример вызова чужого инструмента по имени: скилл не импортирует
-        WindowsSkill, а просит реестр выполнить нужную команду.
+        BrowserSkill, а просит реестр выполнить нужную команду. Собирать ссылку
+        и открывать её самому не нужно — этим занимается браузерный скилл, и он
+        же кодирует запрос.
 
         :param query: название или поисковый запрос.
         """
-        # TODO: получить ссылку через search_video
-        url = f"https://www.youtube.com/results?search_query={query}"
+        # TODO: получить прямую ссылку на видео через search_video и открывать её
+        if not self.tools.has("browser.search"):
+            return ToolResult.failure(
+                "открывать ссылки умеет скилл browser, а он не подключён",
+                speech={"ru": "Не могу открыть браузер.", "en": "I can't open the browser."},
+            )
 
-        if self.tools.has("windows.launch_program"):
-            await self.tools.invoke("windows.launch_program", {"program": url})
-
-        return ToolResult.success({"url": url}, speech={"ru": f"Включаю {query}.", "en": f"Playing {query}."})
+        result = await self.tools.invoke(
+            "browser.search", {"query": query, "engine": "youtube"}
+        )
+        if not result.ok:
+            return result
+        return ToolResult.success(
+            result.value,
+            speech={"ru": f"Включаю {query}.", "en": f"Playing {query}."},
+        )
 
     @tool(phrases=["пауза", "останови видео", "pause", "stop the video"])
     async def pause(self) -> ToolResult:

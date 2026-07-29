@@ -48,6 +48,11 @@ def _compile(phrase: str) -> re.Pattern[str] | None:
         return None
 
 
+def _specificity(phrase: str) -> int:
+    """Сколько в шаблоне собственных букв, не считая подстановок."""
+    return len(_PLACEHOLDER.sub("", phrase).replace(" ", ""))
+
+
 class PhraseResolver:
     """Точное и шаблонное совпадение по фразам, объявленным скиллами."""
 
@@ -60,9 +65,15 @@ class PhraseResolver:
         return "phrase"
 
     def _index(self) -> tuple[Mapping[str, str], list[tuple[re.Pattern[str], str]]]:
-        """Собрать индексы точных фраз и шаблонов; каталог может меняться на лету."""
+        """Собрать индексы точных фраз и шаблонов; каталог может меняться на лету.
+
+        Шаблоны выстраиваются от частного к общему: у кого больше собственных
+        слов, тот и проверяется первым. Иначе «найди в гугле котиков» досталось
+        бы шаблону «найди {query}», и разбирать, какой скилл загрузился раньше,
+        пришлось бы по алфавиту имён файлов.
+        """
         exact: dict[str, str] = {}
-        templates: list[tuple[re.Pattern[str], str]] = []
+        scored: list[tuple[int, re.Pattern[str], str]] = []
         for spec in self._registry.specs():
             for phrase in spec.phrases:
                 normalized = " ".join(phrase.lower().split())
@@ -70,8 +81,9 @@ class PhraseResolver:
                 if compiled is None:
                     exact[normalized] = spec.name
                 else:
-                    templates.append((compiled, spec.name))
-        return exact, templates
+                    scored.append((_specificity(normalized), compiled, spec.name))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return exact, [(pattern, name) for _, pattern, name in scored]
 
     async def resolve(self, utterance: Utterance) -> Intent | None:
         """Найти инструмент по точной фразе или шаблону."""

@@ -179,3 +179,55 @@ async def test_dispatcher_reports_unresolved(lights_registry: ToolRegistry) -> N
 
     assert not result.ok
     assert result.speech
+
+
+class Competing:
+    """Два скилла с пересекающимися шаблонами — как search и browser."""
+
+    @tool(phrases=["найди {query}"])
+    async def broad(self, query: str) -> ToolResult:
+        """Найти и рассказать.
+
+        :param query: запрос.
+        """
+        return ToolResult.success(f"рассказываю про {query}")
+
+    @tool(phrases=["найди в {engine} {query}"])
+    async def narrow(self, query: str, engine: str = "") -> ToolResult:
+        """Открыть выдачу в браузере.
+
+        :param query: запрос.
+        :param engine: где искать.
+        """
+        return ToolResult.success({"engine": engine, "query": query})
+
+
+async def test_specific_template_wins_over_broad_one(events) -> None:
+    """Шаблон с бо́льшим числом своих слов проверяется первым.
+
+    «Найди в гугле котиков» подходит и под «найди {query}», и под
+    «найди в {engine} {query}». Побеждать должен второй, иначе исход зависел
+    бы от того, какой скилл загрузился раньше, — то есть от алфавита имён
+    файлов.
+    """
+    registry = ToolRegistry(events=events)
+    for item in collect_tools(Competing(), namespace="rivals"):
+        registry.register(item)
+
+    intent = await PhraseResolver(registry).resolve(Utterance(text="найди в гугле котиков"))
+
+    assert intent is not None
+    assert intent.tool == "rivals.narrow"
+    assert intent.arguments == {"engine": "гугле", "query": "котиков"}
+
+
+async def test_broad_template_still_matches_its_own_phrase(events) -> None:
+    """Общий шаблон продолжает работать там, где частный не подходит."""
+    registry = ToolRegistry(events=events)
+    for item in collect_tools(Competing(), namespace="rivals"):
+        registry.register(item)
+
+    intent = await PhraseResolver(registry).resolve(Utterance(text="найди котиков"))
+
+    assert intent is not None
+    assert intent.tool == "rivals.broad"

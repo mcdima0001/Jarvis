@@ -230,7 +230,10 @@ class SearchSkill(Skill):
             self.log.info("Источник %s ничего не нашёл", provider.name)
         return []
 
-    @tool(phrases=["найди {query}", "поищи {query}", "загугли {query}",
+    # «Загугли» отдано скиллу browser: по смыслу это «открой мне гугл», а не
+    # «найди и расскажи». Здесь остаются формулировки, на которые ждут ответа
+    # голосом, а не открытой вкладки.
+    @tool(phrases=["найди {query}", "поищи {query}",
                    "search for {query}", "look up {query}"])
     async def web_search(self, query: str, limit: int = 3) -> ToolResult:
         """Найти страницы по запросу.
