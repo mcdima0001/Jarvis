@@ -308,6 +308,56 @@ def test_program_closed_by_window_title() -> None:
     assert windows.match_program("хром", catalog)[1] == "chrome.exe"
 
 
+#: Steam так и выглядит на самом деле: окно рисует не тот процесс, что запускали.
+_STEAM_TASKLIST = (
+    '"steam.exe","4321","Console","1","180 000 КБ","Running","DESK\\user",'
+    '"0:00:41","N/A"\r\n'
+    '"steamwebhelper.exe","4400","Console","1","400 000 КБ","Running","DESK\\user",'
+    '"0:00:30","Steam"\r\n'
+    '"steamwebhelper.exe","4401","Console","1","90 000 КБ","Running","DESK\\user",'
+    '"0:00:30","N/A"\r\n'
+    '"steamservice.exe","4402","Services","0","9 000 КБ","Running","N/A",'
+    '"0:00:01","N/A"\r\n'
+    '"explorer.exe","300","Console","1","70 000 КБ","Running","DESK\\user",'
+    '"0:10:00","Steam"\r\n'
+)
+
+
+def test_helpers_found_by_process_name() -> None:
+    """Помощники — те, чьё имя начинается с имени главного процесса."""
+    processes = windows.parse_tasklist(_STEAM_TASKLIST)
+
+    assert windows.helper_pids(processes, "steam.exe") == {4400, 4401, 4402}
+
+
+def test_window_of_another_program_is_not_a_helper() -> None:
+    """Папка «Steam» в проводнике — не Steam.
+
+    Поэтому помощники ищутся по имени процесса, а не по заголовку окна:
+    заголовок «Steam» бывает и у проводника, и у вкладки браузера.
+    """
+    processes = windows.parse_tasklist(_STEAM_TASKLIST)
+
+    assert 300 not in windows.helper_pids(processes, "steam.exe")
+
+
+def test_program_without_helpers() -> None:
+    """У обычной программы помощников нет — и искать нечего."""
+    processes = windows.parse_tasklist(_TASKLIST)
+
+    assert windows.helper_pids(processes, "chrome.exe") == set()
+
+
+def test_short_process_name_has_no_helpers() -> None:
+    """Короткая основа цепляла бы посторонних: «fl» нашлось бы во «flux»."""
+    processes = [
+        windows.Process(image="fl.exe", pid=1),
+        windows.Process(image="flux.exe", pid=2),
+    ]
+
+    assert windows.helper_pids(processes, "fl.exe") == set()
+
+
 def test_steam_lives_in_tray() -> None:
     """Для Steam «закрой» означает «убери окно», а не «выйди».
 
@@ -395,6 +445,53 @@ async def test_hidden_tray_app_left_alone(monkeypatch: pytest.MonkeyPatch) -> No
     skill._run = _should_not_run
 
     assert await skill._close("steam.exe", {1234}, force=False) == "трей"
+
+
+async def test_window_is_closed_through_a_helper_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Окно ищется и у процессов-помощников, если у главного его нет.
+
+    Настоящий сбой: интерфейс Steam рисует steamwebhelper.exe, у steam.exe
+    видимых окон нет вовсе. Ассистент отвечал «Steam и так свёрнут», когда
+    Steam был развёрнут во весь экран.
+    """
+    asked: list[set[int]] = []
+
+    def close(pids: set[int]) -> int:
+        asked.append(set(pids))
+        return 0 if pids == {1234} else 1
+
+    monkeypatch.setattr(windows, "close_windows", close)
+
+    skill = _closer()
+    skill._wait_gone = _should_not_wait
+    skill._run = _should_not_run
+
+    how = await skill._close("steam.exe", {1234}, force=False, helpers={5678})
+
+    assert how == "окно"
+    assert asked == [{1234}, {5678}]
+
+
+async def test_helpers_are_left_alone_while_the_main_window_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Пока окно нашлось у самой программы, к соседям не лезем."""
+    asked: list[set[int]] = []
+
+    def close(pids: set[int]) -> int:
+        asked.append(set(pids))
+        return 1
+
+    monkeypatch.setattr(windows, "close_windows", close)
+
+    skill = _closer()
+    skill._wait_gone = _should_not_wait
+    skill._run = _should_not_run
+
+    assert await skill._close("steam.exe", {1234}, force=False, helpers={5678}) == "окно"
+    assert asked == [{1234}]
 
 
 async def test_kill_skips_windows_and_forces(monkeypatch: pytest.MonkeyPatch) -> None:

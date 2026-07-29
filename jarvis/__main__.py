@@ -80,8 +80,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def _check(app: JarvisApp) -> int:
-    """Загрузить скиллы, напечатать отчёт и погасить приложение."""
-    await app.start()
+    """Загрузить скиллы, напечатать отчёт и погасить приложение.
+
+    Модели не поднимаются: отчёт о конфиге, скиллах и каталоге инструментов
+    в них не нуждается, а Whisper с Vosk грузятся минуты.
+    """
+    await app.start(models=False)
     try:
         print(app.summary())
     finally:

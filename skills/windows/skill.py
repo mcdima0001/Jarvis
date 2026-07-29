@@ -406,6 +406,30 @@ def process_catalog(processes: list[Process]) -> dict[str, str]:
     return catalog
 
 
+def helper_pids(processes: list[Process], image: str) -> set[int]:
+    """Номера процессов-помощников — тех, чьё имя начинается с имени главного.
+
+    Окно принадлежит не тому процессу, который запускали. У Steam с переездом
+    интерфейса на Chromium окно рисует ``steamwebhelper.exe``, а у самого
+    ``steam.exe`` видимых окон нет вовсе. Из-за этого «закрой стим» находил
+    процесс, не находил у него ни одного окна и докладывал, что окно и так
+    убрано, — при открытом на весь экран Steam.
+
+    Отбор по имени, а не по заголовку окна: заголовок «Steam» бывает и у папки
+    в проводнике, и у вкладки браузера, и закрывать их точно не нужно.
+    """
+    base = image.lower().removesuffix(".exe")
+    if len(base) < 4:
+        # Короткая основа цепляет посторонних: «fl» нашлось бы во «flux».
+        return set()
+    return {
+        process.pid
+        for process in processes
+        if process.image.lower() != image.lower()
+        and process.image.lower().removesuffix(".exe").startswith(base)
+    }
+
+
 #: Программы, которые живут в трее: «закрой» для них означает «убери окно».
 #:
 #: Steam — главный пример. Крестик у него сворачивает окно, а не выходит, и это
@@ -645,7 +669,9 @@ class WindowsSkill(Skill):
             )
 
         pids = {process.pid for process in processes if process.image == image}
-        how = await self._close(image, pids, force=force)
+        how = await self._close(
+            image, pids, force=force, helpers=helper_pids(processes, image)
+        )
         if how is None:
             return ToolResult.failure(
                 f"{image} не закрылся",
@@ -665,8 +691,19 @@ class WindowsSkill(Skill):
 
         return ToolResult.success({"process": image, "method": how}, speech=speech)
 
-    async def _close(self, image: str, pids: set[int], *, force: bool) -> str | None:
-        """Закрыть процесс, перебирая способы. Возвращает сработавший."""
+    async def _close(
+        self,
+        image: str,
+        pids: set[int],
+        *,
+        force: bool,
+        helpers: set[int] = frozenset(),  # type: ignore[assignment]  # только читаем
+    ) -> str | None:
+        """Закрыть процесс, перебирая способы. Возвращает сработавший.
+
+        :param helpers: процессы-помощники той же программы. К ним обращаемся,
+            только если у главного процесса окон не нашлось.
+        """
         if force:
             return await self._taskkill(image, force=True)
 
@@ -685,6 +722,17 @@ class WindowsSkill(Skill):
         # Запрос окнам: то же, что Alt+F4, но адресно — клавиши ушли бы в окно,
         # которое сейчас в фокусе, а это может оказаться что угодно.
         sent = await asyncio.to_thread(close_windows, pids)
+
+        if not sent and helpers:
+            # Своих окон нет — значит, интерфейс держит вспомогательный
+            # процесс. Расширяем поиск только сейчас: пока окно нашлось у
+            # главного, лезть к соседям незачем.
+            self.log.info(
+                "У %s нет видимых окон, пробую помощников: %s",
+                image,
+                ", ".join(str(pid) for pid in sorted(helpers)),
+            )
+            sent = await asyncio.to_thread(close_windows, helpers)
 
         if image.lower() in self._tray_apps:
             # Для программы из трея убранное окно — это и есть результат.

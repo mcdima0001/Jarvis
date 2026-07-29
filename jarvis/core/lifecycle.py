@@ -36,22 +36,33 @@ class ServiceRunner:
     """Запускает сервисы по порядку и останавливает в обратном."""
 
     def __init__(self) -> None:
-        self._services: list[Service] = []
+        self._services: list[tuple[Service, bool]] = []
         self._started: list[Service] = []
 
-    def add(self, service: Service) -> Service:
-        """Зарегистрировать сервис. Возвращает его же — удобно для цепочек."""
-        self._services.append(service)
+    def add(self, service: Service, *, heavy: bool = False) -> Service:
+        """Зарегистрировать сервис. Возвращает его же — удобно для цепочек.
+
+        :param heavy: сервис грузит модели и потому нужен не всегда. Отчёт о
+            сборке (``--check``) поднимает систему без таких сервисов: ему
+            важен каталог инструментов, а не то, что Whisper умеет слушать.
+        """
+        self._services.append((service, heavy))
         return service
 
     @property
     def services(self) -> tuple[Service, ...]:
         """Все зарегистрированные сервисы в порядке запуска."""
-        return tuple(self._services)
+        return tuple(service for service, _ in self._services)
 
-    async def start_all(self) -> None:
-        """Запустить всё. При сбое гасит уже поднятое и пробрасывает ошибку."""
-        for service in self._services:
+    async def start_all(self, *, skip_heavy: bool = False) -> None:
+        """Запустить всё. При сбое гасит уже поднятое и пробрасывает ошибку.
+
+        :param skip_heavy: пропустить сервисы, помеченные ``heavy``.
+        """
+        for service, heavy in self._services:
+            if heavy and skip_heavy:
+                logger.debug("Сервис %s пропущен: модели не нужны", service.service_name)
+                continue
             try:
                 await service.start()
             except Exception:

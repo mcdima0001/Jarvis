@@ -66,6 +66,8 @@ class JarvisApp:
     audio: AudioStack
     worker: BlockingWorker
     runner: ServiceRunner
+    #: Поднимались ли звук и модели. Отчёт о сборке обходится без них.
+    models_loaded: bool = False
 
     # --- сборка ------------------------------------------------------------
 
@@ -141,8 +143,21 @@ class JarvisApp:
         )
 
         runner = ServiceRunner()
-        for service in (worker, events, memory, llm, audio.sink, audio.source, stt, tts, skills, pipeline):
-            runner.add(service)
+        # Порядок важен, флаг — нет: тяжёлые сервисы грузят модели (Whisper,
+        # Vosk, Kokoro) и поднимаются минуты. Отчёту о сборке они не нужны.
+        for service, heavy in (
+            (worker, False),
+            (events, False),
+            (memory, False),
+            (llm, False),
+            (audio.sink, True),
+            (audio.source, True),
+            (stt, True),
+            (tts, True),
+            (skills, False),
+            (pipeline, True),
+        ):
+            runner.add(service, heavy=heavy)
 
         return cls(
             config=config,
@@ -162,9 +177,15 @@ class JarvisApp:
 
     # --- жизненный цикл ----------------------------------------------------
 
-    async def start(self) -> None:
-        """Поднять все сервисы и загрузить скиллы."""
-        await self.runner.start_all()
+    async def start(self, *, models: bool = True) -> None:
+        """Поднять все сервисы и загрузить скиллы.
+
+        :param models: поднимать ли звук, распознавание и синтез. Без них
+            система собирается за секунду вместо двух минут — этого хватает,
+            чтобы проверить конфиг, скиллы и каталог инструментов.
+        """
+        await self.runner.start_all(skip_heavy=not models)
+        self.models_loaded = models
 
         gaps = self.skills.missing_requirements()
         for skill, missing in gaps.items():
@@ -267,6 +288,13 @@ class JarvisApp:
         lines.append(
             f"  LLM {'настроена' if self.llm.available else 'НЕ настроена (работает заглушка)'}"
         )
+        if not self.models_loaded:
+            # Иначе успешный отчёт легко принять за проверку голоса целиком.
+            lines += [
+                "",
+                "Звук, распознавание и синтез не поднимались — отчёт о сборке "
+                "их не требует.",
+            ]
         return "\n".join(lines)
 
 
