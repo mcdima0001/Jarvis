@@ -35,7 +35,7 @@ from urllib.parse import quote_plus, urlsplit
 from jarvis.core.contracts import ToolResult
 from jarvis.core.net import WebSocketServer
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import skeleton, squash
+from jarvis.core.text import romanize, skeleton, squash
 from jarvis.core.tools import tool
 
 #: Поисковые системы: куда подставить запрос.
@@ -357,7 +357,36 @@ def internal_page(name: str) -> tuple[str, ...]:
     return INTERNAL_PAGES[max(matches, key=len)] if matches else ()
 
 
-def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
+#: Chrome помечает этим вкладку, которая не входит ни в одну группу.
+NO_GROUP = -1
+
+
+def by_proximity(tabs: list[dict], current: dict | None) -> list[dict]:
+    """Расставить вкладки от ближних к дальним относительно текущей.
+
+    У браузера бывают десятки вкладок одного сайта, разложенных по группам, и
+    «переключись на гитхаб» должно вести в тот гитхаб, рядом с которым сейчас
+    работают. Порядок: своя группа, своё окно, всё остальное. Группа живёт
+    внутри окна, поэтому первое условие строже второго, а не рядом с ним.
+    """
+    if not current:
+        return list(tabs)
+
+    window = current.get("windowId")
+    group = current.get("groupId", NO_GROUP)
+
+    def rank(tab: dict) -> int:
+        same_window = tab.get("windowId") == window
+        if same_window and group != NO_GROUP and tab.get("groupId") == group:
+            return 0
+        return 1 if same_window else 2
+
+    return sorted(tabs, key=rank)
+
+
+def tabs_by_title(
+    tabs: list[dict], spoken: str, current: dict | None = None
+) -> list[int]:
     """Номера вкладок, чей заголовок похож на сказанное.
 
     Нужно для страниц, которых нет и не может быть в каталоге сайтов:
@@ -373,12 +402,17 @@ def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
 
     stem = _stem(wanted)
     tight = _stem(squash(wanted))
+    # То же самое латиницей: «апи кей» произнесено по-русски, а на вкладке
+    # написано «API Key». Костяк тут не поможет — он слишком короткий.
+    # Окончание не отбрасываем: в латинской записи «y» и «e» на конце — часть
+    # слова, а не падеж, и «apikey» превратилось бы в «apik».
+    tight_latin = squash(romanize(wanted))
     # Название на странице может быть написано другим алфавитом, чем услышал
     # Whisper: «МаршалТех» на вкладке против «MarshallTech» в расшифровке.
     # Согласный костяк у обоих написаний одинаковый.
     sounds = skeleton(wanted)
     found: list[int] = []
-    for tab in tabs:
+    for tab in by_proximity(tabs, current):
         title = str(tab.get("title", "")).lower()
         page = page_title(title)
         words = {_stem(word) for word in _WORD.findall(page)}
@@ -386,7 +420,10 @@ def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
         # Сжатая форма ищется как кусок заголовка, поэтому порог выше: по
         # четырём буквам подряд совпадёт слишком многое.
         if not matched and len(tight) >= _MIN_PREFIX + 2:
-            matched = tight in squash(page)
+            matched = tight in squash(page) or (
+                len(tight_latin) >= _MIN_PREFIX + 2
+                and tight_latin in squash(romanize(page))
+            )
         if not matched and len(sounds) >= _MIN_SKELETON:
             matched = sounds in skeleton(page)
         if matched:
@@ -779,8 +816,10 @@ class BrowserSkill(Skill):
                 )
 
         # Открытая вкладка: «переключись на Marshall Tech».
-        listed = await self._extension.call("tabs")
-        matching = tabs_by_title((listed or {}).get("tabs", []), spoken)
+        listed = await self._extension.call("tabs") or {}
+        matching = tabs_by_title(
+            listed.get("tabs", []), spoken, listed.get("current")
+        )
         if not matching:
             return None
 
@@ -850,8 +889,8 @@ class BrowserSkill(Skill):
         else:
             # Не всякая вкладка — известный сайт: настройки браузера, локальная
             # разработка, открытый документ. Ищем по заголовку.
-            tabs = await self._extension.call("tabs")
-            matching = tabs_by_title((tabs or {}).get("tabs", []), name)
+            tabs = await self._extension.call("tabs") or {}
+            matching = tabs_by_title(tabs.get("tabs", []), name, tabs.get("current"))
             if not matching:
                 return ToolResult.failure(
                     f"вкладка {name!r} не найдена",

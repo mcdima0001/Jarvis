@@ -600,3 +600,50 @@ def test_skeleton_does_not_match_everything(spoken: str) -> None:
 def test_internal_pages_answer_to_both_languages(spoken: str) -> None:
     """Служебные страницы называют и по-русски, и по-английски."""
     assert browser.internal_page(spoken)
+
+
+# --- группы вкладок ---------------------------------------------------------
+
+
+_GROUPED = [
+    {"tabId": 1, "title": "GitHub — чужая группа", "windowId": 1, "groupId": 5},
+    {"tabId": 2, "title": "GitHub — своя группа", "windowId": 1, "groupId": 9},
+    {"tabId": 3, "title": "GitHub — другое окно", "windowId": 2, "groupId": 7},
+    {"tabId": 4, "title": "GitHub — своё окно, без группы", "windowId": 1,
+     "groupId": browser.NO_GROUP},
+]
+
+
+def test_own_group_wins() -> None:
+    """У браузера десятки вкладок одного сайта, разложенных по группам.
+
+    «Переключись на гитхаб» должно вести в тот гитхаб, рядом с которым сейчас
+    работают, а не в первый попавшийся.
+    """
+    here = {"windowId": 1, "groupId": 9}
+    assert browser.by_proximity(_GROUPED, here)[0]["tabId"] == 2
+
+
+def test_own_window_wins_when_there_is_no_group() -> None:
+    """Вне группы ближайшим считается всё, что в этом же окне."""
+    here = {"windowId": 2, "groupId": browser.NO_GROUP}
+    assert browser.by_proximity(_GROUPED, here)[0]["tabId"] == 3
+
+
+def test_order_is_kept_without_a_current_tab() -> None:
+    """Не знаем, где пользователь, — не выдумываем: порядок как пришёл."""
+    assert [tab["tabId"] for tab in browser.by_proximity(_GROUPED, None)] == [1, 2, 3, 4]
+
+
+def test_title_search_prefers_the_nearest_tab() -> None:
+    """Поиск по заголовку тоже отдаёт ближайшую вкладку первой."""
+    here = {"windowId": 1, "groupId": 9}
+    assert browser.tabs_by_title(_GROUPED, "github", here)[0] == 2
+
+
+def test_latin_title_found_by_russian_speech() -> None:
+    """«Апи кей» произнесено по-русски, а на вкладке написано «API Key»."""
+    tabs = [{"tabId": 7, "title": "API Key | Settings"}]
+
+    assert browser.tabs_by_title(tabs, "апи кей") == [7]
+    assert browser.tabs_by_title(tabs, "apk settings") == [7]

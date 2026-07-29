@@ -14,6 +14,8 @@
  */
 
 const DEFAULT_PORT = 8765;
+/** Chrome помечает этим вкладку, которая не входит ни в одну группу. */
+const NO_GROUP = -1;
 const KEEPALIVE_MS = 20000;
 const ALARM = "jarvis-reconnect";
 
@@ -115,6 +117,45 @@ function sameSite(first, second) {
   }
 }
 
+/**
+ * Где пользователь работает прямо сейчас: активная вкладка окна в фокусе.
+ * По ней выбирается ближайшая из подходящих — иначе «переключись на гитхаб»
+ * уводит в другую группу вкладок, где такой же гитхаб просто оказался первым.
+ */
+async function currentSpot() {
+  try {
+    const window = await chrome.windows.getLastFocused({ populate: false });
+    const [tab] = await chrome.tabs.query({ active: true, windowId: window.id });
+    if (!tab) {
+      return null;
+    }
+    return {
+      tabId: tab.id,
+      windowId: tab.windowId,
+      groupId: tab.groupId === undefined ? NO_GROUP : tab.groupId,
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+/** Насколько вкладка близка к текущей: своя группа, своё окно, всё остальное. */
+function distance(tab, spot) {
+  if (!spot) {
+    return 2;
+  }
+  const sameWindow = tab.windowId === spot.windowId;
+  if (sameWindow && spot.groupId !== NO_GROUP && tab.groupId === spot.groupId) {
+    return 0;
+  }
+  return sameWindow ? 1 : 2;
+}
+
+/** Отсортировать вкладки от ближних к дальним. */
+function byProximity(tabs, spot) {
+  return tabs.slice().sort((first, second) => distance(first, spot) - distance(second, spot));
+}
+
 /** Показать вкладку и поднять её окно на передний план. */
 async function focusTab(tab) {
   await chrome.tabs.update(tab.id, { active: true });
@@ -131,9 +172,11 @@ async function run(action, params) {
   if (action === "tabs") {
     const tabs = await chrome.tabs.query({});
     return {
+      current: await currentSpot(),
       tabs: tabs.map((tab) => ({
         tabId: tab.id,
         windowId: tab.windowId,
+        groupId: tab.groupId === undefined ? NO_GROUP : tab.groupId,
         title: tab.title,
         url: tab.url,
         active: tab.active,
@@ -170,7 +213,8 @@ async function run(action, params) {
     }
     if (params.reuse) {
       const tabs = await chrome.tabs.query({});
-      const found = tabs.find((tab) => sameSite(tab.url || "", params.url));
+      const matching = tabs.filter((tab) => sameSite(tab.url || "", params.url));
+      const found = byProximity(matching, await currentSpot())[0];
       if (found) {
         return { ...(await focusTab(found)), reused: true };
       }
@@ -190,7 +234,10 @@ async function run(action, params) {
     const wanted = params.tabIds || (params.tabId ? [params.tabId] : null);
     const doomed = wanted
       ? tabs.filter((tab) => wanted.includes(tab.id))
-      : tabs.filter((tab) => isWebUrl(params.url) && sameSite(tab.url || "", params.url));
+      : byProximity(
+          tabs.filter((tab) => isWebUrl(params.url) && sameSite(tab.url || "", params.url)),
+          await currentSpot(),
+        );
     if (!doomed.length) {
       return { closed: 0 };
     }
