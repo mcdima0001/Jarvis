@@ -32,6 +32,9 @@ class FasterWhisperSTT:
         self._config = config
         self._worker = worker
         self._model: Any = None
+        #: Фильтр тишины можно потерять на ходу: он требует onnxruntime, и на
+        #: свежем Python колёс может ещё не быть.
+        self._vad_filter = config.vad_filter
 
     @property
     def service_name(self) -> str:
@@ -71,11 +74,12 @@ class FasterWhisperSTT:
                 # разница в скорости — раз в пять, а причина обычно одна:
                 # ctranslate2 не видит библиотеки CUDA.
                 logger.info(
-                    "Видеокарта не найдена (ctranslate2 насчитал 0 устройств) — "
-                    "работаю на процессоре. Проверить: python -c \"import "
-                    "ctranslate2; print(ctranslate2.get_cuda_device_count())\". "
-                    "Нужны cuBLAS и cuDNN: pip install nvidia-cublas-cu12 "
-                    "nvidia-cudnn-cu12"
+                    "Видеокарта для расчётов не найдена — работаю на процессоре. "
+                    "Whisper умеет считать только на CUDA, то есть на NVIDIA; "
+                    "встроенная графика Intel и карты AMD ему недоступны. Есть ли "
+                    "NVIDIA, показывает команда nvidia-smi. Если она есть, но "
+                    "устройств ноль — не хватает библиотек: pip install "
+                    "nvidia-cublas-cu12 nvidia-cudnn-cu12"
                 )
 
         if compute in ("", "auto"):
@@ -106,6 +110,7 @@ class FasterWhisperSTT:
                 self._config.model,
                 device=device,
                 compute_type=compute_type,
+                cpu_threads=self._config.cpu_threads,
                 download_root=str(self._config.models_dir),
             )
         except Exception as exc:
@@ -118,6 +123,7 @@ class FasterWhisperSTT:
                     self._config.model,
                     device="cpu",
                     compute_type="int8",
+                    cpu_threads=self._config.cpu_threads,
                     download_root=str(self._config.models_dir),
                 )
             raise
@@ -172,15 +178,35 @@ class FasterWhisperSTT:
         samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / _PCM16_SCALE
         language, prompt = self._pick_language(samples)
 
-        segments, info = self._model.transcribe(
-            samples,
-            language=language,
-            beam_size=self._config.beam_size,
-            vad_filter=False,
-            # Смещает словарь модели в сторону имени ассистента и названий
-            # программ студии: без этого «Джарвис» превращается в «жаркость».
-            initial_prompt=prompt,
-        )
+        try:
+            segments, info = self._model.transcribe(
+                samples,
+                language=language,
+                beam_size=self._config.beam_size,
+                # Тишину и не-речь выбрасывает Silero до самой модели. На
+                # процессоре это главный рычаг: посторонний звук из колонок
+                # перестаёт занимать распознавание целиком.
+                vad_filter=self._vad_filter,
+                # Смещает словарь модели в сторону имени ассистента и названий
+                # программ студии: без этого «Джарвис» превращается в «жаркость».
+                initial_prompt=prompt,
+            )
+        except Exception as exc:  # noqa: BLE001 — без фильтра работать можно
+            if not self._vad_filter:
+                raise
+            logger.warning(
+                "Фильтр тишины не работает (%s) — выключаю его до перезапуска. "
+                "Обычно не хватает onnxruntime",
+                exc,
+            )
+            self._vad_filter = False
+            segments, info = self._model.transcribe(
+                samples,
+                language=language,
+                beam_size=self._config.beam_size,
+                vad_filter=False,
+                initial_prompt=prompt,
+            )
         try:
             parts = [segment.text for segment in segments]
         except RuntimeError as exc:

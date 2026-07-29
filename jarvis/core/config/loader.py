@@ -260,6 +260,8 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             language_min_probability=float(stt.get("language_min_probability", 0.6)),
             fallback_language=str(stt.get("fallback_language", "ru")),
             beam_size=int(stt.get("beam_size", 1)),
+            vad_filter=bool(stt.get("vad_filter", True)),
+            cpu_threads=int(stt.get("cpu_threads", 0)),
             models_dir=_resolve(project_root, stt.get("models_dir", "models/whisper")),
             initial_prompt=_prompts(stt.get("initial_prompt")),
         ),
