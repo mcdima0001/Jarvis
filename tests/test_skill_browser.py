@@ -556,3 +556,47 @@ def test_tab_found_whether_written_together_or_apart(spoken: str) -> None:
 def test_squashed_search_does_not_match_everything(spoken: str) -> None:
     """Сжатая форма ищется куском заголовка, поэтому порог длины выше."""
     assert browser.tabs_by_title(_MIXED_TABS, spoken) == []
+
+
+# --- один и тот же текст разными алфавитами ---------------------------------
+
+
+_CYRILLIC_TABS = [
+    {"tabId": 1, "title": "МаршалТех — статистика сервера"},
+    {"tabId": 2, "title": "Расширения"},
+]
+
+
+@pytest.mark.parametrize(
+    "spoken", ["MarshallTech", "Marshall Tech", "МаршалТех", "маршал тех"]
+)
+def test_tab_found_across_alphabets(spoken: str) -> None:
+    """На странице название по-русски, а Whisper пишет латиницей.
+
+    «МаршалТех» и «MarshallTech» — одно слово в двух алфавитах, и побуквенно
+    они не совпадают вовсе. Совпадает согласный костяк.
+    """
+    assert browser.tabs_by_title(_CYRILLIC_TABS, spoken) == [1]
+
+
+def test_site_from_config_found_across_alphabets() -> None:
+    """То же и для своих сайтов из конфига: как записал, так и записал."""
+    sites = {**SITES, "маршалтех": "https://marshaltech.example"}
+
+    assert browser.site_url("MarshallTech", sites) == "https://marshaltech.example"
+    assert browser.site_url("Marshall Tech", sites) == "https://marshaltech.example"
+
+
+@pytest.mark.parametrize("spoken", ["борщ", "мама", "как дела", "питон"])
+def test_skeleton_does_not_match_everything(spoken: str) -> None:
+    """Костяк огрубляет слово, поэтому короткие по нему не ищутся вовсе."""
+    sites = {**SITES, "маршалтех": "https://marshaltech.example"}
+
+    assert browser.site_url(spoken, sites) is None
+    assert browser.tabs_by_title(_CYRILLIC_TABS, spoken) == []
+
+
+@pytest.mark.parametrize("spoken", ["Extensions", "расширения", "settings", "историю"])
+def test_internal_pages_answer_to_both_languages(spoken: str) -> None:
+    """Служебные страницы называют и по-русски, и по-английски."""
+    assert browser.internal_page(spoken)

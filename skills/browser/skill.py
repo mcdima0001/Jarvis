@@ -35,6 +35,7 @@ from urllib.parse import quote_plus, urlsplit
 from jarvis.core.contracts import ToolResult
 from jarvis.core.net import WebSocketServer
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
+from jarvis.core.text import skeleton, squash
 from jarvis.core.tools import tool
 
 #: Поисковые системы: куда подставить запрос.
@@ -128,14 +129,19 @@ BROWSERS: dict[str, tuple[str, ...]] = {
 #: открывать нельзя.
 INTERNAL_PAGES: dict[str, tuple[str, ...]] = {
     "расширения": ("browser://extensions", "chrome://extensions", "about:addons"),
+    "extensions": ("browser://extensions", "chrome://extensions", "about:addons"),
     "настройки браузера": (
         "browser://settings",
         "chrome://settings",
         "about:preferences",
     ),
+    "settings": ("browser://settings", "chrome://settings", "about:preferences"),
     "история": ("browser://history", "chrome://history", "about:history"),
+    "history": ("browser://history", "chrome://history", "about:history"),
     "загрузки": ("browser://downloads", "chrome://downloads", "about:downloads"),
+    "downloads": ("browser://downloads", "chrome://downloads", "about:downloads"),
     "закладки": ("browser://bookmarks", "chrome://bookmarks", "about:bookmarks"),
+    "bookmarks": ("browser://bookmarks", "chrome://bookmarks", "about:bookmarks"),
 }
 
 #: Страница, которая открывается на голое «открой браузер».
@@ -156,26 +162,13 @@ _MIN_PREFIX = 4
 _QUOTES = " «»\"'`.,!?;:()[]"
 
 
-#: Всё, что не буква и не цифра. Одно и то же название пишут по-разному:
-#: «Яндекс.Музыка», «Яндекс Музыка», «MarshallTech», «Marshall Tech».
-_NOT_LETTER = re.compile(r"[^\w]+", re.UNICODE)
-
-
 def clean_spoken(text: str) -> str:
     """Убрать кавычки и лишние пробелы вокруг названия."""
     return " ".join(text.split()).strip(_QUOTES)
 
 
-def squash(text: str) -> str:
-    """Сжать название до одних букв и цифр в нижнем регистре.
-
-    Разделители внутри названия — вопрос вкуса того, кто его писал, и слуха
-    того, кто его расшифровывал. «Яндекс.Музыка» с точкой не совпадала с
-    «яндекс музыка» из каталога, и открывался просто Яндекс; «MarshallTech»
-    слитно не совпадал с «Marshall Tech» в заголовке вкладки. После сжатия
-    все эти написания — одно слово.
-    """
-    return _NOT_LETTER.sub("", text).lower()
+#: Костяк короче этого совпадёт со слишком многим: у «YouTube» он равен «tb».
+_MIN_SKELETON = 5
 
 #: Гласные на конце: по ним и различаются падежи — «почта», «почту», «почте».
 _ENDINGS = "аеёиоуыэюяaeiouy"
@@ -237,6 +230,16 @@ def site_url(name: str, sites: dict[str, str]) -> str | None:
         close = difflib.get_close_matches(stem, list(stems), n=1, cutoff=_SIMILARITY)
         if close:
             return safe_url(stems[close[0]])
+
+        # Название могли записать другим алфавитом, чем услышал Whisper:
+        # «МаршалТех» в конфиге против «MarshallTech» в расшифровке. Согласный
+        # костяк у обоих одинаковый; короткие костяки не берём — «tb» от
+        # «YouTube» совпал бы со слишком многим.
+        sounds = skeleton(text)
+        if len(sounds) >= _MIN_SKELETON:
+            for spoken, url in sites.items():
+                if skeleton(spoken) == sounds:
+                    return safe_url(url)
 
     if "://" in text:
         return safe_url(text)
@@ -370,6 +373,10 @@ def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
 
     stem = _stem(wanted)
     tight = _stem(squash(wanted))
+    # Название на странице может быть написано другим алфавитом, чем услышал
+    # Whisper: «МаршалТех» на вкладке против «MarshallTech» в расшифровке.
+    # Согласный костяк у обоих написаний одинаковый.
+    sounds = skeleton(wanted)
     found: list[int] = []
     for tab in tabs:
         title = str(tab.get("title", "")).lower()
@@ -380,6 +387,8 @@ def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
         # четырём буквам подряд совпадёт слишком многое.
         if not matched and len(tight) >= _MIN_PREFIX + 2:
             matched = tight in squash(page)
+        if not matched and len(sounds) >= _MIN_SKELETON:
+            matched = sounds in skeleton(page)
         if matched:
             identifier = tab.get("tabId")
             if isinstance(identifier, int):

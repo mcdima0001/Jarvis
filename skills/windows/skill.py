@@ -33,6 +33,7 @@ from typing import Mapping
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
+from jarvis.core.text import romanize, skeleton, squash
 from jarvis.core.tools import tool
 
 #: Встроенные средства Windows: в меню «Пуск» лежат не все.
@@ -68,64 +69,11 @@ _SKIP_SHORTCUT = re.compile(
 #: Имя процесса для taskkill: только то, что не может оказаться чем-то иным.
 _PROCESS_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}\.exe$")
 
-#: Кириллица в латиницу — «обс» должно находить «OBS».
-_CYRILLIC_TO_LATIN = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
-    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
-    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
-    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
-    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
-}
-
 #: Насколько похожими должны быть названия, чтобы счесть их одним и тем же.
 #: Порог низкий: транслитерация огрубляет слова, «влс» против «vlc» даёт всего
 #: 0.67. Запас до ближайшего известного ложного срабатывания («трамп» против
 #: «telegram», 0.62) невелик — понижать дальше нельзя.
 _SIMILARITY = 0.66
-
-
-def _romanize(text: str) -> str:
-    """Записать кириллицу латиницей для сравнения названий."""
-    return "".join(_CYRILLIC_TO_LATIN.get(char, char) for char in text)
-
-
-#: Английское написание против русского произношения: photoshop — «фотошоп»,
-#: notion — «ноушен», firefox — «файрфокс». Правила выравнивают обе записи.
-_PHONETIC: tuple[tuple[str, str], ...] = (
-    ("tion", "shn"), ("ph", "f"), ("ck", "k"), ("x", "ks"),
-    ("w", "v"), ("j", "dz"), ("qu", "kv"), ("c", "k"),
-    # После c→k: «Chrome» становится «khrome», а по-русски это «хром».
-    ("kh", "h"),
-)
-
-_VOWELS = "aeiouy"
-
-
-def _skeleton(text: str) -> str:
-    """Согласный костяк слова — то, что переживает произношение вслух.
-
-    Гласные при переводе на слух плывут сильнее всего («зум» против «zoom»),
-    а согласные остаются. Сравнение костяков идёт только на точное совпадение:
-    приём грубый, и нечёткость поверх него давала бы ложные попадания.
-    """
-    lowered = _romanize(text.strip().lower())
-    for source, target in _PHONETIC:
-        lowered = lowered.replace(source, target)
-    letters = [char for char in lowered if char.isalnum() and char not in _VOWELS]
-    # Двойные согласные на слух неразличимы: «Discord» и «дискорд».
-    collapsed = [
-        char for index, char in enumerate(letters) if index == 0 or char != letters[index - 1]
-    ]
-    return "".join(collapsed)
-
-
-def _normalize(text: str) -> str:
-    """Привести название к виду, в котором его можно сравнивать.
-
-    Пробелы и пунктуация в названиях расставлены как попало: «OBS Studio»,
-    «obs-studio», «ОБС».
-    """
-    return re.sub(r"[^a-zа-яё0-9]+", "", text.strip().lower())
 
 
 #: Слова, которые в названиях есть у всех и ничего не различают.
@@ -161,18 +109,18 @@ def _keys(text: str, *, split: bool = True) -> tuple[str, ...]:
         на «task».
     """
     lowered = text.strip().lower()
-    variants = [lowered, _romanize(lowered)]
+    variants = [lowered, romanize(lowered)]
     if split:
         for word in _significant_words(text):
-            variants += [word, _romanize(word)]
+            variants += [word, romanize(word)]
 
-    keys = (_normalize(variant) for variant in variants)
+    keys = (squash(variant) for variant in variants)
     return tuple(dict.fromkeys(key for key in keys if key))
 
 
 def _skeletons(text: str) -> set[str]:
     """Костяки названия целиком и каждого значащего слова."""
-    found = {_skeleton(text)} | {_skeleton(word) for word in _significant_words(text)}
+    found = {skeleton(text)} | {skeleton(word) for word in _significant_words(text)}
     # Костяк из одной буквы совпадёт с чем угодно.
     return {item for item in found if len(item) >= 2}
 
@@ -227,7 +175,7 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
 
     # Согласный костяк: «фотошоп» и «photoshop» пишутся по-разному, а звучат
     # одинаково. Совпадение требуется точное — костяк и так огрубляет слово.
-    skeletons = {_skeleton(query)} - {""}
+    skeletons = {skeleton(query)} - {""}
     by_skeleton = [
         (name, target)
         for name, target, _, _ in prepared
@@ -328,7 +276,7 @@ def scan_program_files(roots: list[Path], *, limit: int = 300) -> dict[str, str]
             except OSError:
                 continue
             for executable in executables:
-                if _skeleton(executable.stem) == _skeleton(folder.name):
+                if skeleton(executable.stem) == skeleton(folder.name):
                     found.setdefault(folder.name, str(executable))
                     break
             if len(found) >= limit:
