@@ -135,6 +135,35 @@ check("отказ автозапуска уводит к кнопке сайта
   assert(button.clicked === 1, "кнопка не нажата");
 });
 
+check("«нравится» не попадает в «не нравится»", async () => {
+  // Ровно то, что случилось на живой Яндекс Музыке: кнопка дизлайка стояла в
+  // разметке раньше, и её подпись содержала «нравится» целиком.
+  const dislike = element({ attributes: { "aria-label": "Не нравится" } });
+  const like = element({ attributes: { "aria-label": "Нравится" } });
+  const api = load(makeDocument({ controls: [dislike, like] }));
+  const result = await api.jarvisRunPlan([
+    { label: ["нравится"], avoid: ["не нравится"] },
+  ]);
+  assert(result.done === "label", "кнопка не найдена");
+  assert(dislike.clicked === 0, "нажат дизлайк");
+  assert(like.clicked === 1, "лайк не нажат");
+});
+
+check("кавычки в подписи не мешают", async () => {
+  // YouTube пишет «Поставить отметку "Нравится"» — слово в кавычках, и без
+  // разбора подписи по словам совпадения не находилось вовсе.
+  const dislike = element({ attributes: { "aria-label": 'Поставить отметку "Не нравится"' } });
+  const like = element({ attributes: { "aria-label": 'Поставить отметку "Нравится"' } });
+  const undo = element({ attributes: { "aria-label": 'Убрать отметку "Нравится"' } });
+  const api = load(makeDocument({ controls: [dislike, undo, like] }));
+  const result = await api.jarvisRunPlan([
+    { label: ["нравится"], avoid: ["не нравится", "убрать"] },
+  ]);
+  assert(result.done === "label", "кнопка не найдена");
+  assert(dislike.clicked === 0 && undo.clicked === 0, "нажата соседняя кнопка");
+  assert(like.clicked === 1, "лайк не нажат");
+});
+
 check("«like» не попадает в «dislike»", async () => {
   const dislike = element({ attributes: { "aria-label": "Dislike this video" } });
   const like = element({ attributes: { "aria-label": "Like this video" } });

@@ -124,15 +124,22 @@ async function jarvisRunPlan(plan) {
   };
 
   /**
-   * Совпадение краем слова, а не любым куском. «like» внутри «dislike» —
-   * ровно противоположная команда, и по такому совпадению нажимать нельзя.
+   * Подпись, разложенная по словам: всё, кроме букв и цифр, становится
+   * границей. Иначе кавычки в «Поставить отметку "Нравится"» приклеиваются к
+   * слову, и совпадения по нему не находится вовсе.
    */
-  const hits = (label, word) =>
-    label === word || label.startsWith(word) || label.includes(` ${word}`);
+  const spaced = (text) => ` ${norm(text).replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
 
-  /** Кнопка, чья подпись начинается с одного из слов. */
-  const byLabel = (words) => {
-    const wanted = words.map(norm).filter(Boolean);
+  /**
+   * Совпадение началом слова, а не любым куском. «like» внутри «dislike» и
+   * «нравится» внутри «не нравится» — ровно противоположные команды.
+   */
+  const hits = (label, word) => label.includes(` ${word}`);
+
+  /** Кнопка, чья подпись содержит одно из слов и ни одного запретного. */
+  const byLabel = (step) => {
+    const wanted = step.label.map((word) => spaced(word).trim()).filter(Boolean);
+    const forbidden = (step.avoid || []).map((word) => spaced(word).trim()).filter(Boolean);
     if (!wanted.length) {
       return null;
     }
@@ -140,9 +147,15 @@ async function jarvisRunPlan(plan) {
       if (!seen(element)) {
         continue;
       }
-      const label = caption(element);
+      const caption_ = caption(element);
       // Слишком длинная подпись — это не кнопка, а кусок текста со ссылкой.
-      if (!label || label.length > 120) {
+      if (!caption_ || caption_.length > 120) {
+        continue;
+      }
+      const label = spaced(caption_);
+      // Запрет сильнее совпадения: «не нравится» содержит «нравится» целиком,
+      // и без этой проверки лайк превращается в дизлайк.
+      if (forbidden.some((word) => hits(label, word))) {
         continue;
       }
       if (wanted.some((word) => hits(label, word))) {
@@ -186,7 +199,7 @@ async function jarvisRunPlan(plan) {
           return answer("media", detail);
         }
       } else if (Array.isArray(step.label)) {
-        const element = byLabel(step.label);
+        const element = byLabel(step);
         if (element) {
           element.click();
           return answer("label", caption(element));

@@ -119,6 +119,27 @@ def test_long_selector_dropped() -> None:
     assert page.validate_plan([{"click": ["a" * (page.MAX_TEXT + 1)]}]) == []
 
 
+def test_forbidden_labels_survive_validation() -> None:
+    """Запретные подписи — часть шага, а не украшение: они его и уточняют."""
+    plan = page.validate_plan([{"label": ["нравится"], "avoid": ["не нравится"]}])
+    assert plan == [{"label": ["нравится"], "avoid": ["не нравится"]}]
+    # У селектора запрещать нечего: он и так указывает на конкретный элемент.
+    assert page.validate_plan([{"click": ["#like"], "avoid": ["не"]}]) == [{"click": ["#like"]}]
+
+
+def test_like_never_means_dislike() -> None:
+    """У лайка запрет отрицания обязателен.
+
+    По-русски отрицание стоит перед словом, поэтому «не нравится» содержит
+    «нравится» целиком — и совпадением по слову лайк от дизлайка не отличить.
+    На живой Яндекс Музыке это стоило дизлайка вместо лайка.
+    """
+    avoid = page.ACTIONS["like"][0]["avoid"]
+    assert "не нравится" in avoid and "dislike" in avoid
+    # «Убрать отметку» — тоже кнопка со словом «нравится», и это отмена лайка.
+    assert "убрать" in avoid
+
+
 def test_amount_lands_in_media_steps() -> None:
     """Секунды перемотки и шаг громкости подставляются в медиа-шаги."""
     plan = page.with_amount(
@@ -178,6 +199,7 @@ CALLS = []
 TARGET = {"tabId": 7, "url": "https://music.yandex.ru/home", "title": "Моя волна"}
 REPLIES = []
 CONTROLS = []
+MISSING = []
 
 
 class FakeBrowserSkill(Skill):
@@ -189,6 +211,8 @@ class FakeBrowserSkill(Skill):
     async def page_target(self, site: str = "") -> ToolResult:
         """Вкладка, к которой относится команда."""
         CALLS.append(("target", site))
+        if site and site in MISSING:
+            return ToolResult.failure("нет подходящей вкладки")
         return ToolResult.success(dict(TARGET))
 
     @tool(routable=False)
@@ -369,6 +393,47 @@ async def test_nothing_worked_is_an_honest_refusal(loaded) -> None:
 
     assert not result.ok
     assert "music.yandex.ru" in result.error
+    await manager.stop()
+
+
+async def test_closed_site_still_pauses(loaded) -> None:
+    """«Поставь ютуб на паузу» при закрытом ютубе останавливает то, что звучит.
+
+    Название сайта тут пожелание, а не требование: остановить просят звук, и
+    молчать из-за неудачно названной вкладки хуже, чем выполнить.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.MISSING[:] = ["ютуб"]
+    fake.REPLIES[:] = [{"done": "media", "detail": "пауза"}]
+
+    result = await registry.invoke("page.pause", {"site": "ютуб"})
+
+    assert result.ok
+    assert [call[:2] for call in fake.CALLS[:2]] == [("target", "ютуб"), ("target", "")]
+    fake.MISSING.clear()
+    await manager.stop()
+
+
+async def test_press_does_not_wander_to_another_site(loaded) -> None:
+    """А вот кнопку на чужом сайте нажимать нельзя — тут отказ.
+
+    Разница принципиальна: пауза относится к звуку, а нажатие — к странице, и
+    промах здесь означает нажатую не ту кнопку не там.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.MISSING[:] = ["ютуб"]
+
+    result = await registry.invoke("page.press", {"control": "подписаться", "site": "ютуб"})
+
+    assert not result.ok
+    assert [call[0] for call in fake.CALLS] == ["target"]
+    fake.MISSING.clear()
     await manager.stop()
 
 

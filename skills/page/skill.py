@@ -85,8 +85,10 @@ ACTION = Literal[
 #: разметки вовсе. Потом подписи кнопок — они переживают редизайн, потому что
 #: их читает экранный диктор, и менять их просто так никто не станет.
 #:
-#: Подписи сравниваются краем слова, а не любым куском: «like» внутри «dislike»
-#: стоило бы дизлайка вместо лайка.
+#: Подписи сравниваются началом слова, а не любым куском: «like» внутри
+#: «dislike» стоило бы дизлайка вместо лайка. Одного этого мало — по-русски
+#: отрицание стоит **перед** словом («не нравится» содержит «нравится» целиком
+#: и словом, и краем), поэтому у шага есть ещё и список запретных подписей.
 ACTIONS: dict[str, tuple[dict[str, Any], ...]] = {
     "play": (
         {"media": "play"},
@@ -103,7 +105,22 @@ ACTIONS: dict[str, tuple[dict[str, Any], ...]] = {
     "previous": (
         {"label": ["предыдущий", "предыдущая", "предыдущее", "previous"]},
     ),
-    "like": ({"label": ["нравится", "лайк", "like this", "лайкнуть"]},),
+    # Кнопок-близнецов тут три: лайк, дизлайк и «убрать лайк». Отличаются они
+    # одним словом, и это слово — отрицание, поэтому запреты важнее совпадений.
+    "like": (
+        {
+            "label": ["нравится", "лайк", "like"],
+            "avoid": [
+                "не нравится",
+                "убрать",
+                "отменить",
+                "снять",
+                "dislike",
+                "remove",
+                "undo",
+            ],
+        },
+    ),
     "mute": ({"media": "mute"}, {"label": ["выключить звук", "mute", "без звука"]}),
     "unmute": ({"media": "unmute"}, {"label": ["включить звук", "unmute"]}),
     "louder": ({"media": "louder"},),
@@ -121,7 +138,9 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
     "youtube.com": {
         "next": ({"click": [".ytp-next-button"]},),
         "previous": ({"click": [".ytp-prev-button"]},),
-        "like": ({"click": ["like-button-view-model button"]},),
+        "like": (
+            {"click": ["like-button-view-model button", "#segmented-like-button button"]},
+        ),
     },
     "music.yandex.ru": {
         "next": ({"click": ['[data-test-id="NEXT_TRACK_BUTTON"]']},),
@@ -253,6 +272,12 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
             if not items:
                 continue
             clean = {verb: items}
+            if verb == "label":
+                # Запретные слова: подпись «не нравится» содержит «нравится»
+                # целиком, и без них лайк оказывается дизлайком.
+                avoid = _strings(step.get("avoid", ()))
+                if avoid:
+                    clean["avoid"] = avoid
 
         if clean not in plan:
             plan.append(clean)
@@ -431,17 +456,29 @@ class PageSkill(Skill):
     # инструмент уезжает в неё на каждой неузнанной фразе.
     @tool(routable=False, phrases=["пауза", "поставь на паузу", "останови видео",
                                    "останови музыку", "стоп",
-                                   "pause", "stop the video"])
-    async def pause(self) -> ToolResult:
-        """Поставить воспроизведение на паузу."""
-        return await self._act("pause")
+                                   "поставь музыку на паузу", "поставь видео на паузу",
+                                   "поставь {site} на паузу", "останови {site}",
+                                   "pause", "stop the video", "pause {site}"])
+    async def pause(self, site: str = "") -> ToolResult:
+        """Поставить воспроизведение на паузу.
+
+        :param site: где именно — «ютуб», «яндекс музыка»; пусто — там, откуда
+            идёт звук.
+        """
+        return await self._act("pause", site=site, soft=True)
 
     @tool(routable=False, phrases=["сними с паузы", "включи воспроизведение",
                                    "продолжи воспроизведение", "продолжай играть",
+                                   "сними музыку с паузы", "сними видео с паузы",
+                                   "продолжи музыку", "продолжи видео",
+                                   "сними {site} с паузы",
                                    "resume", "continue playing"])
-    async def play(self) -> ToolResult:
-        """Продолжить воспроизведение."""
-        return await self._act("play")
+    async def play(self, site: str = "") -> ToolResult:
+        """Продолжить воспроизведение.
+
+        :param site: где именно; пусто — там, где остановились.
+        """
+        return await self._act("play", site=site, soft=True)
 
     @tool(routable=False, phrases=["следующий трек", "следующее видео", "следующая песня",
                                    "переключи трек", "переключи песню", "дальше трек",
@@ -457,6 +494,9 @@ class PageSkill(Skill):
         return await self._act("previous")
 
     @tool(routable=False, phrases=["лайкни", "поставь лайк", "мне нравится",
+                                   "лайкни видео", "лайкни трек", "лайкни песню",
+                                   "поставь лайк видео", "поставь лайк треку",
+                                   "поставь лайк песне",
                                    "like this", "like it"])
     async def like(self) -> ToolResult:
         """Поставить лайк тому, что играет."""
@@ -505,11 +545,19 @@ class PageSkill(Skill):
         extra: Sequence[Mapping[str, Any]] = (),
         want: str = "",
         speech: tuple[str, str] | None = None,
+        soft: bool = False,
     ) -> ToolResult:
         """Выполнить действие в подходящей вкладке.
 
         Порядок такой: найти вкладку → собрать план из известного → выполнить →
         и только при неудаче один раз спросить модель и запомнить ответ.
+
+        :param soft: считать название сайта пожеланием, а не требованием.
+            «Поставь ютуб на паузу» при закрытом ютубе разумно понять как
+            «поставь на паузу»: остановить просят то, что звучит, и молчать
+            из-за неудачно названного сайта тут хуже, чем выполнить. Для
+            `press` и явного `control` название остаётся требованием: нажать
+            кнопку не на том сайте — это уже не мелочь.
         """
         if not self.tools.has("browser.page_run"):
             return ToolResult.failure(
@@ -523,6 +571,9 @@ class PageSkill(Skill):
         # Вкладку узнаём заранее: без неё неизвестен сайт, а значит и рецепт.
         # Это один обмен по локальному сокету, зато дальше всё однозначно.
         found = await self.tools.invoke("browser.page_target", {"site": site})
+        if not found.ok and site and soft:
+            self.log.info("Вкладки %r не нашлось — работаю с той, что звучит", site)
+            found = await self.tools.invoke("browser.page_target", {})
         if not found.ok or not isinstance(found.value, Mapping):
             return found if not found.ok else self._nothing(action)
         target = dict(found.value)
