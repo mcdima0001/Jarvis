@@ -156,9 +156,26 @@ _MIN_PREFIX = 4
 _QUOTES = " «»\"'`.,!?;:()[]"
 
 
+#: Всё, что не буква и не цифра. Одно и то же название пишут по-разному:
+#: «Яндекс.Музыка», «Яндекс Музыка», «MarshallTech», «Marshall Tech».
+_NOT_LETTER = re.compile(r"[^\w]+", re.UNICODE)
+
+
 def clean_spoken(text: str) -> str:
     """Убрать кавычки и лишние пробелы вокруг названия."""
     return " ".join(text.split()).strip(_QUOTES)
+
+
+def squash(text: str) -> str:
+    """Сжать название до одних букв и цифр в нижнем регистре.
+
+    Разделители внутри названия — вопрос вкуса того, кто его писал, и слуха
+    того, кто его расшифровывал. «Яндекс.Музыка» с точкой не совпадала с
+    «яндекс музыка» из каталога, и открывался просто Яндекс; «MarshallTech»
+    слитно не совпадал с «Marshall Tech» в заголовке вкладки. После сжатия
+    все эти написания — одно слово.
+    """
+    return _NOT_LETTER.sub("", text).lower()
 
 #: Гласные на конце: по ним и различаются падежи — «почта», «почту», «почте».
 _ENDINGS = "аеёиоуыэюяaeiouy"
@@ -197,10 +214,11 @@ def site_url(name: str, sites: dict[str, str]) -> str | None:
     if known:
         return safe_url(known)
 
-    # Названия склоняют: «на ютубе», «в гитхабе», «открой почту».
-    stem = _stem(text)
+    # Названия склоняют: «на ютубе», «в гитхабе», «открой почту». И пишут
+    # по-разному: сравниваем сжатые формы, где разделителей нет вовсе.
+    stem = _stem(squash(text))
     if len(stem) >= _MIN_PREFIX:
-        stems = {_stem(spoken): url for spoken, url in sites.items()}
+        stems = {_stem(squash(spoken)): url for spoken, url in sites.items()}
         # Побеждает самое длинное подходящее название. «Яндекс музыку»
         # начинается с «яндекс», и без этого правила открывался поиск вместо
         # музыки — какая запись попадётся в словаре первой, такая и выигрывала.
@@ -342,17 +360,27 @@ def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
     Нужно для страниц, которых нет и не может быть в каталоге сайтов:
     настройки браузера, локальная разработка, открытый документ. «Закрой
     вкладку Extensions» иначе упиралось в «не знаю такого сайта».
+
+    Сравнение идёт и по словам, и по сжатой форме: «MarshallTech» пишут слитно,
+    а произносят раздельно, и наоборот.
     """
     wanted = clean_spoken(spoken).lower()
     if len(wanted) < 3:
         return []
 
     stem = _stem(wanted)
+    tight = _stem(squash(wanted))
     found: list[int] = []
     for tab in tabs:
         title = str(tab.get("title", "")).lower()
-        words = {_stem(word) for word in _WORD.findall(page_title(title))}
-        if wanted in title or (len(stem) >= _MIN_PREFIX and stem in words):
+        page = page_title(title)
+        words = {_stem(word) for word in _WORD.findall(page)}
+        matched = wanted in title or (len(stem) >= _MIN_PREFIX and stem in words)
+        # Сжатая форма ищется как кусок заголовка, поэтому порог выше: по
+        # четырём буквам подряд совпадёт слишком многое.
+        if not matched and len(tight) >= _MIN_PREFIX + 2:
+            matched = tight in squash(page)
+        if matched:
             identifier = tab.get("tabId")
             if isinstance(identifier, int):
                 found.append(identifier)
@@ -595,7 +623,8 @@ class BrowserSkill(Skill):
     @tool(phrases=["открой браузер", "открой сайт {site}", "зайди на {site}",
                    "открой в браузере {site}", "открой {site} в браузере",
                    "запусти {site} в браузере", "покажи {site} в браузере",
-                   "открой вкладку {site}", "переключись на {site}",
+                   "открой вкладку {site}", "открою вкладку {site}",
+                   "переключись на {site}", "переключи на {site}",
                    "покажи вкладку {site}",
                    "open the browser", "open site {site}", "go to {site}",
                    "open {site} in the browser", "open the {site} tab",

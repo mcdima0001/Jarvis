@@ -165,7 +165,20 @@ class FasterWhisperSTT:
             # программ студии: без этого «Джарвис» превращается в «жаркость».
             initial_prompt=prompt,
         )
-        parts = [segment.text for segment in segments]
+        try:
+            parts = [segment.text for segment in segments]
+        except RuntimeError as exc:
+            # Whisper выделяет память лениво, уже при переборе сегментов, и на
+            # загруженной машине падает именно здесь («mkl_malloc: failed to
+            # allocate memory»). Полный стек тут ничего не объясняет, а фразу
+            # всё равно не спасти — сообщаем причину и слушаем дальше.
+            logger.warning(
+                "Не хватило памяти на распознавание (%s). Если повторяется — "
+                "возьми модель полегче: stt.model: base",
+                exc,
+            )
+            return Transcript(text="", language=language or "", confidence=0.0)
+
         text = " ".join(part.strip() for part in parts).strip()
         return Transcript(
             text=text,

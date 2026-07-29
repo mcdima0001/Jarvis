@@ -514,3 +514,45 @@ def test_quotes_around_the_name_are_stripped() -> None:
     assert browser.site_url("«Ютуб»", SITES) == "https://www.youtube.com"
     tabs = [{"tabId": 9, "title": "Marshall Tech - YouTube"}]
     assert browser.tabs_by_title(tabs, "«Marshall Tech»") == [9]
+
+
+# --- одно название, разные написания ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    ["Яндекс.Музыка", "Яндекс Музыка", "яндексмузыка", "Яндекс.Музыку", "яндекс-музыка"],
+)
+def test_separators_inside_the_name_do_not_matter(spoken: str) -> None:
+    """«Яндекс.Музыка» с точкой открывала просто Яндекс.
+
+    Разделитель внутри названия — вопрос вкуса того, кто его писал, и слуха
+    того, кто расшифровывал. После сжатия все написания — одно слово.
+    """
+    assert browser.site_url(spoken, SITES) == "https://music.yandex.ru"
+
+
+def test_bare_name_still_means_the_bare_site() -> None:
+    """При этом «Яндекс» — по-прежнему Яндекс, а не музыка."""
+    assert browser.site_url("Яндекс", SITES) == "https://ya.ru"
+    assert browser.site_url("ЯндексДиск", SITES) == "https://disk.yandex.ru"
+
+
+_MIXED_TABS = [
+    {"tabId": 1, "title": "MarshallTech Server Stats - Яндекс Браузер"},
+    {"tabId": 2, "title": "Расширения"},
+]
+
+
+@pytest.mark.parametrize(
+    "spoken", ["MarshallTech", "Marshall Tech", "marshall tech server", "marshalltech"]
+)
+def test_tab_found_whether_written_together_or_apart(spoken: str) -> None:
+    """Название пишут слитно, а произносят раздельно — и наоборот."""
+    assert browser.tabs_by_title(_MIXED_TABS, spoken) == [1]
+
+
+@pytest.mark.parametrize("spoken", ["борщ", "ютуб", "мар"])
+def test_squashed_search_does_not_match_everything(spoken: str) -> None:
+    """Сжатая форма ищется куском заголовка, поэтому порог длины выше."""
+    assert browser.tabs_by_title(_MIXED_TABS, spoken) == []
