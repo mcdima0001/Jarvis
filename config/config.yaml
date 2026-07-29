@@ -179,9 +179,14 @@ stt:
   models_dir: models/whisper
   # Подсказка словаря по языкам. Без неё Whisper слышит «жаркость» вместо
   # «Джарвис»: имя редкое и не входит в обычный словарь.
+  # Сюда же дописываются названия, которые Whisper коверкает: «GitHub» он
+  # слышал как «Geed Hub», «Geat Hub» и «гитхап», и никакое нечёткое сравнение
+  # такое не вытянет. Лечится именно здесь — на слое распознавания.
   initial_prompt:
-    ru: "Джарвис, ассистент студии. Steam, OBS, XLR, ESP32."
-    en: "Jarvis, the studio assistant. Steam, OBS, XLR, ESP32."
+    ru: "Джарвис, ассистент студии. Steam, OBS, XLR, ESP32, GitHub, YouTube,
+         Google, Яндекс, Telegram, Twitch, Soundpad, FL Studio."
+    en: "Jarvis, the studio assistant. Steam, OBS, XLR, ESP32, GitHub, YouTube,
+         Google, Yandex, Telegram, Twitch, Soundpad, FL Studio."
 
 tts:
   engine: piper            # движок по умолчанию, если в voices нет префикса

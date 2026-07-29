@@ -456,13 +456,16 @@ TRAY_APPS: frozenset[str] = frozenset({"steam.exe"})
 QUIT_URIS: dict[str, str] = {}
 
 
-def close_windows(pids: set[int]) -> int:
+def close_windows(pids: set[int], *, title: str | None = None) -> int:
     """Послать окнам процессов запрос на закрытие — то же, что Alt+F4.
 
     Именно сообщение окну, а не нажатие клавиш: клавиши ушли бы в то окно,
     которое сейчас в фокусе, а это может оказаться что угодно. Программа при
     этом успевает спросить про несохранённое — в отличие от ``taskkill /f``.
 
+    :param title: закрывать только окно с таким заголовком. У браузера все
+        окна принадлежат одному процессу, поэтому без этого «закрой YouTube»
+        закрывало заодно и все остальные вкладки.
     :return: скольким окнам отправлен запрос.
     """
     import ctypes
@@ -471,15 +474,29 @@ def close_windows(pids: set[int]) -> int:
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     sent = 0
 
+    def window_title(handle: int) -> str:
+        """Заголовок окна — по нему отличаем одно окно процесса от другого."""
+        length = user32.GetWindowTextLengthW(handle)
+        if length <= 0:
+            return ""
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(handle, buffer, length + 1)
+        return buffer.value
+
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def visit(handle: int, _: int) -> bool:
         """Проверить одно окно и, если оно наше, попросить его закрыться."""
         nonlocal sent
         owner = wintypes.DWORD()
         user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
-        if owner.value in pids and user32.IsWindowVisible(handle):
-            user32.PostMessageW(handle, _WM_CLOSE, 0, 0)
-            sent += 1
+        if owner.value not in pids or not user32.IsWindowVisible(handle):
+            return True
+        # Заголовок берётся из tasklist, а сверяется с живым окном: длинные
+        # названия там могут оказаться обрезанными, поэтому годится и начало.
+        if title is not None and not window_title(handle).startswith(title):
+            return True
+        user32.PostMessageW(handle, _WM_CLOSE, 0, 0)
+        sent += 1
         return True
 
     user32.EnumWindows(visit, 0)
@@ -678,7 +695,13 @@ class WindowsSkill(Skill):
                 },
             )
 
-        image = found[1]
+        name, image = found
+        # Совпало с заголовком окна, а не с именем программы — значит, просили
+        # закрыть именно это окно. Для браузера разница принципиальная: все его
+        # окна принадлежат одному процессу, и «закрой YouTube» закрывало заодно
+        # всё остальное, а потом ещё и добивало браузер целиком.
+        window = name if any(process.title == name for process in processes) else None
+
         if not _PROCESS_NAME.match(image):
             # Сюда попасть не должно: имена приходят из вывода tasklist. Но
             # аргумент внешней команды проверяется, а не подразумевается.
@@ -689,6 +712,10 @@ class WindowsSkill(Skill):
             )
 
         pids = {process.pid for process in processes if process.image == image}
+
+        if window is not None and not force:
+            return await self._close_window(program, window, pids)
+
         how = await self._close(
             image, pids, force=force, helpers=helper_pids(processes, image)
         )
@@ -710,6 +737,31 @@ class WindowsSkill(Skill):
             speech = {"ru": f"Закрываю {name}.", "en": f"Closing {name}."}
 
         return ToolResult.success({"process": image, "method": how}, speech=speech)
+
+    async def _close_window(self, spoken: str, title: str, pids: set[int]) -> ToolResult:
+        """Закрыть одно окно по его заголовку.
+
+        Ждать исчезновения процесса тут нечего, а добивать его тем более
+        нельзя: у браузера одно окно из десяти — это вкладка, а не программа.
+        Не нашлось окна — так и говорим, вместо того чтобы закрыть что-то ещё.
+        """
+        sent = await asyncio.to_thread(close_windows, pids, title=title)
+        if not sent:
+            self.log.warning("Окно %r не найдено среди видимых", title)
+            return ToolResult.failure(
+                f"окно {title!r} не найдено",
+                speech={
+                    "ru": f"Не нашёл окно {spoken}.",
+                    "en": f"I couldn't find the {spoken} window.",
+                },
+            )
+
+        name = spoken.strip() or title
+        self.log.info("Закрыто окно %r (%d шт.)", title, sent)
+        return ToolResult.success(
+            {"window": title, "closed": sent},
+            speech={"ru": f"Закрываю {name}.", "en": f"Closing {name}."},
+        )
 
     async def _close(
         self,

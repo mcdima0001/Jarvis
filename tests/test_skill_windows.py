@@ -494,6 +494,121 @@ async def test_helpers_are_left_alone_while_the_main_window_answers(
     assert asked == [{1234}]
 
 
+_BROWSER_TASKLIST = (
+    '"browser.exe","2000","Console","1","300 000 КБ","Running","DESK\\user",'
+    '"0:05:00","YouTube - Яндекс Браузер"\r\n'
+    '"browser.exe","2000","Console","1","300 000 КБ","Running","DESK\\user",'
+    '"0:05:00","Почта - Яндекс Браузер"\r\n'
+    '"FL64.exe","5678","Console","1","900 000 КБ","Running","DESK\\user",'
+    '"1:20:04","FL Studio 21"\r\n'
+)
+
+
+async def test_site_is_closed_by_window_not_by_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«Закрой YouTube» убирает одно окно, а не весь браузер.
+
+    Настоящий сбой: все окна браузера принадлежат одному процессу, поэтому
+    запрос уходил всем сразу, браузер не исчезал, и следом его добивал
+    taskkill — вместе с остальными вкладками.
+    """
+    asked: list[tuple[set[int], str | None]] = []
+
+    def close(pids: set[int], *, title: str | None = None) -> int:
+        asked.append((set(pids), title))
+        return 1
+
+    monkeypatch.setattr(windows, "close_windows", close)
+
+    skill = _closer()
+    skill._processes = _processes(_BROWSER_TASKLIST)
+    skill._wait_gone = _should_not_wait
+    skill._run = _should_not_run
+
+    result = await skill._shutdown("YouTube", force=False)
+
+    assert result.ok
+    assert asked == [({2000}, "YouTube - Яндекс Браузер")]
+    assert result.value["window"] == "YouTube - Яндекс Браузер"
+
+
+async def test_missing_window_is_not_a_reason_to_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Окно не нашлось — отказ, а не «тогда закроем всё остальное»."""
+    monkeypatch.setattr(windows, "close_windows", lambda pids, *, title=None: 0)
+
+    skill = _closer()
+    skill._processes = _processes(_BROWSER_TASKLIST)
+    skill._wait_gone = _should_not_wait
+    skill._run = _should_not_run
+
+    result = await skill._shutdown("YouTube", force=False)
+
+    assert not result.ok
+
+
+async def test_program_named_directly_still_closes_whole_program(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«Закрой браузер» по имени программы закрывает её целиком.
+
+    Разница именно в том, чем совпало: заголовок окна — это окно, имя
+    процесса — это программа.
+    """
+    asked: list[tuple[set[int], str | None]] = []
+
+    def close(pids: set[int], *, title: str | None = None) -> int:
+        asked.append((set(pids), title))
+        return 2
+
+    monkeypatch.setattr(windows, "close_windows", close)
+
+    skill = _closer()
+    skill._processes = _processes(_BROWSER_TASKLIST)
+    skill._run = _should_not_run
+
+    async def gone(image: str, *, timeout: float = 4.0) -> bool:
+        return True
+
+    skill._wait_gone = gone
+    result = await skill._shutdown("browser", force=False)
+
+    assert result.ok
+    assert asked[0][1] is None
+
+
+async def test_kill_ignores_window_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """«Убей X» снимает процесс, даже если название совпало с заголовком окна."""
+    monkeypatch.setattr(windows, "close_windows", _should_not_close)
+
+    ran: list[list[str]] = []
+
+    async def run(command: list[str]) -> Any:
+        ran.append(command)
+        return _Completed()
+
+    skill = _closer()
+    skill._processes = _processes(_BROWSER_TASKLIST)
+    skill._wait_gone = _should_not_wait
+    skill._run = run
+
+    result = await skill._shutdown("YouTube", force=True)
+
+    assert result.ok
+    assert ran == [["taskkill.exe", "/im", "browser.exe", "/f"]]
+
+
+def _processes(output: str):
+    """Подменить чтение списка процессов готовым выводом tasklist."""
+
+    async def read():
+        return windows.parse_tasklist(output)
+
+    return read
+
+
 async def test_kill_skips_windows_and_forces(monkeypatch: pytest.MonkeyPatch) -> None:
     """«Убей» снимает процесс сразу, минуя окна и вежливые способы."""
     import subprocess
@@ -586,9 +701,17 @@ async def _should_not_wait(image: str, *, timeout: float = 4.0) -> bool:
     raise AssertionError(f"лишнее ожидание: {image}")
 
 
-def _should_not_close(pids: set[int]) -> int:
+def _should_not_close(pids: set[int], *, title: str | None = None) -> int:
     """Окна на этом пути трогать не должны."""
     raise AssertionError(f"лишнее закрытие окон: {pids}")
+
+
+class _Completed:
+    """Успешный результат внешней команды."""
+
+    returncode = 0
+    stdout = ""
+    stderr = ""
 
 
 # --- чужое не хватать -------------------------------------------------------

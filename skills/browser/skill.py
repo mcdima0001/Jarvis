@@ -288,9 +288,14 @@ class BrowserSkill(Skill):
 
     # --- открытие ----------------------------------------------------------
 
+    # «В браузере» на конце — способ сказать «именно сайт, а не программу»:
+    # у GitHub и Telegram установлено и то, и другое, и «открой гитхаб» уходит
+    # в windows.launch_program. Шаблон длиннее, поэтому проверяется раньше.
     @tool(phrases=["открой браузер", "открой сайт {site}", "зайди на {site}",
-                   "открой в браузере {site}",
-                   "open the browser", "open site {site}", "go to {site}"])
+                   "открой в браузере {site}", "открой {site} в браузере",
+                   "запусти {site} в браузере", "покажи {site} в браузере",
+                   "open the browser", "open site {site}", "go to {site}",
+                   "open {site} in the browser"])
     async def open_site(self, site: str = "") -> ToolResult:
         """Открыть сайт в браузере.
 
