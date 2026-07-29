@@ -28,6 +28,10 @@ class LoggingConfig:
     dir: Path = Path("logs")
     file: str = "jarvis.log"
     console: bool = True
+    #: Как показывать время записи — в формате `time.strftime`. Одинаково в
+    #: файле и в консоли: искать причину приходится то там, то там, и разные
+    #: написания времени этому только мешают.
+    time_format: str = "%d.%m.%y, %H:%M:%S"
     max_bytes: int = 5 * 1024 * 1024
     backup_count: int = 5
 

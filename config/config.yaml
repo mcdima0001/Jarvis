@@ -11,6 +11,10 @@ logging:
   dir: logs
   file: jarvis.log
   console: true
+  # Как показывать время — в формате strftime. Одинаково в файле и в консоли.
+  #   %d.%m.%y, %H:%M:%S   →  29.07.26, 21:36:51
+  #   %Y-%m-%d %H:%M:%S    →  2026-07-29 21:36:51 (сортируется как текст)
+  time_format: "%d.%m.%y, %H:%M:%S"
   max_bytes: 5242880   # 5 МБ на файл
   backup_count: 5
 

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 
 import pytest
 
 from jarvis.core.config import load_config
 from jarvis.core.errors import ConfigError
+from jarvis.core.logging import setup_logging
 
 _MINIMAL = """
 app:
@@ -81,6 +84,43 @@ def test_paths_resolved_against_project_root(tmp_path: Path) -> None:
     assert config.skills.paths[0] == tmp_path.resolve() / "skills"
     assert config.memory.dir == tmp_path.resolve() / "memory"
     assert config.logging.dir.is_absolute()
+
+
+def test_log_time_is_written_by_default(tmp_path: Path) -> None:
+    """У записи в логе есть время, даже если в конфиге о нём ни слова.
+
+    Без времени лог годится только на «что-то сломалось»: почти всё, что по
+    нему выясняют, — это порядок событий и сколько заняло.
+    """
+    config = load_config(_write(tmp_path, _MINIMAL))
+    root = logging.getLogger()
+    kept = list(root.handlers)
+    try:
+        assert setup_logging(config.logging).name == "jarvis"
+        formatter = root.handlers[0].formatter
+        assert formatter is not None
+        line = formatter.format(
+            logging.LogRecord("jarvis", logging.INFO, __file__, 1, "проверка", None, None)
+        )
+        assert re.match(
+            r"^\d{2}\.\d{2}\.\d{2}, \d{2}:\d{2}:\d{2} INFO\s+jarvis\s+проверка$", line
+        ), line
+    finally:
+        # Логирование глобальное: оставить за собой файл во временном каталоге
+        # значит сломать соседние тесты через полчаса и в другом файле.
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            handler.close()
+        for handler in kept:
+            root.addHandler(handler)
+
+
+def test_own_time_format_respected(tmp_path: Path) -> None:
+    """Формат времени задаётся конфигом: в коде его быть не должно."""
+    text = _MINIMAL.replace("logging:\n  dir: logs", 'logging:\n  dir: logs\n  time_format: "%H:%M"')
+    config = load_config(_write(tmp_path, text))
+
+    assert config.logging.time_format == "%H:%M"
 
 
 def test_profile_with_unknown_provider_rejected(tmp_path: Path) -> None:

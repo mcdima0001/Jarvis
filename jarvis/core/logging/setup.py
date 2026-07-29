@@ -8,8 +8,11 @@ import sys
 
 from jarvis.core.config import LoggingConfig
 
+#: Время стоит первым и в файле, и в консоли. Без него запись бесполезна для
+#: разбора: почти всё, что приходится выяснять по логу, — это «что было
+#: раньше, а что позже» и «сколько заняло».
 _FILE_FORMAT = "%(asctime)s %(levelname)-8s %(name)-28s %(message)s"
-_CONSOLE_FORMAT = "%(levelname)-8s %(name)-24s %(message)s"
+_CONSOLE_FORMAT = "%(asctime)s %(levelname)-8s %(name)-24s %(message)s"
 
 # Чей уровень задаёт конфиг. Всем остальным — не ниже WARNING.
 #
@@ -39,12 +42,12 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
         backupCount=config.backup_count,
         encoding="utf-8",
     )
-    file_handler.setFormatter(logging.Formatter(_FILE_FORMAT))
+    file_handler.setFormatter(logging.Formatter(_FILE_FORMAT, datefmt=config.time_format))
     root.addHandler(file_handler)
 
     if config.console:
         console = logging.StreamHandler(sys.stderr)
-        console.setFormatter(logging.Formatter(_CONSOLE_FORMAT))
+        console.setFormatter(logging.Formatter(_CONSOLE_FORMAT, datefmt=config.time_format))
         root.addHandler(console)
 
     for name in _APP_LOGGERS:

@@ -232,6 +232,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             dir=_resolve(project_root, log.get("dir", "logs")),
             file=str(log.get("file", "jarvis.log")),
             console=bool(log.get("console", True)),
+            time_format=str(log.get("time_format", "%d.%m.%y, %H:%M:%S")),
             max_bytes=int(log.get("max_bytes", 5 * 1024 * 1024)),
             backup_count=int(log.get("backup_count", 5)),
         ),
