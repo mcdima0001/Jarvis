@@ -308,14 +308,13 @@ def test_program_closed_by_window_title() -> None:
     assert windows.match_program("хром", catalog)[1] == "chrome.exe"
 
 
-def test_steam_has_its_own_exit() -> None:
-    """Steam не закрывается ни окном, ни taskkill.
+def test_steam_lives_in_tray() -> None:
+    """Для Steam «закрой» означает «убери окно», а не «выйди».
 
-    Крестик сворачивает его в трей, поэтому и Alt+F4 ничего не даёт, а убийство
-    процесса Steam считает некорректным выходом. Штатный способ у него один —
-    адрес steam://exit, который понимает сам клиент.
+    Клиент обязан остаться в трее: без него не работают загрузки и оверлей
+    в играх. Полный выход — отдельная команда «убей стим».
     """
-    assert windows.QUIT_URIS["steam.exe"] == "steam://exit"
+    assert "steam.exe" in windows.TRAY_APPS
 
 
 @pytest.mark.parametrize(
@@ -361,26 +360,77 @@ def _closer(**overrides: Any) -> Any:
 
     skill = object.__new__(Closer)
     skill._quit_commands = dict(windows.QUIT_URIS)
+    skill._tray_apps = set(windows.TRAY_APPS)
     skill._force_close = False
     for name, value in overrides.items():
         setattr(skill, name, value)
     return skill
 
 
-async def test_steam_closed_by_its_own_exit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Для Steam сначала пробуется его собственная команда выхода.
+async def test_tray_app_only_loses_its_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """У программы из трея окно убирается, а процесс остаётся жить.
 
-    Окно ему слать бесполезно — крестик сворачивает в трей, — а taskkill Steam
-    считает некорректным выходом и жалуется при следующем запуске.
+    Дожидаться её исчезновения незачем — она обязана остаться, — и добивать
+    её taskkill тем более нельзя.
+    """
+    monkeypatch.setattr(windows, "close_windows", lambda pids: 1)
+
+    skill = _closer()
+    skill._wait_gone = _should_not_wait
+    skill._run = _should_not_run
+
+    assert await skill._close("steam.exe", {1234}, force=False) == "окно"
+
+
+async def test_hidden_tray_app_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Если окна уже нет, программу из трея трогать не за что.
+
+    Без этого правила отсутствие окна выглядело бы как неудача, и Steam
+    добивался бы через taskkill — ровно то, чего просили не делать.
+    """
+    monkeypatch.setattr(windows, "close_windows", lambda pids: 0)
+
+    skill = _closer()
+    skill._wait_gone = _should_not_wait
+    skill._run = _should_not_run
+
+    assert await skill._close("steam.exe", {1234}, force=False) == "трей"
+
+
+async def test_kill_skips_windows_and_forces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """«Убей» снимает процесс сразу, минуя окна и вежливые способы."""
+    import subprocess
+
+    monkeypatch.setattr(windows, "close_windows", _should_not_close)
+    commands: list[list[str]] = []
+
+    async def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    skill = _closer()
+    skill._wait_gone = _should_not_wait
+    skill._run = run
+
+    assert await skill._close("steam.exe", {1234}, force=True) == "taskkill"
+    assert commands == [["taskkill.exe", "/im", "steam.exe", "/f"]]
+
+
+async def test_quit_command_used_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Заданная в конфиге команда выхода пробуется первой.
+
+    Так можно вернуть полный выход для программы из трея, если он нужен:
+    quit_commands: {steam.exe: "steam://exit"}.
     """
     started: list[str] = []
     monkeypatch.setattr(windows.os, "startfile", started.append, raising=False)
 
     skill = _closer()
+    skill._quit_commands = {"steam.exe": "steam://exit"}
     skill._wait_gone = _always_gone
     skill._run = _should_not_run
 
-    assert await skill._close("steam.exe", {1234}) == "steam://exit"
+    assert await skill._close("steam.exe", {1234}, force=False) == "steam://exit"
     assert started == ["steam://exit"]
 
 
@@ -395,7 +445,7 @@ async def test_ordinary_program_closed_by_window(monkeypatch: pytest.MonkeyPatch
     skill._wait_gone = _always_gone
     skill._run = _should_not_run
 
-    assert await skill._close("notepad.exe", {1, 2}) == "окно"
+    assert await skill._close("notepad.exe", {1, 2}, force=False) == "окно"
 
 
 async def test_stubborn_program_falls_back_to_taskkill(
@@ -418,7 +468,7 @@ async def test_stubborn_program_falls_back_to_taskkill(
     skill._wait_gone = never_gone
     skill._run = run
 
-    assert await skill._close("stubborn.exe", {7}) == "taskkill"
+    assert await skill._close("stubborn.exe", {7}, force=False) == "taskkill"
     assert commands == [["taskkill.exe", "/im", "stubborn.exe"]]
     # Без force_close ключ /f не добавляется: несохранённое дороже.
     assert "/f" not in commands[0]
@@ -432,3 +482,13 @@ async def _always_gone(image: str, *, timeout: float = 4.0) -> bool:
 async def _should_not_run(command: list[str]) -> Any:
     """Внешняя команда на этом пути вызываться не должна."""
     raise AssertionError(f"лишний вызов: {command}")
+
+
+async def _should_not_wait(image: str, *, timeout: float = 4.0) -> bool:
+    """Ожидание исчезновения на этом пути бессмысленно."""
+    raise AssertionError(f"лишнее ожидание: {image}")
+
+
+def _should_not_close(pids: set[int]) -> int:
+    """Окна на этом пути трогать не должны."""
+    raise AssertionError(f"лишнее закрытие окон: {pids}")

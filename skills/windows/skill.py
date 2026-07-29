@@ -406,15 +406,19 @@ def process_catalog(processes: list[Process]) -> dict[str, str]:
     return catalog
 
 
-#: Программы, которые не закрываются ни по окну, ни по taskkill.
+#: Программы, которые живут в трее: «закрой» для них означает «убери окно».
 #:
-#: Steam — главный пример: крестик у него сворачивает окно в трей, а не выходит,
-#: поэтому и Alt+F4 ничего не даёт. Штатный выход у него один — адрес
-#: ``steam://exit``, который понимает сам клиент. Своё можно дописать в конфиг
-#: (``skills.settings.windows.quit_commands``).
-QUIT_URIS: dict[str, str] = {
-    "steam.exe": "steam://exit",
-}
+#: Steam — главный пример. Крестик у него сворачивает окно, а не выходит, и это
+#: задумано: клиент должен оставаться в трее, иначе перестанут работать
+#: загрузки и оверлей в играх. Поэтому убирать окно здесь — не половина дела,
+#: а всё дело: процесс остаётся жить намеренно, и добивать его не нужно.
+TRAY_APPS: frozenset[str] = frozenset({"steam.exe"})
+
+#: Свои команды выхода — для программ, которые не реагируют ни на окно, ни на
+#: taskkill. По умолчанию пусто: полный выход это не то, что обычно имеют в
+#: виду, говоря «закрой». Если он всё же нужен, в конфиге пишется
+#: ``quit_commands: {steam.exe: "steam://exit"}``.
+QUIT_URIS: dict[str, str] = {}
 
 
 def close_windows(pids: set[int]) -> int:
@@ -492,6 +496,10 @@ class WindowsSkill(Skill):
             for key, value in dict(self.context.setting("programs", {})).items()
         }
         self._force_close = bool(self.context.setting("force_close", False))
+        # Программы из трея: «закрой» для них означает «убери окно».
+        self._tray_apps = TRAY_APPS | {
+            str(name).lower() for name in self.context.setting("tray_apps", [])
+        }
         # Свои команды выхода поверх встроенных: ключ — имя процесса.
         self._quit_commands = {
             **QUIT_URIS,
@@ -585,16 +593,36 @@ class WindowsSkill(Skill):
     @tool(phrases=["закрой {program}", "заверши {program}",
                    "close {program}", "quit {program}"])
     async def close_program(self, program: str) -> ToolResult:
-        """Закрыть программу по названию.
+        """Закрыть программу: убрать её окно.
 
         Способы пробуются по очереди, от вежливого к решительному: сначала
-        собственная команда выхода, если она у программы есть, потом запрос
+        собственная команда выхода, если она задана в конфиге, потом запрос
         окнам (то же, что Alt+F4), и только если программа осталась жива —
-        ``taskkill``. Порядок важен: убитая программа не сохраняет настройки,
-        а Steam при убийстве процесса ещё и жалуется на некорректный выход.
+        ``taskkill``. Порядок важен: убитая программа не сохраняет настройки.
+
+        Программам из трея (`TRAY_APPS`) закрытием окна всё и заканчивается:
+        Steam обязан остаться в трее, иначе перестают работать загрузки и
+        оверлей. Чтобы завершить процесс совсем, есть `kill_program`.
 
         :param program: название программы.
         """
+        return await self._shutdown(program, force=False)
+
+    @tool(phrases=["убей {program}", "заверши процесс {program}",
+                   "выгрузи {program}", "kill {program}", "force close {program}"])
+    async def kill_program(self, program: str) -> ToolResult:
+        """Завершить процесс программы принудительно.
+
+        В отличие от `close_program`, окно не спрашивают: процесс снимается
+        сразу и вместе со всеми копиями. Несохранённое при этом теряется —
+        поэтому команда отдельная, а не флаг у закрытия.
+
+        :param program: название программы.
+        """
+        return await self._shutdown(program, force=True)
+
+    async def _shutdown(self, program: str, *, force: bool) -> ToolResult:
+        """Общая часть закрытия и убийства: найти процесс и доложить итог."""
         processes = await self._processes()
         found = match_program(program, process_catalog(processes))
         if found is None:
@@ -617,21 +645,31 @@ class WindowsSkill(Skill):
             )
 
         pids = {process.pid for process in processes if process.image == image}
-        how = await self._close(image, pids)
+        how = await self._close(image, pids, force=force)
         if how is None:
             return ToolResult.failure(
                 f"{image} не закрылся",
                 speech={"ru": f"{image} не закрывается.", "en": f"{image} won't close."},
             )
 
-        self.log.info("Закрыто: %s (%s)", image, how)
-        return ToolResult.success(
-            {"process": image, "method": how},
-            speech={"ru": f"Закрываю {image}.", "en": f"Closing {image}."},
-        )
+        name = image.removesuffix(".exe")
+        self.log.info("%s: %s", "Убито" if force else "Закрыто", f"{image} ({how})")
+        if how == "трей":
+            speech = {"ru": f"{name} и так свёрнут.", "en": f"{name} is already hidden."}
+        elif force:
+            speech = {"ru": f"Завершаю {name}.", "en": f"Killing {name}."}
+        elif image.lower() in self._tray_apps:
+            speech = {"ru": f"Сворачиваю {name}.", "en": f"Minimising {name}."}
+        else:
+            speech = {"ru": f"Закрываю {name}.", "en": f"Closing {name}."}
 
-    async def _close(self, image: str, pids: set[int]) -> str | None:
+        return ToolResult.success({"process": image, "method": how}, speech=speech)
+
+    async def _close(self, image: str, pids: set[int], *, force: bool) -> str | None:
         """Закрыть процесс, перебирая способы. Возвращает сработавший."""
+        if force:
+            return await self._taskkill(image, force=True)
+
         quit_uri = self._quit_commands.get(image.lower())
         if quit_uri:
             # У программы есть свой выход — он всегда чище внешнего закрытия.
@@ -647,13 +685,24 @@ class WindowsSkill(Skill):
         # Запрос окнам: то же, что Alt+F4, но адресно — клавиши ушли бы в окно,
         # которое сейчас в фокусе, а это может оказаться что угодно.
         sent = await asyncio.to_thread(close_windows, pids)
+
+        if image.lower() in self._tray_apps:
+            # Для программы из трея убранное окно — это и есть результат.
+            # Ждать её исчезновения бессмысленно: она обязана остаться жить.
+            self.log.info("Убрано окон %d у %s, процесс остаётся в трее", sent, image)
+            return "окно" if sent else "трей"
+
         if sent:
             self.log.info("Отправлено закрытие %d окнам %s", sent, image)
             if await self._wait_gone(image):
                 return "окно"
 
+        return await self._taskkill(image, force=self._force_close)
+
+    async def _taskkill(self, image: str, *, force: bool) -> str | None:
+        """Снять процесс средствами Windows."""
         command = ["taskkill.exe", "/im", image]
-        if self._force_close:
+        if force:
             command.append("/f")
         result = await self._run(command)
         if result.returncode != 0:
