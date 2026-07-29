@@ -418,3 +418,59 @@ async def test_garbage_from_extension_is_survivable() -> None:
     await bridge.on_message("не json")
     await bridge.on_message('{"event": "hello", "agent": "Chrome"}')
     await bridge.on_message('{"id": 999, "ok": true}')
+
+
+# --- самое длинное название побеждает ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spoken, expected",
+    [
+        ("Яндекс музыку", "https://music.yandex.ru"),
+        ("яндекс музыка", "https://music.yandex.ru"),
+        ("музыку", "https://music.yandex.ru"),
+        ("яндекс диск", "https://disk.yandex.ru"),
+        ("Яндекс", "https://ya.ru"),
+    ],
+)
+def test_longest_site_name_wins(spoken: str, expected: str) -> None:
+    """«Яндекс музыку» начинается с «яндекс» — и открывался поиск вместо музыки.
+
+    Какая запись попадётся в словаре первой, такая и выигрывала. Теперь
+    побеждает самое длинное подходящее название.
+    """
+    assert browser.site_url(spoken, SITES) == expected
+
+
+# --- закрытие вкладки по заголовку ------------------------------------------
+
+
+_TABS = [
+    {"tabId": 1, "title": "Расширения - Яндекс Браузер", "active": False},
+    {"tabId": 2, "title": "YouTube", "active": True},
+    {"tabId": 3, "title": "Extensions", "active": False},
+]
+
+
+@pytest.mark.parametrize(
+    "spoken, expected",
+    [("расширения", [1]), ("Extensions", [3]), ("расширени", [1])],
+)
+def test_tab_found_by_title(spoken: str, expected: list[int]) -> None:
+    """Не всякая вкладка — известный сайт.
+
+    Настройки браузера, локальная разработка, открытый документ: «закрой
+    вкладку Extensions» упиралось в «не знаю такого сайта».
+    """
+    assert browser.tabs_by_title(_TABS, spoken) == expected
+
+
+@pytest.mark.parametrize("spoken", ["", "я", "ог", "  "])
+def test_short_words_close_nothing(spoken: str) -> None:
+    """По двум буквам закрывать вкладки нельзя — снесёт половину."""
+    assert browser.tabs_by_title(_TABS, spoken) == []
+
+
+def test_unrelated_title_is_not_closed() -> None:
+    """Случайное слово не должно совпасть ни с одной вкладкой."""
+    assert browser.tabs_by_title(_TABS, "борщ") == []

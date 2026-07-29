@@ -155,8 +155,9 @@ async function run(action, params) {
 
   if (action === "close") {
     const tabs = await chrome.tabs.query({});
-    const doomed = params.tabId
-      ? tabs.filter((tab) => tab.id === params.tabId)
+    const wanted = params.tabIds || (params.tabId ? [params.tabId] : null);
+    const doomed = wanted
+      ? tabs.filter((tab) => wanted.includes(tab.id))
       : tabs.filter((tab) => isWebUrl(params.url) && sameSite(tab.url || "", params.url));
     if (!doomed.length) {
       return { closed: 0 };

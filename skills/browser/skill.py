@@ -79,6 +79,12 @@ SITES: dict[str, str] = {
     "google": "https://www.google.com",
     "яндекс": "https://ya.ru",
     "yandex": "https://ya.ru",
+    "яндекс музыка": "https://music.yandex.ru",
+    "музыка": "https://music.yandex.ru",
+    "yandex music": "https://music.yandex.ru",
+    "яндекс диск": "https://disk.yandex.ru",
+    "вконтакте": "https://vk.com",
+    "кинопоиск": "https://www.kinopoisk.ru",
     "почта": "https://mail.google.com",
     "gmail": "https://mail.google.com",
     "гитхаб": "https://github.com",
@@ -168,11 +174,17 @@ def site_url(name: str, sites: dict[str, str]) -> str | None:
     stem = _stem(text)
     if len(stem) >= _MIN_PREFIX:
         stems = {_stem(spoken): url for spoken, url in sites.items()}
-        for other, url in stems.items():
-            if len(other) >= _MIN_PREFIX and (
-                stem.startswith(other) or other.startswith(stem)
-            ):
-                return safe_url(url)
+        # Побеждает самое длинное подходящее название. «Яндекс музыку»
+        # начинается с «яндекс», и без этого правила открывался поиск вместо
+        # музыки — какая запись попадётся в словаре первой, такая и выигрывала.
+        matches = [
+            other
+            for other in stems
+            if len(other) >= _MIN_PREFIX
+            and (stem.startswith(other) or other.startswith(stem))
+        ]
+        if matches:
+            return safe_url(stems[max(matches, key=len)])
 
         # Whisper путает звонкие с глухими на конце: «гитхаб» слышится как
         # «гитхап», «твич» — как «твитч». Порог высокий: сайт открывается
@@ -276,6 +288,29 @@ def find_open_window(windows: list[dict], keys: set[str]) -> str | None:
         if keys & words:
             return title
     return None
+
+
+def tabs_by_title(tabs: list[dict], spoken: str) -> list[int]:
+    """Номера вкладок, чей заголовок похож на сказанное.
+
+    Нужно для страниц, которых нет и не может быть в каталоге сайтов:
+    настройки браузера, локальная разработка, открытый документ. «Закрой
+    вкладку Extensions» иначе упиралось в «не знаю такого сайта».
+    """
+    wanted = " ".join(spoken.strip().lower().split())
+    if len(wanted) < 3:
+        return []
+
+    stem = _stem(wanted)
+    found: list[int] = []
+    for tab in tabs:
+        title = str(tab.get("title", "")).lower()
+        words = {_stem(word) for word in _WORD.findall(page_title(title))}
+        if wanted in title or (len(stem) >= _MIN_PREFIX and stem in words):
+            identifier = tab.get("tabId")
+            if isinstance(identifier, int):
+                found.append(identifier)
+    return found
 
 
 def browser_process(name: str) -> str | None:
@@ -667,7 +702,8 @@ class BrowserSkill(Skill):
                 },
             )
 
-        if not site.strip():
+        name = site.strip()
+        if not name:
             tabs = await self._extension.call("tabs")
             active = next(
                 (item for item in (tabs or {}).get("tabs", []) if item.get("active")), None
@@ -679,15 +715,22 @@ class BrowserSkill(Skill):
                 )
             closed = await self._extension.call("close", tabId=active["tabId"])
             name = active.get("title", "вкладку")
-        else:
-            url = site_url(site, self._sites)
-            if url is None:
-                return ToolResult.failure(
-                    f"не понял, какую вкладку закрывать: {site!r}",
-                    speech={"ru": f"Не знаю сайта {site}.", "en": f"I don't know {site}."},
-                )
+        elif (url := site_url(name, self._sites)) is not None:
             closed = await self._extension.call("close", url=url)
-            name = site.strip()
+        else:
+            # Не всякая вкладка — известный сайт: настройки браузера, локальная
+            # разработка, открытый документ. Ищем по заголовку.
+            tabs = await self._extension.call("tabs")
+            matching = tabs_by_title((tabs or {}).get("tabs", []), name)
+            if not matching:
+                return ToolResult.failure(
+                    f"вкладка {name!r} не найдена",
+                    speech={
+                        "ru": f"Не нашёл вкладку {name}.",
+                        "en": f"No {name} tab found.",
+                    },
+                )
+            closed = await self._extension.call("close", tabIds=matching)
 
         if not closed or not closed.get("closed"):
             return ToolResult.failure(
