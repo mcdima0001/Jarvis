@@ -313,3 +313,108 @@ def test_word_inside_another_word_does_not_count() -> None:
                 "image": "browser.exe", "pid": 2000}]
     keys = browser.site_keys("https://www.youtube.com", SITES, "ютуб")
     assert browser.find_open_window(windows, keys) is None
+
+
+# --- мост к расширению ------------------------------------------------------
+
+
+def test_saved_token_survives_restart(tmp_path) -> None:
+    """Токен читается обратно, а не создаётся заново на каждый запуск.
+
+    Новый токен при каждом старте означал бы, что расширение с прочитанным
+    в память старым перестаёт подключаться до перезагрузки браузера.
+    """
+    path = tmp_path / "token.json"
+    path.write_text('{"token": "секрет", "port": 8765}', encoding="utf-8")
+
+    assert browser.read_token(path) == "секрет"
+
+
+@pytest.mark.parametrize("content", ['{"port": 1}', "не json", ""])
+def test_broken_token_file_is_ignored(tmp_path, content: str) -> None:
+    """Испорченный файл — повод создать новый токен, а не упасть."""
+    path = tmp_path / "token.json"
+    path.write_text(content, encoding="utf-8")
+
+    assert browser.read_token(path) == ""
+
+
+def test_missing_token_file_is_ignored(tmp_path) -> None:
+    """Первый запуск: файла ещё нет."""
+    assert browser.read_token(tmp_path / "нет.json") == ""
+
+
+class _FakeServer:
+    """Сервер, который вместо сети складывает отправленное в список."""
+
+    def __init__(self, *, connected: bool = True) -> None:
+        self.connected = connected
+        self.sent: list[dict] = []
+        self.answer: dict | None = None
+        self.bridge = None
+
+    async def send(self, text: str) -> int:
+        import json as _json
+
+        message = _json.loads(text)
+        self.sent.append(message)
+        if self.answer is not None and self.bridge is not None:
+            reply = {"id": message["id"], **self.answer}
+            await self.bridge.on_message(_json.dumps(reply))
+        return 1
+
+
+def _bridge(**kwargs):
+    """Мост поверх поддельного сервера."""
+    import logging
+
+    server = _FakeServer(**kwargs)
+    bridge = browser._Extension(
+        server=server, logger=logging.getLogger("test-browser"), timeout=0.2
+    )
+    server.bridge = bridge
+    return bridge, server
+
+
+async def test_reply_is_matched_by_id() -> None:
+    """Ответ находит свой запрос по номеру, а не по порядку прихода."""
+    bridge, server = _bridge()
+    server.answer = {"ok": True, "result": {"tabId": 7, "reused": True}}
+
+    result = await bridge.call("open", url="https://ya.ru", reuse=True)
+
+    assert result == {"tabId": 7, "reused": True}
+    assert server.sent[0]["action"] == "open"
+    assert server.sent[0]["params"] == {"url": "https://ya.ru", "reuse": True}
+
+
+async def test_error_from_extension_is_not_a_result() -> None:
+    """Расширение доложило об ошибке — значит, делаем по-старому."""
+    bridge, server = _bridge()
+    server.answer = {"ok": False, "error": "недопустимый адрес"}
+
+    assert await bridge.call("open", url="file:///etc/passwd") is None
+
+
+async def test_silence_is_not_a_result() -> None:
+    """Расширение молчит — ждём недолго и возвращаемся к окнам."""
+    bridge, _ = _bridge()
+
+    assert await bridge.call("tabs") is None
+
+
+async def test_nothing_is_sent_when_disconnected() -> None:
+    """Без расширения команда даже не собирается."""
+    bridge, server = _bridge(connected=False)
+
+    assert await bridge.call("tabs") is None
+    assert server.sent == []
+
+
+async def test_garbage_from_extension_is_survivable() -> None:
+    """Мусор в сокете не должен ронять разбор ответов."""
+    bridge, _ = _bridge()
+
+    await bridge.on_message("не json")
+    await bridge.on_message('{"event": "hello", "agent": "Chrome"}')
+    await bridge.on_message('{"id": 999, "ok": true}')

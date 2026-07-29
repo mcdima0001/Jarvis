@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Jarvis",
+  "version": "0.1.0",
+  "description": "Мост между голосовым ассистентом Jarvis и браузером: вкладки вместо новых окон.",
+  "permissions": ["tabs", "alarms"],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "jarvis@mcdima0001",
+      "strict_min_version": "115.0"
+    }
+  }
+}

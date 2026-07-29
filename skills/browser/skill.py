@@ -25,11 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import re
+import secrets
 import webbrowser
+from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
 from jarvis.core.contracts import ToolResult
+from jarvis.core.net import WebSocketServer
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.tools import tool
 
@@ -294,6 +298,107 @@ def running_browser(processes: list[str]) -> str | None:
     return None
 
 
+#: Куда Jarvis кладёт токен для расширения и на каком порту его ждёт.
+EXTENSION_DIR = "extension"
+TOKEN_FILE = "token.json"
+DEFAULT_PORT = 8765
+
+#: Кому разрешено подключаться. Идентификатор расширения меняется при
+#: переустановке, а схема — нет, поэтому сравнение по началу строки.
+EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://")
+
+
+def read_token(path: Path) -> str:
+    """Прочитать сохранённый токен; пусто — если файла нет или он испорчен.
+
+    Токен переживает перезапуск намеренно. Новый каждый раз означал бы, что
+    расширение с прочитанным в память старым токеном перестаёт подключаться до
+    перезагрузки браузера.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    token = data.get("token")
+    return str(token) if isinstance(token, str) else ""
+
+
+class _Extension:
+    """Мост к расширению: команда туда, ответ обратно по тому же номеру.
+
+    Соответствие вопроса и ответа держится на числовом ``id``: сообщений в
+    сокете два потока, и без него ответ на «открой» можно было бы принять за
+    ответ на «закрой».
+    """
+
+    def __init__(self, *, server: WebSocketServer, logger, timeout: float = 5.0) -> None:
+        self._server = server
+        self._log = logger
+        self._timeout = timeout
+        self._pending: dict[int, asyncio.Future[dict]] = {}
+        self._last_id = 0
+
+    @property
+    def connected(self) -> bool:
+        """Подключено ли расширение прямо сейчас."""
+        return self._server.connected
+
+    async def call(self, action: str, **params: object) -> dict | None:
+        """Выполнить команду в браузере.
+
+        :return: поле ``result`` ответа, либо ``None``, если расширение не
+            ответило или сообщило об ошибке. ``None`` — не исключение, а повод
+            сделать по-старому: расширение необязательно.
+        """
+        if not self._server.connected:
+            return None
+
+        self._last_id += 1
+        ident = self._last_id
+        future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+        self._pending[ident] = future
+
+        try:
+            request = json.dumps({"id": ident, "action": action, "params": params})
+            if not await self._server.send(request):
+                return None
+            reply = await asyncio.wait_for(future, self._timeout)
+        except TimeoutError:
+            self._log.warning("Расширение не ответило на %s за %.0f с", action, self._timeout)
+            return None
+        finally:
+            self._pending.pop(ident, None)
+
+        if not reply.get("ok"):
+            self._log.warning("Расширение отказало в %s: %s", action, reply.get("error"))
+            return None
+        result = reply.get("result")
+        return result if isinstance(result, dict) else {}
+
+    async def on_message(self, text: str) -> None:
+        """Разобрать сообщение расширения: ответ на команду или событие."""
+        try:
+            message = json.loads(text)
+        except ValueError:
+            self._log.warning("Расширение прислало не JSON: %.80s", text)
+            return
+        if not isinstance(message, dict):
+            return
+
+        ident = message.get("id")
+        if isinstance(ident, int):
+            future = self._pending.get(ident)
+            if future is not None and not future.done():
+                future.set_result(message)
+            return
+
+        event = message.get("event")
+        if event == "hello":
+            self._log.info("Расширение готово: %s", message.get("agent", ""))
+        elif event and event != "keepalive":
+            self._log.debug("Событие расширения: %s", event)
+
+
 class BrowserSkill(Skill):
     """Сайты, поиск и окна браузера."""
 
@@ -305,6 +410,8 @@ class BrowserSkill(Skill):
 
     async def on_setup(self) -> None:
         """Прочитать настройки: домашняя страница, поисковик, свои сайты."""
+        self._server: WebSocketServer | None = None
+        self._extension: _Extension | None = None
         self._home = str(self.context.setting("home", DEFAULT_HOME))
         self._default_engine = str(self.context.setting("engine", "google"))
         self._browser = str(self.context.setting("browser", "") or "")
@@ -341,6 +448,63 @@ class BrowserSkill(Skill):
             self._default_engine,
             len(self._sites),
         )
+        self._extension = self._prepare_extension()
+
+    def _prepare_extension(self) -> _Extension | None:
+        """Поднять мост к расширению и записать для него токен.
+
+        Токен кладётся прямо в каталог расширения: страницам сайтов файлы
+        расширения недоступны, поэтому передавать его руками не нужно. Пустой
+        токен допустим — тогда остаётся только проверка origin.
+        """
+        settings = dict(self.context.setting("extension", {}))
+        if not bool(settings.get("enabled", True)):
+            self.log.info("Расширение отключено в конфиге — работаю окнами")
+            return None
+
+        port = int(settings.get("port", DEFAULT_PORT))
+        directory = self.context.root / EXTENSION_DIR
+        if not directory.is_dir():
+            self.log.warning(
+                "Каталог %s не найден — расширение подключать неоткуда", directory
+            )
+            return None
+
+        path = directory / TOKEN_FILE
+        token = read_token(path) or secrets.token_urlsafe(32)
+        try:
+            path.write_text(
+                json.dumps({"token": token, "port": port}, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            self.log.warning("Не смог записать %s: %s", path, exc)
+            return None
+
+        origins = tuple(
+            str(origin) for origin in settings.get("origins", EXTENSION_ORIGINS)
+        )
+        server = WebSocketServer(
+            host=str(settings.get("host", "127.0.0.1")),
+            port=port,
+            token=token,
+            origins=origins,
+        )
+        bridge = _Extension(
+            server=server, logger=self.log, timeout=float(settings.get("timeout", 5.0))
+        )
+        server.on_message = bridge.on_message
+        self._server = server
+        return bridge
+
+    async def on_start(self) -> None:
+        """Начать слушать расширение."""
+        if self._extension is not None and self._server is not None:
+            await self._server.start()
+
+    async def on_stop(self) -> None:
+        """Закрыть порт."""
+        if self._server is not None:
+            await self._server.stop()
 
     # --- открытие ----------------------------------------------------------
 
@@ -367,7 +531,16 @@ class BrowserSkill(Skill):
                 },
             )
 
-        if self._reuse and site.strip():
+        name = site.strip() or "браузер"
+        reuse = self._reuse and bool(site.strip())
+
+        # С расширением всё делается вкладкой в уже открытом окне; без него
+        # остаются окна и заголовки — путь хуже, но рабочий.
+        through_tab = await self._open_tab(url, name, reuse=reuse)
+        if through_tab is not None:
+            return through_tab
+
+        if reuse:
             opened = await self._focus_open(url, site)
             if opened is not None:
                 return opened
@@ -375,7 +548,6 @@ class BrowserSkill(Skill):
         if not await self._open(url):
             return self._no_browser()
 
-        name = site.strip() or "браузер"
         return ToolResult.success(
             {"url": url},
             speech={"ru": f"Открываю {name}.", "en": f"Opening {name}."},
@@ -405,7 +577,9 @@ class BrowserSkill(Skill):
                 "пустой поисковый запрос",
                 speech={"ru": "Не расслышал, что искать.", "en": "I didn't catch what to search for."},
             )
-        if not await self._open(url):
+        # Каждый поиск — новый запрос, поэтому вкладку не переиспользуем.
+        through_tab = await self._open_tab(url, query, reuse=False)
+        if through_tab is None and not await self._open(url):
             return self._no_browser()
 
         # Поисковик называем так, как назвал его владелец: своё «в гугле»
@@ -453,6 +627,77 @@ class BrowserSkill(Skill):
         # Своего кода закрытия здесь нет намеренно: окна умеет закрывать скилл
         # windows, и повторять его логику — значит чинить её потом дважды.
         return await self.tools.invoke("windows.close_program", {"program": image})
+
+    async def _open_tab(self, url: str, name: str, *, reuse: bool) -> ToolResult | None:
+        """Открыть адрес вкладкой через расширение.
+
+        :return: готовый ответ, либо ``None``, если расширения нет или оно не
+            ответило — тогда работаем окнами, как раньше.
+        """
+        if self._extension is None or not self._extension.connected:
+            return None
+
+        result = await self._extension.call("open", url=url, reuse=reuse)
+        if result is None:
+            return None
+
+        if result.get("reused"):
+            self.log.info("Вкладка уже была открыта: %s", result.get("title", url))
+            speech = {
+                "ru": f"{name} уже открыт, переключаюсь.",
+                "en": f"{name} is already open, switching to it.",
+            }
+        else:
+            speech = {"ru": f"Открываю {name}.", "en": f"Opening {name}."}
+        return ToolResult.success({"url": url, **result}, speech=speech)
+
+    @tool(phrases=["закрой вкладку", "закрой вкладку {site}",
+                   "close the tab", "close the {site} tab"])
+    async def close_tab(self, site: str = "") -> ToolResult:
+        """Закрыть вкладку с сайтом.
+
+        :param site: название сайта; пусто — текущая вкладка.
+        """
+        if self._extension is None or not self._extension.connected:
+            return ToolResult.failure(
+                "закрывать вкладки умеет только расширение, а оно не подключено",
+                speech={
+                    "ru": "Расширение не подключено, вкладками не управляю.",
+                    "en": "The extension isn't connected, so I can't manage tabs.",
+                },
+            )
+
+        if not site.strip():
+            tabs = await self._extension.call("tabs")
+            active = next(
+                (item for item in (tabs or {}).get("tabs", []) if item.get("active")), None
+            )
+            if active is None:
+                return ToolResult.failure(
+                    "не нашёл активную вкладку",
+                    speech={"ru": "Не вижу открытых вкладок.", "en": "I see no open tabs."},
+                )
+            closed = await self._extension.call("close", tabId=active["tabId"])
+            name = active.get("title", "вкладку")
+        else:
+            url = site_url(site, self._sites)
+            if url is None:
+                return ToolResult.failure(
+                    f"не понял, какую вкладку закрывать: {site!r}",
+                    speech={"ru": f"Не знаю сайта {site}.", "en": f"I don't know {site}."},
+                )
+            closed = await self._extension.call("close", url=url)
+            name = site.strip()
+
+        if not closed or not closed.get("closed"):
+            return ToolResult.failure(
+                f"вкладка {name!r} не найдена",
+                speech={"ru": f"Не нашёл вкладку {name}.", "en": f"No {name} tab found."},
+            )
+        return ToolResult.success(
+            closed,
+            speech={"ru": f"Закрываю {name}.", "en": f"Closing {name}."},
+        )
 
     async def _focus_open(self, url: str, spoken: str) -> ToolResult | None:
         """Переключиться на уже открытое окно с этим сайтом.
@@ -532,8 +777,11 @@ class BrowserSkill(Skill):
 
     async def health(self) -> HealthStatus:
         """Готовность: есть ли в системе браузер по умолчанию."""
+        bridge = "расширение подключено" if (
+            self._extension is not None and self._extension.connected
+        ) else "без расширения, работаю окнами"
         try:
             await asyncio.to_thread(webbrowser.get)
         except webbrowser.Error as exc:
             return HealthStatus.degraded(f"браузер по умолчанию не найден: {exc}")
-        return HealthStatus.healthy(f"поиск через {self._default_engine}")
+        return HealthStatus.healthy(f"поиск через {self._default_engine}, {bridge}")
