@@ -95,3 +95,46 @@ def test_missing_config_file(tmp_path: Path) -> None:
     """Отсутствующий файл конфигурации — понятная ошибка."""
     with pytest.raises(ConfigError, match="не найден"):
         load_config(tmp_path / "config" / "нет.yaml")
+
+
+def test_persona_defaults(tmp_path: Path) -> None:
+    """Без секции persona ассистент всё равно вежлив и здоровается."""
+    config = load_config(_write(tmp_path, _MINIMAL))
+
+    assert config.persona.address == {}
+    assert config.persona.greet_on_start
+    assert config.persona.farewell_on_stop
+
+
+def test_persona_address_as_single_string(tmp_path: Path) -> None:
+    """«address: сэр» одной строкой — значит, так на любом языке."""
+    text = _MINIMAL + "\npersona:\n  address: сэр\n  greet_on_start: false\n"
+    config = load_config(_write(tmp_path, text))
+
+    assert config.persona.address == {"*": "сэр"}
+    assert not config.persona.greet_on_start
+
+
+def test_persona_own_phrases(tmp_path: Path) -> None:
+    """Свои реплики доезжают из конфига до наборов персоны."""
+    text = _MINIMAL + (
+        "\npersona:\n"
+        "  address:\n"
+        "    ru: командир\n"
+        "  phrases:\n"
+        "    listening:\n"
+        "      ru:\n"
+        "        - \"Чего изволите?\"\n"
+    )
+    config = load_config(_write(tmp_path, text))
+
+    assert config.persona.address == {"ru": "командир"}
+    assert config.persona.phrases["listening"]["ru"] == ("Чего изволите?",)
+
+
+def test_persona_phrases_must_be_grouped_by_language(tmp_path: Path) -> None:
+    """Список сразу под ситуацией — забытый язык, а не рабочая настройка."""
+    text = _MINIMAL + "\npersona:\n  phrases:\n    listening:\n      - Ага\n"
+
+    with pytest.raises(ConfigError, match="listening"):
+        load_config(_write(tmp_path, text))

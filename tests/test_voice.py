@@ -10,6 +10,7 @@ from jarvis.core.audio import AudioFrame, EnergyVAD, frame_rms
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import AudioConfig, VADConfig, WakeWordConfig
 from jarvis.core.contracts import ToolResult, Utterance
+from jarvis.core.persona import DONE, FAILED, FAREWELL, GREETING, LISTENING, Persona
 from jarvis.core.router import Dispatcher, PhraseResolver, Router
 from jarvis.core.tools import ToolRegistry, collect_tools, tool
 from jarvis.core.tts import NullTTS
@@ -25,7 +26,26 @@ class Lights:
         return ToolResult.success(True, speech="Свет включён.")
 
 
-def _pipeline(registry: ToolRegistry, events: LocalEventBus, **wake: object) -> VoicePipeline:
+class RecordingTTS(NullTTS):
+    """Заглушка синтеза, которая помнит всё сказанное."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.said: list[str] = []
+
+    async def say(self, text: str, *, language: str | None = None) -> None:
+        """Запомнить реплику вместо озвучки."""
+        self.said.append(text)
+
+
+def _pipeline(
+    registry: ToolRegistry,
+    events: LocalEventBus,
+    *,
+    persona: Persona | None = None,
+    tts: NullTTS | None = None,
+    **wake: object,
+) -> VoicePipeline:
     """Собрать конвейер с заглушками вместо звука."""
     from jarvis.core.audio import NullAudioSink, NullAudioSource, PassthroughVAD
     from jarvis.core.audio.null import AlwaysActiveWakeWord
@@ -47,10 +67,11 @@ def _pipeline(registry: ToolRegistry, events: LocalEventBus, **wake: object) -> 
         vad=PassthroughVAD(),
         wake_word=AlwaysActiveWakeWord("джарвис"),
         stt=NullSTT(),
-        tts=NullTTS(),
+        tts=tts or NullTTS(),
         dispatcher=Dispatcher(router=router, registry=registry),
         events=events,
         config=config,
+        persona=persona,
     )
 
 
@@ -399,3 +420,118 @@ def test_missing_sound_file_is_not_an_error(tmp_path) -> None:
     from jarvis.core.audio import load_sound
 
     assert load_sound(tmp_path / "нет-такого.mp3") is None
+
+
+# --- манера речи ------------------------------------------------------------
+
+
+class NameSTT:
+    """Слышит только имя — как будто позвали и замолчали."""
+
+    @property
+    def service_name(self) -> str:
+        return "fake-stt"
+
+    @property
+    def ready(self) -> bool:
+        return True
+
+    async def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+    async def transcribe(self, audio: bytes, *, sample_rate: int):
+        from jarvis.core.stt import Transcript
+
+        return Transcript(text="Джарвис", language="ru", confidence=1.0)
+
+
+async def test_bare_name_answered_from_persona(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Отклик на имя берётся из набора персоны, а не из зашитой строки."""
+    tts = RecordingTTS()
+    persona = Persona()
+    pipeline = _pipeline(registry, events, persona=persona, tts=tts)
+    pipeline._stt = NameSTT()
+
+    await pipeline._process(b"\x00" * 32000, time.time())
+
+    pool = {line.format(address="сэр") for line in persona.variants(LISTENING, "ru")}
+    assert tts.said == [tts.said[0]] and tts.said[0] in pool
+
+
+async def test_repeated_calls_are_answered_differently(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Позвали трижды — услышали три разных отклика.
+
+    Ради этого всё и затевалось: одна фраза на каждое обращение за неделю
+    перестаёт восприниматься как ответ.
+    """
+    tts = RecordingTTS()
+    pipeline = _pipeline(registry, events, tts=tts)
+    pipeline._stt = NameSTT()
+
+    for _ in range(3):
+        await pipeline._process(b"\x00" * 32000, time.time())
+
+    assert len(set(tts.said)) == 3
+
+
+async def test_greeting_depends_on_the_time_of_day(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Приветствие начинается с «Доброе утро» или «Добрый вечер»."""
+    tts = RecordingTTS()
+    pipeline = _pipeline(registry, events, tts=tts)
+
+    await pipeline.announce(GREETING)
+    await pipeline.announce(FAREWELL)
+
+    assert tts.said[0].startswith(("Доброе", "Добрый", "Доброй"))
+    assert len(tts.said) == 2
+
+
+async def test_start_and_stop_stay_silent(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Подъём сервиса ничего не произносит.
+
+    Иначе `--check` и одиночная команда `--say` каждый раз здоровались бы и
+    прощались: две лишних реплики на односекундную операцию.
+    """
+    tts = RecordingTTS()
+    pipeline = _pipeline(registry, events, tts=tts)
+
+    await pipeline.start()
+    await pipeline.stop()
+
+    assert tts.said == []
+
+
+def test_silent_result_is_described_in_character(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Команда выполнилась молча — отвечает персона, а не «Готово.»."""
+    persona = Persona()
+    pipeline = _pipeline(registry, events, persona=persona)
+
+    reply = pipeline._describe(ToolResult.success(None), "ru")
+    assert reply in {line.format(address="сэр") for line in persona.variants(DONE, "ru")}
+
+
+def test_own_error_text_beats_the_polite_refusal(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """«Не нашёл такой программы» полезнее, чем «Не вышло, сэр»."""
+    persona = Persona()
+    pipeline = _pipeline(registry, events, persona=persona)
+
+    assert pipeline._describe(ToolResult.failure("Не нашёл такую программу.")) == (
+        "Не нашёл такую программу."
+    )
+    fallback = pipeline._describe(ToolResult.failure(""), "ru")
+    assert fallback in {
+        line.format(address="сэр") for line in persona.variants(FAILED, "ru")
+    }

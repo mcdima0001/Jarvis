@@ -33,6 +33,7 @@ from jarvis.core.contracts import (
     VoiceCommandRecognized,
     WakeWordDetected,
 )
+from jarvis.core.persona import DONE, FAILED, LISTENING, Persona
 from jarvis.core.router import Dispatcher
 from jarvis.core.stt import STT
 from jarvis.core.tts import TTS
@@ -41,8 +42,6 @@ logger = logging.getLogger(__name__)
 
 #: Сколько фрагментов держать в очереди на распознавание.
 _PENDING_LIMIT = 2
-#: Ответ на голое обращение по имени.
-_LISTENING_REPLY = {"ru": "Слушаю.", "en": "I'm listening."}
 
 
 class VoicePipeline:
@@ -60,6 +59,7 @@ class VoicePipeline:
         dispatcher: Dispatcher,
         events: EventBus,
         config: AudioConfig,
+        persona: Persona | None = None,
     ) -> None:
         self._source = source
         self._sink = sink
@@ -70,6 +70,9 @@ class VoicePipeline:
         self._dispatcher = dispatcher
         self._events = events
         self._config = config
+        # Без явной персоны берётся стандартная: конвейер должен собираться и
+        # в тесте, где характер ассистента не при чём.
+        self._persona = persona or Persona()
 
         # Вместе со звуком храним момент, когда он прозвучал: окно ответа
         # должно отсчитываться от речи, а не от того, когда до неё дошли руки.
@@ -128,6 +131,16 @@ class VoicePipeline:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
 
+    async def announce(self, situation: str, *, language: str | None = None) -> None:
+        """Произнести служебную реплику: приветствие, прощание.
+
+        Вынесено из ``start``/``stop`` намеренно. Здороваться уместно в начале
+        живого сеанса, а не при каждом подъёме сервиса: иначе ``--check`` и
+        одиночная команда ``--say`` тоже здоровались бы и прощались, тратя на
+        это синтез и секунды.
+        """
+        await self._say(self._persona.line(situation, language), language=language)
+
     # --- общий путь для голоса и текста ------------------------------------
 
     async def handle(self, utterance: Utterance) -> ToolResult:
@@ -161,6 +174,8 @@ class VoicePipeline:
         собственную реплику как команду. В окне ответа, где имя не требуется,
         он её ещё и выполнит.
         """
+        if not text:
+            return
         self._speaking = True
         spoken = True
         try:
@@ -203,16 +218,16 @@ class VoicePipeline:
         """Глушить ли сейчас микрофон (говорим сами или ещё звучит хвост)."""
         return self._speaking or time.time() < self._mute_until
 
-    @staticmethod
-    def _describe(result: ToolResult, language: str | None = None) -> str:
-        """Собрать реплику, если инструмент не предложил свою."""
-        english = (language or "ru").startswith("en")
+    def _describe(self, result: ToolResult, language: str | None = None) -> str:
+        """Собрать реплику, если инструмент не предложил свою.
+
+        Своё объяснение ошибки важнее вежливого отказа: «Не нашёл такой
+        программы» полезнее, чем «Не вышло, сэр».
+        """
         if not result.ok:
-            if result.error:
-                return result.error
-            return "Couldn't do that." if english else "Не получилось выполнить команду."
+            return result.error or self._persona.line(FAILED, language)
         if result.value is None:
-            return "Done." if english else "Готово."
+            return self._persona.line(DONE, language)
         return str(result.value)
 
     # --- захват ------------------------------------------------------------
@@ -328,8 +343,7 @@ class VoicePipeline:
             self._events.emit(
                 WakeWordDetected(source="voice", phrase=self._config.wake_word.phrase)
             )
-            reply = _LISTENING_REPLY.get(language.split("-")[0], _LISTENING_REPLY["ru"])
-            await self._say(reply, language=language)
+            await self._say(self._persona.line(LISTENING, language), language=language)
             # Окно открывается только теперь, когда «Слушаю» отзвучало и стих
             # хвост. Если отсчитывать от распознавания, треть времени съедает
             # собственная реплика, и обещанные секунды оказываются короче.

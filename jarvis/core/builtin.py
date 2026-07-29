@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from jarvis.core.contracts import ToolResult
 from jarvis.core.llm import LLMService
 from jarvis.core.memory import Memory
+from jarvis.core.persona import Persona
 from jarvis.core.tools import ToolRegistry, tool
 
 if TYPE_CHECKING:
@@ -27,7 +28,9 @@ logger = logging.getLogger(__name__)
 NAMESPACE = "core"
 
 #: Системные подсказки под каждый язык: модель должна отвечать так же, как её
-#: спросили, и коротко — реплику будут произносить вслух.
+#: спросили, и коротко — реплику будут произносить вслух. Манера речи сюда не
+#: вписана: она приходит из `Persona.style`, потому что задаётся один раз на
+#: весь проект и настраивается в конфиге.
 _DIALOG_SYSTEM = {
     "ru": (
         "Ты — Jarvis, голосовой ассистент домашней студии. Отвечай по-русски, "
@@ -84,11 +87,13 @@ class CoreTools:
         memory: Memory,
         registry: ToolRegistry,
         skills: "SkillManager",
+        persona: Persona | None = None,
     ) -> None:
         self._llm = llm
         self._memory = memory
         self._registry = registry
         self._skills = skills
+        self._persona = persona or Persona()
 
     @tool(name="chat")
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
@@ -117,7 +122,7 @@ class CoreTools:
         answer = await self._llm.ask(
             text,
             task="dialog",
-            system=f"{_DIALOG_SYSTEM[code]} {_now_line(code)}",
+            system=f"{_DIALOG_SYSTEM[code]} {self._persona.style(code)} {_now_line(code)}",
             context=context or None,
         )
         await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))

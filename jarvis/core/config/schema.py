@@ -250,6 +250,21 @@ class AudioConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PersonaConfig:
+    """Манера речи: обращение, свои варианты реплик, приветствие и прощание."""
+
+    #: Обращение по языкам; ключ ``*`` перекрывает все языки, пустая строка
+    #: убирает обращение вместе с запятой при нём.
+    address: Mapping[str, str] = field(default_factory=dict)
+    #: Свои варианты: ситуация -> язык -> список фраз.
+    phrases: Mapping[str, Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
+    #: ``True`` — свои фразы вместо встроенных, иначе в дополнение к ним.
+    replace: bool = False
+    greet_on_start: bool = True
+    farewell_on_stop: bool = True
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class MemoryConfig:
     """Разделы памяти и бюджет контекста."""
 
@@ -274,4 +289,5 @@ class JarvisConfig:
     stt: STTConfig
     tts: TTSConfig
     audio: AudioConfig
+    persona: PersonaConfig
     memory: MemoryConfig

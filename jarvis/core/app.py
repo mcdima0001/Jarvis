@@ -29,6 +29,7 @@ from jarvis.core.contracts import (
 from jarvis.core.lifecycle import ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
 from jarvis.core.memory import Memory, build_memory
+from jarvis.core.persona import FAREWELL, GREETING, Persona
 from jarvis.core.router import (
     AliasResolver,
     Dispatcher,
@@ -58,6 +59,7 @@ class JarvisApp:
     memory: Memory
     llm: LLMService
     skills: SkillManager
+    persona: Persona
     router: Router
     dispatcher: Dispatcher
     pipeline: VoicePipeline
@@ -88,6 +90,15 @@ class JarvisApp:
             ),
         )
 
+        persona = Persona(
+            phrases=config.persona.phrases,
+            address=config.persona.address,
+            replace=config.persona.replace,
+            default_language=config.app.language,
+            greet_on_start=config.persona.greet_on_start,
+            farewell_on_stop=config.persona.farewell_on_stop,
+        )
+
         audio = build_audio(config.audio)
         stt = build_stt(config.stt, worker)
         tts = build_tts(config.tts, worker, sink=audio.sink)
@@ -110,7 +121,9 @@ class JarvisApp:
         dispatcher = Dispatcher(router=router, registry=registry, events=events)
 
         # Встроенные инструменты ядра: диалог, справка, перезагрузка, модели.
-        core_tools = CoreTools(llm=llm, memory=memory, registry=registry, skills=skills)
+        core_tools = CoreTools(
+            llm=llm, memory=memory, registry=registry, skills=skills, persona=persona
+        )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
 
@@ -124,6 +137,7 @@ class JarvisApp:
             dispatcher=dispatcher,
             events=events,
             config=config.audio,
+            persona=persona,
         )
 
         runner = ServiceRunner()
@@ -137,6 +151,7 @@ class JarvisApp:
             memory=memory,
             llm=llm,
             skills=skills,
+            persona=persona,
             router=router,
             dispatcher=dispatcher,
             pipeline=pipeline,
@@ -187,9 +202,15 @@ class JarvisApp:
                 pass
 
         await self.start()
+        # Приветствие и прощание — свойство живого сеанса, а не запуска
+        # сервисов: служебные режимы (`--check`, `--say`) остаются молчаливыми.
+        if self.persona.greet_on_start:
+            await self.pipeline.announce(GREETING)
         try:
             await stop_event.wait()
         finally:
+            if self.persona.farewell_on_stop:
+                await self.pipeline.announce(FAREWELL)
             await self.stop("получен сигнал остановки")
 
     # --- работа ------------------------------------------------------------
@@ -221,6 +242,7 @@ class JarvisApp:
             f"Корень:        {self.config.root}",
             f"Резолверы:     {' -> '.join(self.router.resolvers)}",
             f"Порог:         {self.config.router.confidence_threshold}",
+            f"Персона:       {self.persona.summary()}",
             "",
             f"Скиллы ({len(self.skills.loaded)}):",
         ]

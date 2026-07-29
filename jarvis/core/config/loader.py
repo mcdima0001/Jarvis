@@ -23,6 +23,7 @@ from .schema import (
     LLMConfig,
     LoggingConfig,
     MemoryConfig,
+    PersonaConfig,
     ProviderConfig,
     RouterConfig,
     RuntimeConfig,
@@ -121,6 +122,31 @@ def _wake_phrases(section: Mapping[str, Any]) -> tuple[str, ...]:
     return ("джарвис", "jarvis")
 
 
+def _address(value: Any) -> dict[str, str]:
+    """Разобрать обращение: одна строка на все языки или карта по языкам."""
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        # «address: сэр» — значит, так обращаться на любом языке.
+        return {"*": value}
+    return {str(code): str(text) for code, text in value.items()}
+
+
+def _persona_phrases(value: Any) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Разобрать свои реплики: ситуация -> язык -> список фраз."""
+    phrases: dict[str, dict[str, tuple[str, ...]]] = {}
+    for situation, languages in (value or {}).items():
+        if not isinstance(languages, Mapping):
+            raise ConfigError(
+                f"persona.phrases.{situation}: ожидалась карта «язык: список фраз»"
+            )
+        phrases[str(situation)] = {
+            str(code): tuple(str(line) for line in (lines or ()))
+            for code, lines in languages.items()
+        }
+    return phrases
+
+
 def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
     """Собрать конфигурацию LLM: провайдеры и профили задач."""
     providers: dict[str, ProviderConfig] = {}
@@ -191,6 +217,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
     stt = _section(data, "stt")
     tts = _section(data, "tts")
     audio = _section(data, "audio")
+    persona = _section(data, "persona")
     memory = _section(data, "memory")
 
     return JarvisConfig(
@@ -275,6 +302,13 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                 similarity=float(_section(audio, "wake_word").get("similarity", 0.7)),
                 follow_up_s=float(_section(audio, "wake_word").get("follow_up_s", 10.0)),
             ),
+        ),
+        persona=PersonaConfig(
+            address=_address(persona.get("address")),
+            phrases=_persona_phrases(persona.get("phrases")),
+            replace=bool(persona.get("replace", False)),
+            greet_on_start=bool(persona.get("greet_on_start", True)),
+            farewell_on_stop=bool(persona.get("farewell_on_stop", True)),
         ),
         memory=MemoryConfig(
             dir=_resolve(project_root, memory.get("dir", "memory")),
