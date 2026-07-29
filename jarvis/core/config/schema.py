@@ -278,7 +278,7 @@ class MemoryConfig:
     """Разделы памяти и бюджет контекста."""
 
     dir: Path = Path("memory")
-    documents: tuple[str, ...] = ("profile", "preferences", "studio")
+    documents: tuple[str, ...] = ("profile", "preferences", "studio", "sites")
     journals: tuple[str, ...] = ("today", "history")
     context_budget_tokens: int = 2000
 

@@ -78,11 +78,10 @@ class YouTubeSkill(Skill):
             speech={"ru": f"Включаю {query}.", "en": f"Playing {query}."},
         )
 
-    @tool(phrases=["пауза", "останови видео", "pause", "stop the video"])
-    async def pause(self) -> ToolResult:
-        """Поставить воспроизведение на паузу."""
-        # TODO: медиа-клавиши или API плеера
-        return ToolResult.success(True, speech={"ru": "Пауза.", "en": "Paused."})
+    # Пауза жила здесь заглушкой: отвечала «Пауза.» и не делала ничего.
+    # Теперь этим занимается скилл `page` — по-настоящему и на любом сайте,
+    # а не только на YouTube. Две команды с одной фразой «пауза» спорили бы
+    # между собой, поэтому осталась одна.
 
     async def health(self) -> HealthStatus:
         """Готовность определяется наличием ключа API."""

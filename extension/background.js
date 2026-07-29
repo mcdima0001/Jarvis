@@ -13,6 +13,13 @@
  * поднимает его заново и переподключает, если он всё-таки уснул.
  */
 
+// Код, который выполняется внутри страниц, лежит отдельно — в page.js.
+// Chrome поднимает служебный поток как worker, и файл подключается вручную;
+// Firefox перечисляет оба файла в манифесте, и там importScripts не бывает.
+if (typeof importScripts === "function") {
+  importScripts("page.js");
+}
+
 const DEFAULT_PORT = 8765;
 /** Chrome помечает этим вкладку, которая не входит ни в одну группу. */
 const NO_GROUP = -1;
@@ -162,6 +169,62 @@ function byProximity(tabs, spot) {
   });
 }
 
+/**
+ * В какой вкладке выполнять действие на странице.
+ *
+ * Порядок важен и отвечает на вопрос «а где, собственно?»:
+ *
+ * 1. вкладку назвали прямо — номером или сайтом («поставь ютуб на паузу»);
+ * 2. вкладка **звучит** — из неё сейчас идёт звук. Это главный признак: «стоп»
+ *    почти всегда относится к тому, что играет, а не к тому, куда смотрят;
+ * 3. вкладка в фокусе — на неё смотрят прямо сейчас.
+ *
+ * Названный сайт, которого нет среди открытых, ответа не имеет: жать кнопки
+ * в первой попавшейся вкладке вместо него было бы хуже, чем честно отказать.
+ */
+async function pickTab(params) {
+  if (params.tabId) {
+    try {
+      return await chrome.tabs.get(params.tabId);
+    } catch (error) {
+      // Вкладку успели закрыть — ищем дальше по обычным правилам.
+    }
+  }
+
+  const spot = await currentSpot();
+  const tabs = await chrome.tabs.query({});
+
+  if (isWebUrl(params.url)) {
+    return byProximity(tabs.filter((tab) => sameSite(tab.url || "", params.url)), spot)[0] || null;
+  }
+
+  const audible = byProximity(tabs.filter((tab) => tab.audible), spot)[0];
+  if (audible) {
+    return audible;
+  }
+  if (spot) {
+    return tabs.find((tab) => tab.id === spot.tabId) || null;
+  }
+  return tabs.find((tab) => tab.active) || null;
+}
+
+/**
+ * Выполнить в странице то, что умеет page.js.
+ *
+ * Впрыскивается во все кадры сразу: плеер часто живёт во вложенном фрейме
+ * (встроенное видео, виджет плеера), и с одним верхним кадром такие страницы
+ * не работают вовсе. Ответ берётся у того кадра, где что-то получилось.
+ */
+async function inPage(tab, func, args, allFrames) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id, allFrames: Boolean(allFrames) },
+    func,
+    args,
+  });
+  const values = results.map((item) => item.result).filter(Boolean);
+  return values.find((value) => value.done || (value.controls || []).length) || values[0] || {};
+}
+
 /** Показать вкладку и поднять её окно на передний план. */
 async function focusTab(tab) {
   await chrome.tabs.update(tab.id, { active: true });
@@ -252,6 +315,39 @@ async function run(action, params) {
     }
     await chrome.tabs.remove(doomed.map((tab) => tab.id));
     return { closed: doomed.length, titles: doomed.map((tab) => tab.title) };
+  }
+
+  if (action === "target") {
+    // Какая вкладка попадёт под команду. Спрашивается заранее: не зная сайта,
+    // Jarvis не знает и рецепта — чем на этом сайте нажимают «дальше».
+    const tab = await pickTab(params);
+    if (!tab) {
+      throw new Error("нет подходящей вкладки");
+    }
+    return {
+      tabId: tab.id,
+      windowId: tab.windowId,
+      title: tab.title,
+      url: tab.url,
+      audible: Boolean(tab.audible),
+    };
+  }
+
+  if (action === "page" || action === "probe") {
+    const tab = await pickTab(params);
+    if (!tab) {
+      throw new Error("нет подходящей вкладки");
+    }
+    // На служебных страницах браузера расширению делать нечего: туда код не
+    // впрыснуть, и запрет этот браузерный, а не наш.
+    if (!isWebUrl(tab.url)) {
+      throw new Error("на служебной странице ничего не нажать");
+    }
+    const done =
+      action === "page"
+        ? await inPage(tab, jarvisRunPlan, [params.plan || []], true)
+        : await inPage(tab, jarvisProbe, [params.limit || 40], false);
+    return { ...done, tabId: tab.id, windowId: tab.windowId, title: tab.title, url: tab.url };
   }
 
   throw new Error(`неизвестная команда: ${action}`);

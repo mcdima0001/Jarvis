@@ -501,11 +501,21 @@ class _Extension:
         self._timeout = timeout
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._last_id = 0
+        self._last_error = ""
 
     @property
     def connected(self) -> bool:
         """Подключено ли расширение прямо сейчас."""
         return self._server.connected
+
+    @property
+    def last_error(self) -> str:
+        """Чем закончилась последняя неудачная команда.
+
+        Отказ расширения — обычное дело («нет подходящей вкладки»), и звучать
+        он должен своими словами, а не общим «не ответило».
+        """
+        return self._last_error
 
     async def call(self, action: str, **params: object) -> dict | None:
         """Выполнить команду в браузере.
@@ -517,6 +527,7 @@ class _Extension:
         if not self._server.connected:
             return None
 
+        self._last_error = ""
         self._last_id += 1
         ident = self._last_id
         future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
@@ -529,12 +540,14 @@ class _Extension:
             reply = await asyncio.wait_for(future, self._timeout)
         except TimeoutError:
             self._log.warning("Расширение не ответило на %s за %.0f с", action, self._timeout)
+            self._last_error = "расширение не ответило"
             return None
         finally:
             self._pending.pop(ident, None)
 
         if not reply.get("ok"):
             self._log.warning("Расширение отказало в %s: %s", action, reply.get("error"))
+            self._last_error = str(reply.get("error") or "расширение отказало")
             return None
         result = reply.get("result")
         return result if isinstance(result, dict) else {}
@@ -929,6 +942,83 @@ class BrowserSkill(Skill):
             closed,
             speech={"ru": f"Закрываю {name}.", "en": f"Closing {name}."},
         )
+
+    # --- страница ----------------------------------------------------------
+
+    # Оба инструмента служебные: голосом их не зовут, а место в каталоге,
+    # который уезжает в модель на каждой неузнанной фразе, они бы занимали.
+    # Разделение обязанностей тут такое: браузер знает про вкладки и адреса,
+    # скилл `page` — про то, что делать внутри страницы.
+
+    @tool(routable=False)
+    async def page_target(self, site: str = "") -> ToolResult:
+        """Сказать, к какой вкладке относится команда о странице.
+
+        :param site: название сайта; пусто — та вкладка, откуда идёт звук, а
+            если тихо везде — та, в которой сейчас работают.
+        """
+        return await self._page_call("target", {}, site=site, tab=0)
+
+    @tool(routable=False)
+    async def page_run(self, plan: list[dict], site: str = "", tab: int = 0) -> ToolResult:
+        """Выполнить действие внутри открытой страницы.
+
+        :param plan: варианты-шаги; выполняется первый сработавший.
+        :param site: в какой вкладке — название сайта; пусто — в той, что звучит.
+        :param tab: номер вкладки, если он уже известен.
+        """
+        return await self._page_call("page", {"plan": list(plan)}, site=site, tab=tab)
+
+    @tool(routable=False)
+    async def page_probe(self, site: str = "", tab: int = 0, limit: int = 40) -> ToolResult:
+        """Перечислить кнопки открытой страницы.
+
+        :param site: в какой вкладке — название сайта; пусто — в той, что звучит.
+        :param tab: номер вкладки, если он уже известен.
+        :param limit: сколько кнопок вернуть.
+        """
+        return await self._page_call("probe", {"limit": limit}, site=site, tab=tab)
+
+    async def _page_call(
+        self, action: str, params: dict, *, site: str, tab: int
+    ) -> ToolResult:
+        """Отправить расширению команду, работающую внутри страницы."""
+        if self._extension is None or not self._extension.connected:
+            return ToolResult.failure(
+                "работать со страницей умеет только расширение, а оно не подключено",
+                speech={
+                    "ru": "Расширение не подключено, со страницей не работаю.",
+                    "en": "The extension isn't connected, so I can't touch the page.",
+                },
+            )
+
+        target = dict(params)
+        if tab:
+            target["tabId"] = tab
+        spoken = clean_spoken(site)
+        if spoken:
+            url = site_url(spoken, self._sites)
+            if url is None:
+                return ToolResult.failure(
+                    f"не понял, о каком сайте речь: {site!r}",
+                    speech={
+                        "ru": f"Не знаю такого сайта: {spoken}.",
+                        "en": f"I don't know a site called {spoken}.",
+                    },
+                )
+            target["url"] = url
+
+        result = await self._extension.call(action, **target)
+        if result is None:
+            reason = self._extension.last_error or "расширение не ответило"
+            return ToolResult.failure(
+                f"страница недоступна: {reason}",
+                speech={
+                    "ru": "Не нашёл подходящую вкладку.",
+                    "en": "I couldn't find a suitable tab.",
+                },
+            )
+        return ToolResult.success(result)
 
     async def _focus_open(self, url: str, spoken: str) -> ToolResult | None:
         """Переключиться на уже открытое окно с этим сайтом.

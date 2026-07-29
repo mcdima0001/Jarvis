@@ -65,11 +65,20 @@ class TimerSkill(Skill):
 
 | Скилл      | Состояние | Инструменты |
 |------------|-----------|-------------|
-| `esp32`    | заглушка  | `set_light`, `get_temperature`, `set_mode`, `get_humidity` |
-| `windows`  | заглушка, только Windows | `launch_program`, `close_program`, `list_programs`, `set_volume` |
-| `telegram` | заглушка  | `send_message`, `get_recent_chats`, `summarize_chat` |
-| `youtube`  | заглушка  | `search_video`, `play_video`, `pause` |
-| `search`   | заглушка  | `web_search`, `answer` |
+| `browser`  | **работает** | `open_site`, `search`, `close`, `close_tab` (+ служебные `page_target`, `page_run`, `page_probe`) |
+| `page`     | **работает**, нужен расширение | `control`, `press` и голосовые обёртки: пауза, следующий трек, лайк, перемотка |
+| `windows`  | **работает**, только Windows | `launch_program`, `close_program`, `kill_program`, `list_programs`, `set_volume`, `lock` |
+| `search`   | **работает** | `web_search`, `answer` |
+| `weather`  | **работает** | `now`, `forecast` |
 | `memory`   | **работает** | `remember`, `recall`, `set_preference`, `about_me` |
+| `esp32`    | заглушка  | `set_light`, `get_temperature`, `set_mode`, `get_humidity` |
+| `telegram` | заглушка  | `send_message`, `get_recent_chats`, `summarize_chat` |
+| `youtube`  | заглушка, кроме `play_video` | `search_video`, `play_video` |
 
 Места, где нужна реальная интеграция, помечены в коде как `TODO`.
+
+Пара `browser` и `page` — образец разделения обязанностей между скиллами.
+Вкладки, адреса и связь с расширением — у `browser`; что нажимать внутри
+страницы — у `page`. Друг друга они не импортируют: `page` зовёт
+`browser.page_run` по имени через реестр, и, если браузерного скилла нет,
+честно отказывает вместо падения.
