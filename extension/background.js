@@ -264,6 +264,38 @@ function loaded(tab, timeout = 5000) {
 }
 
 /**
+ * Дождаться, пока вкладка окажется на новом адресе.
+ *
+ * Событий загрузки тут недостаточно. Одностраничные сайты (Яндекс Музыка,
+ * YouTube) меняют выдачу своим кодом, и «загрузка завершена» либо приходит от
+ * прежней страницы, либо не приходит вовсе: `loaded` честно ждал пять секунд и
+ * возвращал старую вкладку. Дальше Jarvis искал трек на **предыдущей** выдаче —
+ * в логе это выглядело как «нашёл не тот трек», хотя нужный был на экране.
+ *
+ * Поэтому признак прямой: адрес вкладки перестал быть прежним. Он меняется и
+ * при обычном переходе, и при подмене истории — то есть в обоих случаях.
+ */
+async function arrived(tab, was, timeout = 6000) {
+  for (let waited = 0; waited < timeout; waited += 200) {
+    let now = null;
+    try {
+      now = await chrome.tabs.get(tab.id);
+    } catch (error) {
+      return tab; // вкладку успели закрыть
+    }
+    if ((now.url || "") !== was && now.status === "complete") {
+      return now;
+    }
+    await new Promise((done) => setTimeout(done, 200));
+  }
+  try {
+    return await chrome.tabs.get(tab.id);
+  } catch (error) {
+    return tab;
+  }
+}
+
+/**
  * Выполнить в странице то, что умеет page.js.
  *
  * Впрыскивается во все кадры сразу: плеер часто живёт во вложенном фрейме
@@ -365,6 +397,7 @@ async function run(action, params) {
     if (!tab) {
       throw new Error("нет подходящей вкладки");
     }
+    const was = tab.url || "";
     const moved = await chrome.tabs.update(tab.id, {
       url: params.url,
       // Показывать вкладку нужно не всегда: поиск сайта внутри «включи трек»
@@ -374,7 +407,7 @@ async function run(action, params) {
     if (params.focus) {
       await chrome.windows.update(moved.windowId, { focused: true });
     }
-    const ready = await loaded({ ...moved, status: "loading" });
+    const ready = await arrived(moved, was);
     return { tabId: ready.id, windowId: ready.windowId, title: ready.title, url: ready.url };
   }
 

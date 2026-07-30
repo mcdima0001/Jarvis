@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import re
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
 from urllib.parse import quote_plus, urlsplit
 
 from jarvis.core.contracts import ToolResult
@@ -943,12 +943,17 @@ class PageSkill(Skill):
                    "включи {track} в яндекс музыке",
                    "play the track {track}", "play {track} on the page"])
     async def play_item(self, track: str, site: str = "") -> ToolResult:
-        """Включить песню или трек по названию на открытом сайте — например на Яндекс Музыке; если на странице его нет, найти в поиске этого же сайта.
+        """Включить названное — песню, трек или ролик — там, где сейчас открыт сайт: на Яндекс Музыке это музыка, на YouTube видео; на странице нет — найти в поиске этого же сайта.
 
         Первая строка уезжает в каталог для модели, и слова в ней подобраны не
-        случайно. Раньше там было «из списка на странице», и «включи Don't Stop
+        случайно. Сначала там было «из списка на странице», и «включи Don't Stop
         Me Now» модель отправляла на YouTube: искать песню на музыкальном сайте
-        по описанию выходило нельзя. Теперь можно, и сказано об этом прямо.
+        по описанию выходило нельзя. Потом обнаружилось следствие похуже: даже с
+        открытой Яндекс Музыкой «включи Break My Heart» уводило на ютуб, потому
+        что в каталоге был ещё и `youtube.play_video`, а выбор между ними модель
+        делала наугад. Правило владельца: **сайт и решает** — на музыкальном
+        сайте речь про музыку, на ютубе про видео. Поэтому `play_video` из
+        каталога убран, а сказано об этом здесь и прямо.
 
         Отдельно от «нажми», потому что нажатие по строке трека
         воспроизведение не запускает: оно её только выбирает. Играть начинает
@@ -970,6 +975,9 @@ class PageSkill(Skill):
             focused=True,
             extra=[{"item": names, "hint": list(PLAY_HINTS), "play": True}],
             search=name,
+            # Сайт не музыкальный и не видеохостинг (или браузера нет вовсе) —
+            # значит это «найди и включи», а такое умеет ютуб.
+            otherwise=lambda: self._on_youtube(name),
             speech={
                 "ru": (f"Включаю {name}.", f"{name}, сейчас.", f"Ставлю {name}.",
                        f"Есть, {name}."),
@@ -1148,6 +1156,7 @@ class PageSkill(Skill):
         soft: bool = False,
         focused: bool = False,
         search: str = "",
+        otherwise: Callable[[], Awaitable[ToolResult]] | None = None,
     ) -> ToolResult:
         """Выполнить действие в подходящей вкладке.
 
@@ -1168,8 +1177,15 @@ class PageSkill(Skill):
         :param focused: работать с вкладкой в фокусе, даже если звук идёт из
             другой. Для команд про содержимое («включи первое видео») это
             единственно верно: смотрят в одну вкладку, а играет другая.
+        :param otherwise: что делать, если на странице не нашлось **ничего**.
+            Нужно ровно одному случаю: «включи X» с сайтом, где искать нечем
+            (или вообще без открытого браузера) — это уже не про страницу, и
+            выполняет такую просьбу ютуб. Тишина после нажатия сюда не входит:
+            там нашлось и нажалось, и уводить владельца на другой сайт неверно.
         """
         if not self.tools.has("browser.page_run"):
+            if otherwise is not None:
+                return await otherwise()
             return ToolResult.failure(
                 "работать со страницей умеет расширение браузера, а скилл browser не подключён",
                 speech={
@@ -1186,6 +1202,9 @@ class PageSkill(Skill):
             self.log.info("Вкладки %r не нашлось — работаю с той, что звучит", site)
             found = await self.tools.invoke("browser.page_target", {"active": focused})
         if not found.ok or not isinstance(found.value, Mapping):
+            if otherwise is not None:
+                # Подходящей вкладки нет вовсе — значит речь и не про страницу.
+                return await otherwise()
             return found if not found.ok else self._nothing(action)
         target = dict(found.value)
         tab = int(target.get("tabId") or 0)
@@ -1210,6 +1229,8 @@ class PageSkill(Skill):
         if learned is not None:
             self._note_attempt(host, action, learned, learned=True)
             return self._done(action, learned, speech)
+        if otherwise is not None:
+            return await otherwise()
         return self._nothing(action, host=host)
 
     def _note_attempt(
@@ -1279,6 +1300,18 @@ class PageSkill(Skill):
         if saw:
             self.log.info("На странице видно: %s", "; ".join(str(item) for item in saw))
         return None
+
+    async def _on_youtube(self, name: str) -> ToolResult:
+        """Отдать «включи X» ютубу: на странице искать оказалось нечем.
+
+        Сюда попадают случаи, где сайт не музыкальный и не видеохостинг — или
+        браузер вообще закрыт. Тогда «включи X» означает «найди и включи», а это
+        умеет ютуб: открывает выдачу и нажимает первый ролик.
+        """
+        if not self.tools.has("youtube.play_video"):
+            return self._nothing(f"item:{name}")
+        self.log.info("На открытом сайте искать нечем — отдаю %r ютубу", name)
+        return await self.tools.invoke("youtube.play_video", {"query": name})
 
     async def _through_search(
         self, query: str, steps: Sequence[Mapping[str, Any]], *, tab: int, host: str

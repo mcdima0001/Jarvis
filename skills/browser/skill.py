@@ -921,12 +921,29 @@ class BrowserSkill(Skill):
 
         if result.get("reused"):
             self.log.info("Вкладка уже была открыта: %s", result.get("title", url))
-            speech = {
-                "ru": f"{name} уже открыт, переключаюсь.",
-                "en": f"{name} is already open, switching to it.",
+            # Самая частая реплика ассистента за вечер: сайты переоткрывают
+            # десятки раз. Одной строкой она успела надоесть владельцу первой.
+            speech: dict[str, tuple[str, ...]] = {
+                "ru": (
+                    f"Переключаюсь на {name}.",
+                    f"{name} уже открыт, показываю.",
+                    f"Вот {name}.",
+                    f"{name} — вот эта вкладка.",
+                    f"Уже открыт, перехожу.",
+                    f"Показываю {name}.",
+                ),
+                "en": (
+                    f"Switching to {name}.",
+                    f"{name} is already open, here it is.",
+                    f"Here's {name}.",
+                    f"Already open — over to it.",
+                ),
             }
         else:
-            speech = {"ru": f"Открываю {name}.", "en": f"Opening {name}."}
+            speech = {
+                "ru": (f"Открываю {name}.", f"{name} — открываю.", f"Секунду, {name}."),
+                "en": (f"Opening {name}.", f"{name}, coming up."),
+            }
         return ToolResult.success({"url": url, **result}, speech=speech)
 
     @tool(phrases=["закрой вкладку", "закрой вкладку {site}",

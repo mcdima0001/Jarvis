@@ -241,6 +241,45 @@ async def test_missing_track_is_searched_on_the_site(loaded) -> None:
     await manager.stop()
 
 
+async def test_play_by_name_belongs_to_the_open_site(loaded) -> None:
+    """«Включи X» решает открытый сайт, и выбор тут не за моделью.
+
+    Двух инструментов на одну просьбу быть не должно: с `youtube.play_video` в
+    каталоге модель выбирала наугад и уводила с открытой Яндекс Музыки на ютуб.
+    Фразы, где про видео сказано прямо, у него остаются.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    catalog = {spec.name for spec in registry.specs() if spec.routable}
+
+    assert "page.play_item" in catalog
+    assert "youtube.play_video" not in catalog
+    assert registry.has("youtube.play_video"), "по имени и фразам он доступен"
+    await manager.stop()
+
+
+async def test_nothing_to_search_on_falls_back_to_youtube(loaded, monkeypatch) -> None:
+    """Сайт не музыкальный и не видеохостинг — значит «найди и включи».
+
+    Такое умеет ютуб, и отдать ему просьбу честнее, чем отказать: без этого
+    «включи Imagine Dragons» с открытым гитхабом просто не сработало бы.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    monkeypatch.setattr(
+        fake, "TARGET", {"tabId": 7, "url": "https://example.com/", "title": "Ничего"}
+    )
+    fake.CALLS.clear()
+    fake.REPLIES.clear()
+
+    result = await registry.invoke("page.play_item", {"track": "Midnight City"})
+
+    assert result.ok
+    assert ("search", "midnight city", "youtube") in fake.CALLS
+    await manager.stop()
+
+
 async def test_clicked_but_silent_is_not_a_success(loaded, monkeypatch) -> None:
     """«Нашёл» и «включил» — разные вещи, и вслух это должно звучать честно.
 
