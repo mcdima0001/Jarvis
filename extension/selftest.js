@@ -508,6 +508,54 @@ check("чужой играющий трек за успех не считает�
   assert(result.played === false, "чужой трек сошёл за включённый");
 });
 
+check("трек сменился при том же адресе — всё равно включилось", async () => {
+  // Яндекс Музыка играет через MediaSource: `src` — это blob:, созданный один
+  // раз, и смену трека он **переживает**. Флага паузы тоже мало: музыка играла
+  // до нажатия и играет после. Отличают трек длительность и сброс времени.
+  const player_ = { tag: "audio", paused: false, ended: false, muted: false, readyState: 4,
+                    duration: 202, currentTime: 96, src: "blob:same", played: 0,
+                    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+                    async play() { this.played += 1; },
+                    pause() { this.paused = true; } };
+  const play = element({ attributes: { "aria-label": "Воспроизвести" } });
+  const original = play.click;
+  play.click = () => {
+    original();
+    // Тот же blob, играло и играет — меняются только трек и его время.
+    player_.duration = 203;
+    player_.currentTime = 0;
+  };
+  const row = element({ attributes: { "aria-label": "Трек Levitating" }, children: [play] });
+  const api = load(makeDocument({ controls: [row], players: [player_] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["levitating"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === true, "трек сменился, а мы этого не заметили");
+  assert(row.clicked === 0, "нажатие принято — по строке тыкать незачем");
+});
+
+check("тот же трек играет дальше — это не «включилось»", async () => {
+  const player_ = { tag: "audio", paused: false, ended: false, muted: false, readyState: 4,
+                    duration: 202, currentTime: 96, src: "blob:same", played: 0,
+                    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+                    async play() { this.played += 1; },
+                    pause() { this.paused = true; } };
+  const play = element({ attributes: { "aria-label": "Воспроизвести" } });
+  // Нажатие ничего не меняет: время только идёт вперёд, как при обычной игре.
+  const original = play.click;
+  play.click = () => { original(); player_.currentTime += 0.2; };
+  const row = element({ attributes: { "aria-label": "Трек Levitating" }, children: [play] });
+  const api = load(makeDocument({ controls: [row], players: [player_] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["levitating"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === false, "чужая музыка сошла за включённый трек");
+});
+
 check("сменился трек — значит включилось", async () => {
   const player_ = { tag: "audio", paused: false, ended: false, muted: false, readyState: 4,
                     duration: 100, currentTime: 30, src: "blob:old", played: 0,

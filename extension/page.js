@@ -412,18 +412,55 @@ async function jarvisRunPlan(plan) {
     );
 
   /**
-   * Отпечаток того, что играет: адрес источника и состояние каждого плеера.
+   * Слепок состояния плееров: по нему видно, **сменилось ли** то, что играет.
    *
-   * Одного «идёт ли звук» мало, когда звук уже идёт. Живой случай: на выдаче
-   * играл посторонний трек, и любое нажатие сходило бы за успех — «звучит же».
-   * Сравнение отпечатков отвечает на нужный вопрос: **сменилось ли** то, что
-   * играет. Адрес у каждого трека свой (у Яндекс Музыки это blob), а флаг
-   * паузы ловит переход из тишины в звук.
+   * Одного «идёт ли звук» мало, когда звук уже идёт: на выдаче мог играть
+   * посторонний трек, и любое нажатие сошло бы за успех — «звучит же».
+   *
+   * Сравнивать при этом адрес источника **бесполезно**, и это стоило ещё одного
+   * захода. Яндекс Музыка играет через MediaSource: `src` — это `blob:`, который
+   * создаётся один раз и **переживает смену трека**. Флага паузы тоже мало —
+   * музыка играла до нажатия и играет после. Работают два других признака:
+   * длительность (у другого трека она другая) и время воспроизведения (у нового
+   * трека оно сбрасывается к началу, то есть идёт назад).
    */
-  const signature = () =>
-    Array.from(document.querySelectorAll("video, audio"))
-      .map((item) => `${item.currentSrc || item.src || ""}#${item.paused ? 0 : 1}`)
-      .join("|");
+  const snapshot = () =>
+    Array.from(document.querySelectorAll("video, audio")).map((item) => ({
+      src: item.currentSrc || item.src || "",
+      quiet: Boolean(item.paused || item.ended || item.muted),
+      // Округляем: у MediaSource длительность уточняется по ходу загрузки, и
+      // дробные доли секунды меняются сами по себе.
+      duration: Math.round(item.duration || 0),
+      time: item.currentTime || 0,
+    }));
+
+  /** Пошло ли что-то новое по сравнению со слепком. */
+  const restarted = (before) => {
+    if (!sounding()) {
+      return false;
+    }
+    if (!Array.isArray(before)) {
+      return true;
+    }
+    const now = snapshot();
+    if (now.length !== before.length) {
+      return true;
+    }
+    return now.some((item, index) => {
+      const was = before[index];
+      if (!was) {
+        return true;
+      }
+      // Время назад — трек начался с начала. Полсекунды запаса: обычное
+      // воспроизведение время только увеличивает.
+      return (
+        item.src !== was.src ||
+        item.quiet !== was.quiet ||
+        item.duration !== was.duration ||
+        item.time + 0.5 < was.time
+      );
+    });
+  };
 
   /**
    * Дождаться звука.
@@ -433,7 +470,7 @@ async function jarvisRunPlan(plan) {
    * ждать долго нельзя: расширение держит ответ, а у команды есть свой предел.
    */
   const awaitSound = async (limit, before = null) => {
-    const started = () => sounding() && (before === null || signature() !== before);
+    const started = () => (before === null ? sounding() : restarted(before));
     for (let waited = 0; waited < limit; waited += 100) {
       if (started()) {
         return true;
@@ -459,8 +496,7 @@ async function jarvisRunPlan(plan) {
 
   /** Дождаться, что пошёл **новый** трек: либо сменился звук, либо кнопка стала паузой. */
   const awaitStart = async (button, limit, before) => {
-    const started = () =>
-      (sounding() && signature() !== before) || saysPlaying(button);
+    const started = () => restarted(before) || saysPlaying(button);
     for (let waited = 0; waited < limit; waited += 100) {
       if (started()) {
         return true;
@@ -586,7 +622,7 @@ async function jarvisRunPlan(plan) {
     // подписи: внутри только иконка. Тогда остаётся признак в атрибутах.
     const MARKS = '[data-test-id*="PLAY" i], [class*="play" i], [aria-label*="play" i]';
     // Что играло **до** нашего вмешательства. Сравнивать будем с этим.
-    const before = signature();
+    const before = snapshot();
     let node = found;
     let nearby = [];
     let pressed = "";
