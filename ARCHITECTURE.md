@@ -234,7 +234,9 @@ api_key: ${JARVIS_OPENROUTER_KEY:-}
 
 Ближайшее, в порядке отдачи:
 
-1. **Оживить ESP32** — заменить `TODO` в `skills/esp32/skill.py` HTTP-запросами.
+1. **Написать скилл ESP32**, когда появится плата. Заглушку удалили 30.07.2026:
+   она возвращала случайные числа и мешалась в списке. События
+   `SensorReadingChanged` и `StudioModeChanged` в контрактах оставлены.
 2. **Скачать модели** Whisper и Piper, проверить голосовой круг целиком.
 3. **Реальный аудиовход** — `sounddevice` вместо `NullAudioSource`.
 4. **Silero VAD** — класс на месте `PassthroughVAD`.

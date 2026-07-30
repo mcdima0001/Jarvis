@@ -29,7 +29,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 def _load() -> Any:
     """Загрузить скилл как модуль: он плагин и лежит вне пакета."""
-    path = _ROOT / "skills" / "page" / "skill.py"
+    path = _ROOT / "skills" / "browser" / "page" / "skill.py"
     spec = importlib.util.spec_from_file_location("skill_page", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -709,7 +709,7 @@ def loaded(tmp_path: Path, sites_memory, smart_llm: LLMService):
     """Каталог с настоящим скиллом страницы и подделкой браузера рядом."""
     directory = tmp_path / "skills"
     directory.mkdir()
-    shutil.copy(_ROOT / "skills" / "page" / "skill.py", directory / "page.py")
+    shutil.copy(_ROOT / "skills" / "browser" / "page" / "skill.py", directory / "page.py")
     (directory / "browser.py").write_text(_FAKE_BROWSER, encoding="utf-8")
 
     events = LocalEventBus()

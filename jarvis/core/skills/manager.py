@@ -52,6 +52,11 @@ class SkillRecord:
         """Имя скилла из его паспорта."""
         return self.instance.meta.name
 
+    @property
+    def parent(self) -> str:
+        """Главный скилл, если этот — подскилл. Иначе пусто."""
+        return self.candidate.parent
+
 
 class SkillManager:
     """Владеет всеми скиллами и их жизненным циклом."""
@@ -86,6 +91,29 @@ class SkillManager:
         """Имена загруженных скиллов."""
         return tuple(sorted(self._records))
 
+    @property
+    def tree(self) -> tuple[str, ...]:
+        """Как скиллы лежат на диске: ``browser`` и ``browser/page``.
+
+        Для отчёта о сборке: по одним именам инструментов не видно, что `page` —
+        часть браузера, а не сосед. Подскилл идёт сразу за своим главным.
+        """
+        parents = sorted(name for name, item in self._records.items() if not item.parent)
+        orphans = sorted(
+            name
+            for name, item in self._records.items()
+            if item.parent and item.parent not in self._records
+        )
+        listed: list[str] = []
+        for name in parents:
+            listed.append(name)
+            listed += sorted(
+                f"{name}/{child}"
+                for child, item in self._records.items()
+                if item.parent == name
+            )
+        return tuple(listed + orphans)
+
     def get(self, name: str) -> Skill | None:
         """Вернуть экземпляр скилла по имени."""
         record = self._records.get(name)
@@ -100,25 +128,38 @@ class SkillManager:
             await self._start_record(record)
 
     async def stop(self) -> None:
-        """Остановить и выгрузить все скиллы."""
-        for name in list(self._records):
+        """Остановить и выгрузить все скиллы.
+
+        Подскиллы гасятся раньше главных: наоборот означало бы, что подскилл
+        доживает свои мгновения без того, на чём он держится.
+        """
+        for name in sorted(self._records, key=lambda item: not self._records[item].parent):
             await self.unload(name)
 
     async def load_all(self) -> None:
         """Обнаружить и загрузить скиллы из настроенных каталогов."""
         for candidate in discover(self._config.paths):
             if candidate.name in self._config.disabled:
-                logger.info("Скилл %s отключён в конфиге", candidate.name)
+                logger.info("Скилл %s отключён в конфиге", candidate.label)
+                continue
+            # Подскилл без своего главного не имеет смысла: он на нём и держится.
+            # Порядок гарантирует `discover` — главные идут первыми.
+            if candidate.parent and candidate.parent not in self._records:
+                logger.info(
+                    "Подскилл %s пропущен: главный скилл %s не загружен",
+                    candidate.label,
+                    candidate.parent,
+                )
                 continue
             try:
                 await self.load(candidate)
             except SkillUnsupportedPlatform as exc:
                 # Штатная ситуация: WindowsSkill на Linux — не ошибка сборки.
-                logger.info("Скилл %s пропущен: %s", candidate.name, exc)
+                logger.info("Скилл %s пропущен: %s", candidate.label, exc)
             except SkillError as exc:
-                logger.error("Скилл %s не загружен: %s", candidate.name, exc)
+                logger.error("Скилл %s не загружен: %s", candidate.label, exc)
             except Exception:
-                logger.exception("Неожиданная ошибка при загрузке скилла %s", candidate.name)
+                logger.exception("Неожиданная ошибка при загрузке скилла %s", candidate.label)
 
     async def load(self, candidate: SkillCandidate, *, reload: bool = False) -> SkillRecord:
         """Загрузить один скилл: импорт, создание, регистрация инструментов."""
@@ -161,7 +202,7 @@ class SkillManager:
 
         logger.info(
             "Скилл %s v%s загружен: %d инструмент(ов)",
-            meta.name,
+            candidate.label,
             meta.version,
             len(scope.tool_names),
         )
@@ -188,7 +229,7 @@ class SkillManager:
         finally:
             await record.scope.revoke()
 
-        logger.info("Скилл %s выгружен", name)
+        logger.info("Скилл %s выгружен", record.candidate.label)
         self._events.emit(SkillUnloaded(source="skills", skill=name))
 
     async def reload(self, name: str) -> SkillRecord:
@@ -198,9 +239,22 @@ class SkillManager:
             raise SkillError(f"Скилл {name!r} не загружен")
 
         candidate = record.candidate
+        # Подскиллы держатся на инструментах главного: пережить его перезагрузку
+        # они не могут, поэтому едут вместе с ним.
+        children = [
+            item.candidate for item in self._records.values() if item.parent == name
+        ]
+        for child in children:
+            await self.unload(child.name)
+
         await self.unload(name)
         reloaded = await self.load(candidate, reload=True)
         await self._start_record(reloaded)
+        for child in children:
+            try:
+                await self._start_record(await self.load(child, reload=True))
+            except SkillError as exc:
+                logger.error("Подскилл %s не вернулся: %s", child.label, exc)
         logger.info("Скилл %s перезагружен", name)
         return reloaded
 

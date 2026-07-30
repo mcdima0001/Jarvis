@@ -332,7 +332,7 @@ class JarvisApp:
             "",
             f"Скиллы ({len(self.skills.loaded)}):",
         ]
-        lines.extend(f"  - {name}" for name in self.skills.loaded)
+        lines.extend(f"  - {name}" for name in self.skills.tree)
         if not self.skills.loaded:
             lines.append("  (ни одного — положи модуль в skills/)")
 
