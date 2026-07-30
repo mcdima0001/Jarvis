@@ -129,6 +129,22 @@ def test_ordinary_speech_launches_nothing(phrase: str) -> None:
     assert windows.match_program(phrase, BIG_CATALOG) is None
 
 
+def test_long_phrase_is_never_a_program() -> None:
+    """Длинная фраза программой не бывает — сколько бы слов в ней ни совпало.
+
+    Настоящий случай: «открой видео, как я обманывал всех десять лет на сайте»
+    нашло «4K Video Downloader+» по слову «видео» и вызвало запрос прав
+    администратора. Отказ отправит такую фразу дальше — в браузер.
+    """
+    catalog = {**BIG_CATALOG, "4K Video Downloader+": "4kvideodownloader.exe"}
+
+    assert windows.match_program(
+        "видео как я обманывал всех десять лет на сайте", catalog
+    ) is None
+    # А короткое название по-прежнему находится.
+    assert windows.match_program("4K Video Downloader", catalog) is not None
+
+
 def test_unknown_program_is_refused() -> None:
     """Незнакомое название — отказ, а не попытка что-то выполнить.
 

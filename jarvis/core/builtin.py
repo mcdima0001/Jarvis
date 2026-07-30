@@ -302,12 +302,15 @@ class CoreTools:
                     "en": "There's nothing for me to forget.",
                 },
             )
-        listed = "; ".join(forgotten)
+        # Что именно забыто — в лог и в значение: там имена инструментов,
+        # подстановки вида {control} и адреса сайтов. Вслух такое произносить
+        # нельзя, это не фраза, а внутренности.
+        logger.info("Забыто по команде: %s", "; ".join(forgotten))
         return ToolResult.success(
             forgotten,
             speech={
-                "ru": f"Забыл: {listed}.",
-                "en": f"Forgotten: {listed}.",
+                "ru": "Забыл. Больше так делать не буду.",
+                "en": "Forgotten. I won't do that again.",
             },
         )
 

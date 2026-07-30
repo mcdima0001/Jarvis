@@ -30,13 +30,14 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Any, Literal, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import romanize
+from jarvis.core.text import romanize, skeleton, squash
 from jarvis.core.tools import tool
 
 #: Что умеет сам плеер, без единой кнопки сайта.
@@ -238,6 +239,56 @@ INTENT_TEXT: dict[str, str] = {
     "back": "перемотать назад",
 }
 
+#: Действия, для которых у модели вообще есть смысл спрашивать.
+#:
+#: Список кнопок, который она видит, собирается из `button` и `role=button` —
+#: то есть из кнопок. Значит спрашивать можно только про кнопку. «Открой первое
+#: видео» — это ссылка в выдаче, её в списке нет и быть не может, и модель в
+#: ответ выбирает что попало: на живом YouTube она предложила деление шкалы
+#: времени, и это ушло в память как способ включить видео.
+LEARNABLE = frozenset(
+    {"play", "pause", "toggle", "next", "previous", "like", "unlike", "dislike",
+     "mute", "unmute"}
+)
+
+#: Насколько подпись выбранной кнопки должна походить на то, что просили нажать.
+#: Порог невысокий: «Копировать ссылку» против «скопировать» — это одно и то же.
+_LIKENESS = 0.6
+
+#: Слова названия — по ним ищется общее слово у подписи и просьбы.
+_WORDS = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def learnable(action: str) -> bool:
+    """Можно ли для этого действия спрашивать у модели, что нажать."""
+    return action in LEARNABLE or action.startswith("press:")
+
+
+def resembles(name: str, wanted: str) -> bool:
+    """Похожа ли подпись кнопки на то, что просили нажать.
+
+    Нужно там, где название кнопки назвал сам владелец. Его слова **и есть**
+    подпись, и угадывать тут нечего: модель может только промахнуться. На живом
+    YouTube на «нажми кнопку скопировать» она выбрала «Ещё» — и это ушло в
+    память. Поэтому её выбор проверяется: «Копировать ссылку» на «скопировать»
+    похоже, «Ещё» — нет.
+    """
+    left, right = squash(name), squash(wanted)
+    if not left or not right:
+        return False
+    if left in right or right in left:
+        return True
+    if skeleton(name) and skeleton(name) == skeleton(wanted):
+        return True
+    # Общее длинное слово — тоже родство: «логотип YouTube» и «YouTube Главная»
+    # говорят про одно и то же, хотя целиком не похожи.
+    words = {squash(word) for word in _WORDS.findall(name.lower())}
+    asked = {squash(word) for word in _WORDS.findall(wanted.lower())}
+    if {word for word in words & asked if len(word) >= 4}:
+        return True
+    return difflib.SequenceMatcher(None, left, right).ratio() >= _LIKENESS
+
+
 _LEARN_SYSTEM = (
     "Ты выбираешь кнопку на веб-странице. Отвечай одним числом — номером кнопки "
     "из списка. Если подходящей кнопки нет, ответь 0. Больше ничего не пиши."
@@ -395,6 +446,14 @@ def with_amount(plan: Sequence[Mapping[str, Any]], *, seconds: float, step: floa
     return result
 
 
+#: Как договаривают, объясняя, где нажать. В подписи кнопки этого нет никогда,
+#: а в аргумент шаблона попадает: «нажми кнопку поделиться **на сайте**».
+_TAILS = ("на сайте", "на странице", "в браузере", "на этой странице", "тут", "здесь")
+
+#: И как начинают: «нажми **кнопку** поделиться», «нажми **на** логотип».
+_HEADS = ("на кнопку", "кнопку", "кнопка", "иконку", "значок", "на")
+
+
 def label_variants(spoken: str) -> list[str]:
     """Как подпись кнопки может выглядеть на странице.
 
@@ -402,8 +461,26 @@ def label_variants(spoken: str) -> list[str]:
     поэтому рядом с услышанным идёт его латинская запись. Перевод не
     подразумевается: «подписаться» и «subscribe» — разные слова, а не разные
     написания одного.
+
+    Заодно снимаются служебные слова вокруг названия: «кнопку» спереди и «на
+    сайте» сзади сказаны для человека, а на кнопке их нет.
     """
     text = " ".join(str(spoken).split()).strip(" «»\"'`.,!?").lower()
+    for _ in range(len(_TAILS)):
+        stripped = text
+        for tail in _TAILS:
+            if stripped.endswith(f" {tail}"):
+                stripped = stripped[: -len(tail) - 1].strip(" ,")
+        for head in _HEADS:
+            if stripped == head:
+                # «Нажми кнопку» без названия — нажимать нечего.
+                stripped = ""
+            elif stripped.startswith(f"{head} "):
+                stripped = stripped[len(head) + 1 :].strip()
+        if stripped == text:
+            break
+        text = stripped
+    text = text.strip(" «»\"'`.,!?")
     if not text:
         return []
     variants = [text]
@@ -790,6 +867,12 @@ class PageSkill(Skill):
         """
         if not self._learn or not host:
             return None
+        if not learnable(action):
+            # Спрашивать бессмысленно: нужного в списке кнопок нет.
+            self.log.info(
+                "Для %s модель не поможет — в списке только кнопки, а нужно другое", action
+            )
+            return None
         if not self.context.llm.available:
             self.log.debug("Модель не настроена — учиться не у кого")
             return None
@@ -830,6 +913,19 @@ class PageSkill(Skill):
         if control is None:
             self.log.info("Модель не нашла кнопку для %s на %s (ответ %r)", action, host, reply)
             return None
+
+        # Название кнопки назвал сам владелец — значит выбор модели можно
+        # проверить, и проверить нужно: иначе «нажми скопировать» превращается
+        # в «Ещё» и запоминается таким навсегда.
+        if action.startswith("press:"):
+            asked = action.split(":", 1)[1]
+            if not resembles(str(control.get("name", "")), asked):
+                self.log.info(
+                    "Модель предложила %r вместо %r — на просьбу это не похоже, отказываюсь",
+                    control.get("name", ""),
+                    asked,
+                )
+                return None
 
         plan = control_plan(control)
         result = await self._run(plan, tab)

@@ -200,6 +200,44 @@ def test_control_plan_without_selector() -> None:
     assert page.control_plan({"name": "Нравится", "sel": ""}) == [{"label": ["нравится"]}]
 
 
+def test_model_is_asked_only_about_buttons() -> None:
+    """У модели спрашивают лишь о том, что вообще есть в списке кнопок.
+
+    «Открой первое видео» — это ссылка в выдаче, а список собирается из кнопок.
+    На живом YouTube модель в ответ предложила деление шкалы времени, и это
+    ушло в память как способ включить видео.
+    """
+    assert page.learnable("like")
+    assert page.learnable("press:поделиться")
+    assert not page.learnable("first")
+
+
+@pytest.mark.parametrize(
+    ("name", "asked", "alike"),
+    [
+        ("Копировать ссылку", "скопировать", True),
+        ("Поделиться", "поделиться", True),
+        ("YouTube Главная", "логотип youtube", True),
+        ("Ещё", "скопировать", False),
+        ("Настройки", "подписаться", False),
+    ],
+)
+def test_named_button_choice_is_checked(name: str, asked: str, alike: bool) -> None:
+    """Если кнопку назвал владелец, выбор модели проверяется по его же словам.
+
+    Угадывать тут нечего: сказанное **и есть** подпись. На живом YouTube на
+    «нажми кнопку скопировать» модель выбрала «Ещё» — и это запомнилось.
+    """
+    assert page.resembles(name, asked) is alike
+
+
+def test_service_words_are_stripped_from_the_label() -> None:
+    """«Кнопку» спереди и «на сайте» сзади сказаны человеку, а не странице."""
+    assert page.label_variants("кнопку поделиться на сайте")[0] == "поделиться"
+    assert page.label_variants("на логотип YouTube на странице")[0] == "логотип youtube"
+    assert page.label_variants("кнопку") == []
+
+
 def test_label_variants_add_latin() -> None:
     """Услышанное сравнивается и в латинской записи: алфавит выбирает Whisper."""
     assert page.label_variants(" «Подписаться» ") == ["подписаться", "podpisatsya"]
@@ -439,6 +477,51 @@ async def test_learned_recipe_can_be_forgotten(loaded, provider: _Answer) -> Non
     assert saved["rejected"]["like"] == [{"name": "Нравится", "sel": "#like"}]
     # Забывать второй раз нечего.
     assert (await registry.invoke("page.forget_last")).value == ""
+    await manager.stop()
+
+
+async def test_unrelated_choice_is_refused_not_remembered(loaded, provider: _Answer) -> None:
+    """Модель предложила кнопку не про то — отказ, и в памяти ничего.
+
+    Живой случай: «нажми кнопку скопировать» на YouTube, кнопки с такой
+    подписью на виду нет, и модель выбрала «Ещё». Раньше это нажималось и
+    запоминалось навсегда.
+    """
+    manager, registry, memory = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.CONTROLS[:] = [{"name": "Ещё", "sel": "#more"}]
+    fake.REPLIES[:] = [{"done": None}]
+    provider.text = "1"
+
+    result = await registry.invoke("page.press", {"control": "скопировать"})
+
+    assert not result.ok
+    assert [call[0] for call in fake.CALLS] == ["target", "run", "probe"]
+    assert not (await memory.documents.get("sites", "music.yandex.ru", {})).get("actions")
+    await manager.stop()
+
+
+async def test_link_actions_do_not_ask_the_model(loaded, provider: _Answer) -> None:
+    """Про «первое видео» модель не спрашивают: в списке одни кнопки.
+
+    На живом YouTube она предложила деление шкалы времени, и это ушло в память
+    как способ включить видео.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.CONTROLS[:] = [{"name": "0 мин. 29 сек.", "sel": "#bar"}]
+    fake.REPLIES[:] = [{"done": None}]
+    provider.asked.clear()
+
+    result = await registry.invoke("page.open_first")
+
+    assert not result.ok
+    assert provider.asked == [], "модель спрашивать не о чем"
+    assert "probe" not in [call[0] for call in fake.CALLS]
     await manager.stop()
 
 

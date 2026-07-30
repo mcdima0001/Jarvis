@@ -133,6 +133,14 @@ def _touches(part: str, key: str) -> bool:
     return long.startswith(short) or long.endswith(short)
 
 
+#: Сколько слов может быть в названии программы. Длинная фраза программой не
+#: бывает: «открой видео, как я обманывал всех десять лет на сайте» находило
+#: «4K Video Downloader+» — по слову «видео» — и вызывало запрос прав
+#: администратора. Запускать что-то от администратора по такому основанию
+#: нельзя, а отказ отправит фразу дальше, в браузер.
+MAX_PROGRAM_WORDS = 5
+
+
 def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | None:
     """Найти программу в каталоге по услышанному названию.
 
@@ -144,6 +152,9 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     :param catalog: известные программы, имя → чем запускать.
     :return: пара «найденное имя» и «чем запускать», либо ``None``.
     """
+    if len(str(query).split()) > MAX_PROGRAM_WORDS:
+        return None
+
     wanted = _keys(query, split=False)
     if not wanted:
         return None
