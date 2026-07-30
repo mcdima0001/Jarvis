@@ -641,3 +641,59 @@ async def test_foreign_error_keeps_its_stack() -> None:
 
     with pytest.raises(RuntimeError, match="model not found"):
         await stt.start()
+
+
+# --- что поднимается в каком режиме ------------------------------------------
+
+
+class _Counted:
+    """Сервис, который только запоминает, что его подняли."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self.started = 0
+
+    @property
+    def service_name(self) -> str:
+        return self._name
+
+    async def start(self) -> None:
+        self.started += 1
+
+    async def stop(self) -> None:
+        pass
+
+
+async def test_services_are_started_by_purpose() -> None:
+    """Уши и голос поднимаются отдельно, потому что нужны не всем режимам.
+
+    Одного флага «тяжёлый» не хватало: `--say` получает команду текстом, и
+    Whisper ему не нужен — а грузился он полторы минуты вместе с микрофоном.
+    """
+    from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
+
+    always, ears, voice = _Counted("шина"), _Counted("whisper"), _Counted("голос")
+    runner = ServiceRunner()
+    runner.add(always)
+    runner.add(ears, needs=EARS)
+    runner.add(voice, needs=VOICE)
+
+    await runner.start_all(without={EARS})
+
+    assert (always.started, ears.started, voice.started) == (1, 0, 1)
+    await runner.stop_all()
+
+
+async def test_check_starts_neither_half() -> None:
+    """Отчёту о сборке не нужны ни уши, ни голос: ему важен каталог."""
+    from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
+
+    ears, voice = _Counted("whisper"), _Counted("голос")
+    runner = ServiceRunner()
+    runner.add(ears, needs=EARS)
+    runner.add(voice, needs=VOICE)
+
+    await runner.start_all(without={EARS, VOICE})
+
+    assert (ears.started, voice.started) == (0, 0)
+    await runner.stop_all()

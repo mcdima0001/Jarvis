@@ -502,10 +502,34 @@ class _Extension:
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._last_id = 0
         self._last_error = ""
+        #: Взводится, когда расширение поздоровалось. Нужен ожиданию ниже.
+        self._ready = asyncio.Event()
 
     @property
     def connected(self) -> bool:
         """Подключено ли расширение прямо сейчас."""
+        return self._server.connected
+
+    async def ready(self, timeout: float = 0.0) -> bool:
+        """Дождаться расширения, если оно ещё не подключилось.
+
+        Служебный поток браузера просыпается по будильнику, и после запуска
+        Jarvis проходит до полуминуты, прежде чем он выйдет на связь. Живой
+        случай: `--say "включи трек …"` отработал за 0.18 с и получил
+        «расширение не подключено», а расширение поздоровалось **в ту же
+        секунду**, сразу после. Ждать тут дешевле, чем отказывать.
+
+        Ждём только если ещё никто не приходил: обрыв посреди работы — дело
+        обычное, и на нём вешать команду на секунды незачем.
+        """
+        if self._server.connected:
+            return True
+        if timeout <= 0 or self._ready.is_set():
+            return False
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout)
+        except TimeoutError:
+            return False
         return self._server.connected
 
     @property
@@ -571,6 +595,7 @@ class _Extension:
 
         event = message.get("event")
         if event == "hello":
+            self._ready.set()
             self._log.info("Расширение готово: %s", message.get("agent", ""))
         elif event and event != "keepalive":
             self._log.debug("Событие расширения: %s", event)
@@ -589,6 +614,8 @@ class BrowserSkill(Skill):
         """Прочитать настройки: домашняя страница, поисковик, свои сайты."""
         self._server: WebSocketServer | None = None
         self._extension: _Extension | None = None
+        #: Значение по умолчанию: моста может не быть вовсе, а читают его всегда.
+        self._await_extension = 0.0
         self._home = str(self.context.setting("home", DEFAULT_HOME))
         self._default_engine = str(self.context.setting("engine", "google"))
         self._browser = str(self.context.setting("browser", "") or "")
@@ -669,6 +696,9 @@ class BrowserSkill(Skill):
         bridge = _Extension(
             server=server, logger=self.log, timeout=float(settings.get("timeout", 5.0))
         )
+        # Сколько ждать самого первого подключения. Служебный поток браузера
+        # просыпается по будильнику, и сразу после запуска Jarvis его ещё нет.
+        self._await_extension = float(settings.get("await_ready", 5.0))
         server.on_message = bridge.on_message
         self._server = server
         return bridge
@@ -912,6 +942,8 @@ class BrowserSkill(Skill):
         :return: готовый ответ, либо ``None``, если расширения нет или оно не
             ответило — тогда работаем окнами, как раньше.
         """
+        if self._extension is not None:
+            await self._extension.ready(self._await_extension)
         if self._extension is None or not self._extension.connected:
             return None
 
@@ -1071,6 +1103,8 @@ class BrowserSkill(Skill):
         self, action: str, params: dict, *, site: str, tab: int
     ) -> ToolResult:
         """Отправить расширению команду, работающую внутри страницы."""
+        if self._extension is not None:
+            await self._extension.ready(self._await_extension)
         if self._extension is None or not self._extension.connected:
             return ToolResult.failure(
                 "работать со страницей умеет только расширение, а оно не подключено",

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
 from jarvis.core.errors import JarvisError
@@ -34,21 +35,34 @@ class Service(Protocol):
         ...
 
 
+#: Для чего нужен сервис. Метка нужна, чтобы поднимать не всё: модели грузятся
+#: минутами, а разным режимам запуска нужны разные их половины.
+#:
+#: * ``EARS`` — слышать: микрофон, распознавание, цикл прослушивания;
+#: * ``VOICE`` — говорить: синтез и звуковой выход.
+#:
+#: Одного флага «тяжёлый» тут не хватило. Отчёту о сборке не нужно ни то, ни
+#: другое; одиночной команде (``--say``) нужен голос, но слушать ей нечего —
+#: текст уже написан, и Whisper поднимался впустую.
+EARS = "ears"
+VOICE = "voice"
+
+
 class ServiceRunner:
     """Запускает сервисы по порядку и останавливает в обратном."""
 
     def __init__(self) -> None:
-        self._services: list[tuple[Service, bool]] = []
+        self._services: list[tuple[Service, str]] = []
         self._started: list[Service] = []
 
-    def add(self, service: Service, *, heavy: bool = False) -> Service:
+    def add(self, service: Service, *, needs: str = "") -> Service:
         """Зарегистрировать сервис. Возвращает его же — удобно для цепочек.
 
-        :param heavy: сервис грузит модели и потому нужен не всегда. Отчёт о
-            сборке (``--check``) поднимает систему без таких сервисов: ему
-            важен каталог инструментов, а не то, что Whisper умеет слушать.
+        :param needs: для чего сервис нужен: :data:`EARS`, :data:`VOICE` или
+            пусто — значит нужен всегда. Помеченные грузят модели и поднимаются
+            минутами, поэтому режимы запуска берут только свою половину.
         """
-        self._services.append((service, heavy))
+        self._services.append((service, needs))
         return service
 
     @property
@@ -56,14 +70,17 @@ class ServiceRunner:
         """Все зарегистрированные сервисы в порядке запуска."""
         return tuple(service for service, _ in self._services)
 
-    async def start_all(self, *, skip_heavy: bool = False) -> None:
+    async def start_all(self, *, without: Iterable[str] = ()) -> None:
         """Запустить всё. При сбое гасит уже поднятое и пробрасывает ошибку.
 
-        :param skip_heavy: пропустить сервисы, помеченные ``heavy``.
+        :param without: какие половины не поднимать (:data:`EARS`, :data:`VOICE`).
         """
-        for service, heavy in self._services:
-            if heavy and skip_heavy:
-                logger.debug("Сервис %s пропущен: модели не нужны", service.service_name)
+        skip = frozenset(without)
+        for service, needs in self._services:
+            if needs and needs in skip:
+                logger.debug(
+                    "Сервис %s пропущен: %s тут не нужны", service.service_name, needs
+                )
                 continue
             try:
                 await service.start()

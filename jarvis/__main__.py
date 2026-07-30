@@ -5,6 +5,8 @@
 * без флагов — полный запуск (микрофон, скиллы, шина);
 * ``--check`` — собрать систему и напечатать отчёт, ничего не запуская;
 * ``--say "текст"`` — прогнать одну команду через роутер, минуя микрофон.
+  Уши при этом не поднимаются: команда уже написана, распознавать нечего.
+  С ``--no-voice`` не поднимается и синтез — ответ только печатается.
 """
 
 from __future__ import annotations
@@ -45,7 +47,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--say",
         metavar="ТЕКСТ",
-        help="выполнить одну текстовую команду и выйти",
+        help="выполнить одну текстовую команду и выйти (без микрофона и распознавания)",
+    )
+    parser.add_argument(
+        "--no-voice",
+        action="store_true",
+        help="с --say: не поднимать синтез, ответ только напечатать",
     )
     parser.add_argument(
         "--devices",
@@ -85,7 +92,7 @@ async def _check(app: JarvisApp) -> int:
     Модели не поднимаются: отчёт о конфиге, скиллах и каталоге инструментов
     в них не нуждается, а Whisper с Vosk грузятся минуты.
     """
-    await app.start(models=False)
+    await app.start(ears=False, voice=False)
     try:
         print(app.summary())
     finally:
@@ -93,9 +100,13 @@ async def _check(app: JarvisApp) -> int:
     return 0
 
 
-async def _say(app: JarvisApp, text: str) -> int:
-    """Выполнить одну команду и напечатать результат."""
-    await app.start()
+async def _say(app: JarvisApp, text: str, *, voice: bool = True) -> int:
+    """Выполнить одну команду и напечатать результат.
+
+    Уши не поднимаются: команда пришла текстом, распознавать нечего. Раньше
+    ради одной такой команды грузился Whisper и открывался микрофон.
+    """
+    await app.start(ears=False, voice=voice)
     try:
         result = await app.say(text)
         # Печатаем **сказанное**, а не догадку о нём: вариант реплики выбирает
@@ -154,7 +165,7 @@ async def _amain(config: JarvisConfig, args: argparse.Namespace) -> int:
     if args.check:
         return await _check(app)
     if args.say:
-        return await _say(app, args.say)
+        return await _say(app, args.say, voice=not args.no_voice)
 
     await app.run()
     return 0

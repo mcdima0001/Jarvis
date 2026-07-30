@@ -26,7 +26,7 @@ from jarvis.core.contracts import (
     Utterance,
     detect_language,
 )
-from jarvis.core.lifecycle import ServiceRunner
+from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
 from jarvis.core.memory import Memory, build_memory
 from jarvis.core.persona import FAREWELL, GREETING, Persona
@@ -193,21 +193,23 @@ class JarvisApp:
         )
 
         runner = ServiceRunner()
-        # Порядок важен, флаг — нет: тяжёлые сервисы грузят модели (Whisper,
-        # Vosk, Kokoro) и поднимаются минуты. Отчёту о сборке они не нужны.
-        for service, heavy in (
-            (worker, False),
-            (events, False),
-            (memory, False),
-            (llm, False),
-            (audio.sink, True),
-            (audio.source, True),
-            (stt, True),
-            (tts, True),
-            (skills, False),
-            (pipeline, True),
+        # Порядок важен, метка — нет. Метка говорит, для чего сервис нужен:
+        # слышать или говорить. Модели грузятся минутами (Whisper, Vosk,
+        # Kokoro), и разным режимам запуска нужны разные их половины — отчёту о
+        # сборке ни одна, одиночной команде только голос.
+        for service, needs in (
+            (worker, ""),
+            (events, ""),
+            (memory, ""),
+            (llm, ""),
+            (audio.sink, VOICE),
+            (audio.source, EARS),
+            (stt, EARS),
+            (tts, VOICE),
+            (skills, ""),
+            (pipeline, EARS),
         ):
-            runner.add(service, heavy=heavy)
+            runner.add(service, needs=needs)
 
         return cls(
             config=config,
@@ -227,16 +229,24 @@ class JarvisApp:
 
     # --- жизненный цикл ----------------------------------------------------
 
-    async def start(self, *, models: bool = True) -> None:
-        """Поднять все сервисы и загрузить скиллы.
+    async def start(self, *, ears: bool = True, voice: bool = True) -> None:
+        """Поднять сервисы и загрузить скиллы.
 
-        :param models: поднимать ли звук, распознавание и синтез. Без них
-            система собирается за секунду вместо двух минут — этого хватает,
-            чтобы проверить конфиг, скиллы и каталог инструментов.
+        Половины голоса поднимаются отдельно, потому что стоят они минут, а
+        нужны не всем режимам:
+
+        * ``--check`` не нужна ни одна: ему важен каталог инструментов;
+        * ``--say`` не нужны уши — текст команды уже написан, распознавать
+          нечего, а Whisper поднимался впустую и открывал микрофон;
+        * живому запуску нужны обе.
+
+        :param ears: микрофон, распознавание, цикл прослушивания.
+        :param voice: синтез и звуковой выход.
         """
         _quiet_broken_connections()
-        await self.runner.start_all(skip_heavy=not models)
-        self.models_loaded = models
+        skip = {name for name, needed in ((EARS, ears), (VOICE, voice)) if not needed}
+        await self.runner.start_all(without=skip)
+        self.models_loaded = ears and voice
 
         gaps = self.skills.missing_requirements()
         for skill, missing in gaps.items():
