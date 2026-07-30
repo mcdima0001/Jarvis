@@ -738,6 +738,47 @@ check("пустая страница отличается от полной бе
   assert(missed.counted === 1, `элементы были, а counted=${missed.counted}`);
 });
 
+check("иконка внутри кнопки не роняет план", async () => {
+  // Живой случай, стоивший нескольких заходов разбора: признак «похоже на play»
+  // совпал с <svg class="…playButtonIcon…"> внутри кнопки, а у SVG нет click().
+  // Вызов свалился, план молча оборвался, и со стороны это выглядело как «на
+  // странице ничего не нашлось».
+  const audio = player({ tag: "audio", paused: true });
+  const icon = element({ tag: "svg", attributes: { class: "playButtonIcon" } });
+  icon.click = undefined;                       // у SVG его и нет
+  const button = element({
+    attributes: { class: "playButton" },
+    children: [icon],
+    starts: audio,
+  });
+  icon.parentElement = button;
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" }, children: [button] });
+  const api = load(makeDocument({ controls: [row], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["волшебная"], play: true }]);
+
+  assert(result.done === "item", `план оборвался: ${JSON.stringify(result)}`);
+  assert(!result.broke, `в ответе ошибка: ${result.broke}`);
+});
+
+check("сломавшийся шаг рассказывает, на чём споткнулся", async () => {
+  // Молчаливый обрыв — худшее из возможного: он неотличим от «не нашлось».
+  const api = load(makeDocument({}));
+  api.jarvisRunPlan.length;                     // просто чтобы функция была
+  const broken = { item: ["трек"], play: true };
+  const document_ = makeDocument({});
+  document_.querySelectorAll = () => {
+    throw new Error("страница сопротивляется");
+  };
+  const angry = load(document_);
+
+  const result = await angry.jarvisRunPlan([broken]);
+
+  assert(result.done === null, "сработать тут было нечему");
+  assert(result.broke && result.broke.length === 1, "ошибка не попала в ответ");
+  assert(String(result.broke[0]).includes("сопротивляется"), result.broke[0]);
+});
+
 check("кнопка без подписи находится по атрибутам", async () => {
   // На многих плеерах в строке только иконка, подписи нет вовсе.
   const play = element({ attributes: { "data-test-id": "PLAY_BUTTON" } });

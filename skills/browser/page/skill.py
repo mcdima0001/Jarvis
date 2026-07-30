@@ -211,10 +211,26 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
         "play": ({"media": "play"}, {"click": ['[data-test-id="PLAY_BUTTON"]']}),
         "pause": ({"media": "pause"}, {"click": ['[data-test-id="PAUSE_BUTTON"]']}),
         "like": ({"click": ['[data-test-id="LIKE_BUTTON"]']},),
-        # Верхний результат выдачи — большая карточка с обложкой. Хвост класса
-        # (`__rV9pQ`) меняется при каждой сборке сайта, поэтому сравниваем
-        # куском: имя из CSS-модуля переживает пересборку, случайный хвост нет.
-        "first": ({"click": ['[class*="PlayButtonWithCover_playButton"]']},),
+        # Верхний результат выдачи. Селектор **вложенный**, и это принципиально:
+        # `PlayButtonWithCover_playButton` сам по себе встречается на странице
+        # 38 раз, и первым из них идёт кнопка в **боковом меню** — по
+        # сохранённой странице видно, что это «Вайбы отдыха». То есть «включи
+        # трек» запускало бы плейлист из сайдбара.
+        #
+        # `SearchBestResultsTrackBlock_root` — ровно один на странице, и он
+        # означает «лучший результат, и это трек» (у артиста блок другой).
+        # Хвост класса (`__Qsh_f`) меняется при каждой сборке сайта, поэтому
+        # сравниваем куском: имя из CSS-модуля пересборку переживает.
+        "first": (
+            {
+                "click": [
+                    '[class*="SearchBestResultsTrackBlock_root"] '
+                    '[class*="PlayButtonWithCover_playButton"]',
+                    '[class*="SearchBestResults_root"] '
+                    '[class*="PlayButtonWithCover_playButton"]',
+                ]
+            },
+        ),
         # Поиск живёт в боковом меню и на живой странице находится по подписи —
         # это проверено: «нажми поиск на сайте» работало ещё до всех переделок.
         "search": ({"label": ["поиск"]}, {"click": ['[data-test-id="SEARCH_INPUT"]']}),
@@ -1369,6 +1385,15 @@ class PageSkill(Skill):
             return None
         if result.value.get("done"):
             return dict(result.value)
+
+        # Шаг споткнулся о саму страницу. Это **не** «не нашлось», и молчать тут
+        # нельзя: ошибка внутри страницы уже выглядела как пустая выдача, и
+        # разбор стоил нескольких заходов.
+        broke = result.value.get("broke")
+        if broke:
+            self.log.warning(
+                "Шаг сломался на странице: %s", "; ".join(str(item) for item in broke)
+            )
 
         # Название не нашлось. Что было на странице — единственный способ
         # понять, дело в услышанном названии или страница ещё не дорисовалась.

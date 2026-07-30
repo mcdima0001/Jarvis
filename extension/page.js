@@ -369,6 +369,32 @@ async function jarvisRunPlan(plan) {
   };
 
   /**
+   * Нажать элемент, чем бы он ни оказался.
+   *
+   * `click()` есть у HTML-элементов, но не у SVG: у иконки внутри кнопки его
+   * может не быть вовсе. Живой случай стоил нескольких заходов разбора: признак
+   * «похоже на play» в атрибутах совпал с `<svg class="…playButtonIcon…">`
+   * внутри кнопки, вызов свалился с ошибкой, и **весь план молча оборвался** —
+   * со стороны это выглядело как «на странице ничего не нашлось».
+   */
+  const press = (element) => {
+    try {
+      if (typeof element.click === "function") {
+        element.click();
+        return true;
+      }
+    } catch (error) {
+      // Ниже попробуем событием.
+    }
+    try {
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  };
+
+  /**
    * Идёт ли звук прямо сейчас. Успех «включи» измеряется этим, а не нажатием.
    *
    * Спрашивается у **всех** плееров страницы, а не у тех, что прошли фильтр
@@ -582,7 +608,10 @@ async function jarvisRunPlan(plan) {
       );
       if (!button) {
         try {
-          button = node.querySelector(MARKS);
+          const mark = node.querySelector(MARKS);
+          // Признак «похоже на play» сидит и на иконке **внутри** кнопки.
+          // Нажимать надо кнопку: поднимаемся от находки к ближайшему нажимаемому.
+          button = mark && mark.closest ? mark.closest(CLICKABLE) || mark : mark;
         } catch (error) {
           button = null;
         }
@@ -594,7 +623,7 @@ async function jarvisRunPlan(plan) {
         if (step.play && saysPlaying(button)) {
           return { detail: `${caption(found)} — уже играет`, played: true };
         }
-        button.click();
+        press(button);
         pressed = caption(button) || "кнопка без подписи";
         break;
       }
@@ -611,7 +640,7 @@ async function jarvisRunPlan(plan) {
       if (pressed) {
         return { detail };
       }
-      found.click();
+      press(found);
       return { detail, buttons: listOf(nearby) };
     }
 
@@ -627,7 +656,7 @@ async function jarvisRunPlan(plan) {
 
     // Кнопка не помогла или её не было — нажимаем саму строку. Нажатие могло
     // только выбрать трек, поэтому потом дожимаем плеер руками.
-    found.click();
+    press(found);
     if (await awaitStart(control, 700, before)) {
       return { detail, played: true };
     }
@@ -673,6 +702,8 @@ async function jarvisRunPlan(plan) {
 
   //: Что видно на странице, если название не нашлось. Уходит в лог Jarvis.
   let missed = null;
+  //: На чём шаги спотыкались. Пусто — значит просто не нашлось.
+  const broke = [];
 
   for (const step of (plan || []).slice(0, MAX_STEPS)) {
     if (!step || typeof step !== "object") {
@@ -714,13 +745,13 @@ async function jarvisRunPlan(plan) {
       } else if (Array.isArray(step.label)) {
         const element = byLabel(step);
         if (element) {
-          element.click();
+          press(element);
           return answer("label", caption(element));
         }
       } else if (Array.isArray(step.click)) {
         const found = bySelector(step.click);
         if (found) {
-          found.element.click();
+          press(found.element);
           return answer(
             "click",
             found.element.getAttribute("aria-label") || caption(found.element),
@@ -729,7 +760,11 @@ async function jarvisRunPlan(plan) {
         }
       }
     } catch (error) {
-      // Один вариант не вышел — это ожидаемо, пробуем следующий.
+      // Один вариант не вышел — это ожидаемо, пробуем следующий. Но **сказать
+      // об этом обязательно**: молчаливый обрыв уже стоил нескольких заходов
+      // разбора. Ошибка внутри страницы выглядела ровно как «ничего не
+      // нашлось», и объяснить её было нечем.
+      broke.push(`${Object.keys(step).join("+")}: ${(error && error.message) || error}`);
     }
   }
 
@@ -737,6 +772,9 @@ async function jarvisRunPlan(plan) {
   if (missed) {
     nothing.saw = missed.saw;
     nothing.counted = missed.counted;
+  }
+  if (broke.length) {
+    nothing.broke = broke;
   }
   return nothing;
 }

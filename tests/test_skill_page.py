@@ -245,8 +245,12 @@ async def test_missing_track_is_searched_on_the_page(loaded, monkeypatch) -> Non
     plans = [call[1] for call in fake.CALLS if call[0] == "run"]
     assert "label" in plans[1][0], "сначала нажать «Поиск»"
     assert plans[2] == [{"type": "don't stop me now", "submit": True}]
-    # А на своей выдаче верхний результат главнее сравнения слов.
-    assert plans[3][0]["prefer"] == ['[class*="PlayButtonWithCover_playButton"]']
+    # А на своей выдаче верхний результат главнее сравнения слов. Селектор
+    # вложенный: сам по себе класс кнопки встречается на странице 38 раз, и
+    # первым идёт кнопка в боковом меню — по сохранённой странице это «Вайбы
+    # отдыха». То есть «включи трек» запускало бы плейлист из сайдбара.
+    prefer = plans[3][0]["prefer"]
+    assert prefer and all("SearchBestResults" in item for item in prefer), prefer
     await manager.stop()
 
 
