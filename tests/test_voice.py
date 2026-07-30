@@ -563,3 +563,49 @@ def test_own_error_text_beats_the_polite_refusal(
     assert fallback in {
         line.format(address="сэр") for line in persona.variants(FAILED, "ru")
     }
+
+
+async def test_out_of_memory_explains_itself() -> None:
+    """Не хватило памяти на модель — человеку нужен ответ, а не стек.
+
+    Живой случай: на ноуте владельца свободным остался гигабайт, Whisper не
+    загрузился, и в консоль уехало два трейсбека ctranslate2. Первый вопрос
+    после такого — «это я что-то сломал?».
+    """
+    from jarvis.core.config import STTConfig
+    from jarvis.core.errors import STTError
+    from jarvis.core.stt.faster_whisper import FasterWhisperSTT, out_of_memory
+
+    assert out_of_memory(RuntimeError("mkl_malloc: failed to allocate memory"))
+    assert out_of_memory(MemoryError())
+    # Чужая ошибка так не подписывается — её глушить нельзя.
+    assert not out_of_memory(RuntimeError("model not found"))
+
+    class Boom:
+        """Пул задач, в котором загрузка падает от нехватки памяти."""
+
+        async def run(self, call, *args):
+            raise RuntimeError("mkl_malloc: failed to allocate memory")
+
+    stt = FasterWhisperSTT(STTConfig(model="small"), Boom())  # type: ignore[arg-type]
+
+    with pytest.raises(STTError) as failure:
+        await stt.start()
+
+    said = str(failure.value)
+    assert "памяти" in said and "stt.model: base" in said, said
+
+
+async def test_foreign_error_keeps_its_stack() -> None:
+    """А чужая ошибка пробрасывается как есть: по ней нужен стек."""
+    from jarvis.core.config import STTConfig
+    from jarvis.core.stt.faster_whisper import FasterWhisperSTT
+
+    class Broken:
+        async def run(self, call, *args):
+            raise RuntimeError("model not found")
+
+    stt = FasterWhisperSTT(STTConfig(), Broken())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="model not found"):
+        await stt.start()

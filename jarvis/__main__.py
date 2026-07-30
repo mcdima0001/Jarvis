@@ -21,7 +21,7 @@ from jarvis.core.assets import download_voice, list_voices, make_reference, prev
 from jarvis.core.audio import list_devices
 from jarvis.core.config import DEFAULT_CONFIG_PATH, JarvisConfig, load_config
 from jarvis.core.contracts import detect_language
-from jarvis.core.errors import AudioError, ConfigError, JarvisError
+from jarvis.core.errors import AudioError, ConfigError, JarvisError, STTError
 from jarvis.core.logging import setup_logging
 
 
@@ -182,6 +182,12 @@ def main(argv: list[str] | None = None) -> int:
     except AudioError as exc:
         print(f"Ошибка звука: {exc}", file=sys.stderr)
         return 3
+    except STTError as exc:
+        # Без распознавания голосом командовать нечем, поэтому запуск
+        # прекращается. Но текст ошибки должен объяснять, что делать, — стек
+        # ctranslate2 тут только пугает.
+        print(f"Распознавание речи не поднялось: {exc}", file=sys.stderr)
+        return 4
     except JarvisError as exc:
         logging.getLogger("jarvis").error("Ошибка: %s", exc)
         return 1
