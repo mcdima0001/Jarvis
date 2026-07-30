@@ -231,6 +231,20 @@ def test_named_button_choice_is_checked(name: str, asked: str, alike: bool) -> N
     assert page.resembles(name, asked) is alike
 
 
+def test_declined_button_name_still_matches() -> None:
+    """Название кнопки склоняют: «нажми кнопку коллекции» → «Коллекция».
+
+    Сравнение идёт началом слова, поэтому достаточно отбросить окончание —
+    одна основа покрывает все падежи. Живой случай на Яндекс Музыке.
+    """
+    variants = page.label_variants("кнопку коллекции на сайте")
+
+    assert variants[0] == "коллекции"
+    assert "коллекц" in variants, "основа нужна, иначе падеж не найдётся"
+    # Коротким словам основа не нужна и вредна: от «лайк» осталось бы «лай».
+    assert page.label_variants("лайк") == ["лайк", "layk"]
+
+
 def test_service_words_are_stripped_from_the_label() -> None:
     """«Кнопку» спереди и «на сайте» сзади сказаны человеку, а не странице."""
     assert page.label_variants("кнопку поделиться на сайте")[0] == "поделиться"
@@ -240,7 +254,11 @@ def test_service_words_are_stripped_from_the_label() -> None:
 
 def test_label_variants_add_latin() -> None:
     """Услышанное сравнивается и в латинской записи: алфавит выбирает Whisper."""
-    assert page.label_variants(" «Подписаться» ") == ["подписаться", "podpisatsya"]
+    assert page.label_variants(" «Подписаться» ") == [
+        "подписаться",
+        "подписатьс",
+        "podpisatsya",
+    ]
     assert page.label_variants("Subscribe") == ["subscribe"]
     assert page.label_variants("   ") == []
 
@@ -658,6 +676,30 @@ async def test_pause_follows_the_sound(loaded) -> None:
     await manager.stop()
 
 
+async def test_open_video_is_not_a_program(loaded) -> None:
+    """«Открой видео …» — это ролик, а не программа.
+
+    Живой случай: «открой видео, как Ян Топлис обманывал всех 10 лет на сайте»
+    уходило в запуск программ — фраза начинается с «открой», и шаблон
+    «открой {program}» её забирал.
+    """
+    from jarvis.core.contracts import Utterance
+    from jarvis.core.router import PhraseResolver
+
+    manager, registry, _ = loaded
+    await manager.start()
+
+    intent = await PhraseResolver(registry).resolve(
+        Utterance(text="открой видео как Ян Топлис обманывал всех 10 лет на сайте")
+    )
+
+    assert intent is not None
+    assert intent.tool == "youtube.play_video"
+    # «На сайте» сказано человеку — в запрос оно попадать не должно.
+    assert intent.arguments["query"] == "как Ян Топлис обманывал всех 10 лет"
+    await manager.stop()
+
+
 async def test_youtube_plays_the_first_result(loaded) -> None:
     """«Включи трейлер X» открывает выдачу и нажимает первый ролик.
 
@@ -713,5 +755,7 @@ async def test_press_uses_spoken_label(loaded) -> None:
     result = await registry.invoke("page.press", {"control": "Подписаться"})
 
     assert result.ok
-    assert fake.CALLS[1][1] == [{"label": ["подписаться", "podpisatsya"]}]
+    assert fake.CALLS[1][1] == [
+        {"label": ["подписаться", "подписатьс", "podpisatsya"]}
+    ]
     await manager.stop()

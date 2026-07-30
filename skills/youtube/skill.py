@@ -49,9 +49,17 @@ class YouTubeSkill(Skill):
                    "en": f"Found {len(results)} videos. First: {results[0].get('title', '')}."},
         )
 
+    # «Открой видео …» тоже сюда, а не в запуск программ. Живой случай: «открой
+    # видео, как Ян Топлис обманывал всех 10 лет на сайте» уходило в
+    # windows.launch_program — фраза начинается с «открой», и шаблон
+    # «открой {program}» её забирал. Здесь своих слов больше, поэтому этот
+    # шаблон проверяется раньше.
     @tool(phrases=["включи видео {query}", "поставь {query} на ютубе",
                    "включи на ютубе {query}", "включи трейлер {query}",
-                   "play {query} on youtube"])
+                   "открой видео {query}", "открой видео {query} на сайте",
+                   "включи видео {query} на сайте", "открой в ютубе {query}",
+                   "включи в ютубе {query}",
+                   "play {query} on youtube", "open the video {query}"])
     async def play_video(self, query: str) -> ToolResult:
         """Найти видео на YouTube и включить первое из найденного.
 

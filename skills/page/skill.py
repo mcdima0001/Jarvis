@@ -453,6 +453,14 @@ _TAILS = ("на сайте", "на странице", "в браузере", "н
 #: И как начинают: «нажми **кнопку** поделиться», «нажми **на** логотип».
 _HEADS = ("на кнопку", "кнопку", "кнопка", "иконку", "значок", "на")
 
+#: Гласные на конце — по ним и различаются падежи: «коллекция», «коллекции».
+_ENDINGS = "аеёиоуыэюяaeiouy"
+
+#: Короче этого основу не берём: от «лайк» осталось бы «лай».
+_MIN_STEM = 6
+
+_CYRILLIC = re.compile(r"[а-яё]", re.IGNORECASE)
+
 
 def label_variants(spoken: str) -> list[str]:
     """Как подпись кнопки может выглядеть на странице.
@@ -484,6 +492,17 @@ def label_variants(spoken: str) -> list[str]:
     if not text:
         return []
     variants = [text]
+    # Название кнопки склоняют: «нажми кнопку коллекции», а на кнопке
+    # «Коллекция». Сравнение идёт началом слова, поэтому достаточно отбросить
+    # окончание — тогда одна основа покрывает все падежи. Коротким словам это
+    # не нужно и вредно: от «лайк» осталось бы «лай».
+    head, _, last = text.rpartition(" ")
+    # Только для русского: падежей в английских подписях нет, и «subscribe»
+    # незачем превращать в «subscrib».
+    if len(last) >= _MIN_STEM and _CYRILLIC.search(last):
+        stem = last.rstrip(_ENDINGS)
+        if len(stem) >= _MIN_STEM - 1 and stem != last:
+            variants.append(f"{head} {stem}".strip())
     latin = romanize(text)
     if latin != text and latin not in variants:
         variants.append(latin)
