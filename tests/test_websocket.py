@@ -200,6 +200,55 @@ async def test_extension_connects_and_exchanges_messages() -> None:
         await server.stop()
 
 
+async def test_command_goes_to_one_client_only() -> None:
+    """Команда — приказ, а не новость: разослать её веером нельзя.
+
+    Живой случай: расширение подключилось дважды (служебный поток успевал
+    открыть второй сокет, пока первый ещё договаривался), и каждая команда
+    выполнялась дважды — «открой вкладку» открывало две одинаковые вкладки.
+    """
+    server, port, _ = await _serve()
+    try:
+        first, _ = await Client.connect(port, origin="moz-extension://one")
+        second, _ = await Client.connect(port, origin="moz-extension://two")
+        assert first is not None and second is not None
+        await asyncio.sleep(0.05)
+
+        assert await server.send('{"action": "tabs"}') == 1
+        # Отвечает последний подключившийся: старое соединение вполне могло
+        # остаться от уснувшего служебного потока.
+        opcode, payload = await second.receive()
+        assert opcode == OP_TEXT
+        assert json.loads(payload) == {"action": "tabs"}
+
+        await first.close()
+        await second.close()
+    finally:
+        await server.stop()
+
+
+async def test_second_connection_of_the_same_extension_replaces_the_first() -> None:
+    """Одно расширение — одно соединение: прежнее закрывается само."""
+    server, port, _ = await _serve()
+    try:
+        first, _ = await Client.connect(port)
+        second, _ = await Client.connect(port)
+        assert first is not None and second is not None
+        await asyncio.sleep(0.05)
+
+        assert await server.send('{"action": "tabs"}') == 1
+        opcode, _ = await second.receive()
+        assert opcode == OP_TEXT
+
+        await second.close()
+        await asyncio.sleep(0.05)
+        # Первое соединение сервер закрыл сам, поэтому живых клиентов не осталось.
+        assert not server.connected
+        await first.close()
+    finally:
+        await server.stop()
+
+
 async def test_page_from_a_website_is_refused() -> None:
     """Страница сайта тоже может открыть локальный порт — и получает отказ.
 

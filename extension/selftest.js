@@ -387,6 +387,47 @@ check("самое тесное совпадение побеждает", async (
   assert(list.clicked === 0, "весь список нажимать нельзя");
 });
 
+check("название узнаётся по словам, а не только целиком", async () => {
+  // Живой случай: «нажми на видео, как я на топлес обманывал всех 10 лет».
+  // Подряд эта строка не совпадает с заголовком нигде, а по словам — почти.
+  const video = element({
+    attributes: { "aria-label": "Как я обманывал ВСЕХ 10 лет | Ян Топлес" },
+  });
+  const other = element({ attributes: { "aria-label": "Как я строил дом" } });
+  const api = load(makeDocument({ controls: [other, video] }));
+
+  const result = await api.jarvisRunPlan([
+    { label: ["видео, как я на топлес обманывал всех 10 лет"] },
+  ]);
+
+  assert(result.done === "label", `ожидалось label, пришло ${result.done}`);
+  assert(video.clicked === 1, "ролик не нажат");
+  assert(other.clicked === 0, "нажалось не то видео");
+});
+
+check("одного общего слова для совпадения мало", async () => {
+  // Иначе «включи видео про котиков» открывало бы первое попавшееся видео.
+  const video = element({ attributes: { "aria-label": "Видео о ремонте гаража" } });
+  const api = load(makeDocument({ controls: [video] }));
+
+  const result = await api.jarvisRunPlan([{ label: ["видео, как я обманывал всех 10 лет"] }]);
+
+  assert(result.done === null, "нажалось совсем не то");
+  assert(video.clicked === 0, "нажалось совсем не то");
+});
+
+check("запрет сильнее совпадения по словам", async () => {
+  const wrong = element({ attributes: { "aria-label": "Мне не нравится этот трек" } });
+  const api = load(makeDocument({ controls: [wrong] }));
+
+  const result = await api.jarvisRunPlan([
+    { label: ["мне нравится этот трек"], avoid: ["не нравится"] },
+  ]);
+
+  assert(result.done === null, "запрет не сработал");
+  assert(wrong.clicked === 0, "нажат дизлайк вместо лайка");
+});
+
 check("кнопка без подписи находится по атрибутам", async () => {
   // На многих плеерах в строке только иконка, подписи нет вовсе.
   const play = element({ attributes: { "data-test-id": "PLAY_BUTTON" } });

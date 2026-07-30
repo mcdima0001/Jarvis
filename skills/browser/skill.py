@@ -973,6 +973,25 @@ class BrowserSkill(Skill):
         return await self._page_call("page", {"plan": list(plan)}, site=site, tab=tab)
 
     @tool(routable=False)
+    async def page_go(self, url: str, tab: int = 0) -> ToolResult:
+        """Увести вкладку по другому адресу и дождаться загрузки.
+
+        Нужно скиллу `page`, чтобы открыть поиск **самого сайта**: нового окна
+        при этом не появляется, работа продолжается в той же вкладке.
+
+        Адрес сюда приходит не из речи, а собирается из шаблона сайта, и всё
+        равно проверяется: `safe_url` пропускает только http и https, иначе
+        услышанное `steam://` запустило бы обработчик протокола.
+
+        :param url: полный адрес.
+        :param tab: номер вкладки; пусто — та, куда смотрят.
+        """
+        address = safe_url(url)
+        if address is None:
+            return ToolResult.failure(f"недопустимый адрес: {url!r}")
+        return await self._page_call("go", {"url": address, "active": True}, site="", tab=tab)
+
+    @tool(routable=False)
     async def page_probe(self, site: str = "", tab: int = 0, limit: int = 40) -> ToolResult:
         """Перечислить кнопки открытой страницы.
 

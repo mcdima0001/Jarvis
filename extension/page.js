@@ -136,20 +136,46 @@ async function jarvisRunPlan(plan) {
    */
   const hits = (label, word) => label.includes(` ${word}`);
 
-  /** Кнопка, чья подпись содержит одно из слов и ни одного запретного. */
-  const byLabel = (step) => {
-    const wanted = step.label.map((word) => spaced(word).trim()).filter(Boolean);
-    const forbidden = (step.avoid || []).map((word) => spaced(word).trim()).filter(Boolean);
-    if (!wanted.length) {
-      return null;
+  /** Слова просьбы, по которым есть смысл искать: короткие не значат ничего. */
+  const keywords = (text) => text.split(" ").filter((word) => word.length >= 3);
+
+  /**
+   * Насколько подпись отвечает просьбе: 1 — просьба нашлась целиком, 0 — нет.
+   *
+   * Целиком совпадает далеко не всё. Название ролика проходит путь микрофон →
+   * Whisper → шаблон фразы, и обрастает по дороге лишними словами: «нажми на
+   * видео, как я на топлес обманывал всех 10 лет» против «Как я обманывал ВСЕХ
+   * 10 лет | Ян Топлес» на странице. Подряд эти строки не совпадают нигде, а по
+   * словам — почти полностью. Поэтому вторым заходом считается доля слов
+   * просьбы, найденных в подписи; порог высокий, и одного слова не хватает
+   * никогда — иначе «видео» открывало бы первое попавшееся.
+   */
+  const ENOUGH = 0.6;
+  const score = (label, wanted) => {
+    if (hits(label, wanted)) {
+      return 1;
     }
-    for (const element of document.querySelectorAll(CLICKABLE)) {
+    const words = keywords(wanted);
+    if (words.length < 2) {
+      return 0;
+    }
+    const found = words.filter((word) => hits(label, word)).length;
+    const share = found / words.length;
+    return found >= 2 && share >= ENOUGH ? share * 0.9 : 0;
+  };
+
+  /** Лучшее совпадение подписи с просьбой среди элементов страницы. */
+  const bestMatch = (selector, wanted, forbidden, tighter) => {
+    let best = null;
+    let rank = 0;
+    let tightest = Infinity;
+    for (const element of document.querySelectorAll(selector)) {
       if (!seen(element)) {
         continue;
       }
       const caption_ = caption(element);
-      // Слишком длинная подпись — это не кнопка, а кусок текста со ссылкой.
-      if (!caption_ || caption_.length > 120) {
+      // Длиннее этого — уже кусок страницы, а не подпись.
+      if (!caption_ || caption_.length > 200) {
         continue;
       }
       const label = spaced(caption_);
@@ -158,11 +184,27 @@ async function jarvisRunPlan(plan) {
       if (forbidden.some((word) => hits(label, word))) {
         continue;
       }
-      if (wanted.some((word) => hits(label, word))) {
-        return element;
+      const value = Math.max(...wanted.map((word) => score(label, word)));
+      // При равном совпадении порядок решает вызывающий: у кнопок побеждает
+      // первая на странице (у видео это лайк ролика, а не лайк комментария),
+      // у строк списка — самая короткая подпись, иначе выбирается весь список.
+      if (value > rank || (value === rank && value > 0 && tighter && label.length < tightest)) {
+        rank = value;
+        tightest = label.length;
+        best = element;
       }
     }
-    return null;
+    return best;
+  };
+
+  /** Кнопка, чья подпись отвечает просьбе и не содержит запретного. */
+  const byLabel = (step) => {
+    const wanted = step.label.map((word) => spaced(word).trim()).filter(Boolean);
+    const forbidden = (step.avoid || []).map((word) => spaced(word).trim()).filter(Boolean);
+    if (!wanted.length) {
+      return null;
+    }
+    return bestMatch(CLICKABLE, wanted, forbidden, false);
   };
 
   /**
@@ -289,22 +331,7 @@ async function jarvisRunPlan(plan) {
     // Побеждает самое тесное совпадение. У списка треков подпись начинается с
     // первого трека, и без этого выбирался весь список целиком: «i need your
     // love oliver nelson & tobtok remix… midnight city… the reason…».
-    let found = null;
-    let tightest = Infinity;
-    for (const element of document.querySelectorAll(ITEMS)) {
-      if (!seen(element)) {
-        continue;
-      }
-      const label = spaced(caption(element));
-      // Строка длиннее этого — уже кусок страницы, а не название.
-      if (!label.trim() || label.length > 200) {
-        continue;
-      }
-      if (wanted.some((word) => hits(label, word)) && label.length < tightest) {
-        tightest = label.length;
-        found = element;
-      }
-    }
+    const found = bestMatch(ITEMS, wanted, [], true);
     if (!found) {
       return null;
     }

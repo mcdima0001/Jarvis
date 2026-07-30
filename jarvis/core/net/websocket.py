@@ -126,6 +126,10 @@ class _Client:
     def __init__(self, writer: asyncio.StreamWriter, origin: str) -> None:
         self.writer = writer
         self.origin = origin
+        #: Соединение вытеснено более новым от того же расширения. Читающая
+        #: задача узнаёт об этом по закрытому транспорту, но пометка нужна
+        #: раньше: иначе в лог уедет «отключилось» про живого клиента.
+        self.replaced = False
 
     async def send(self, payload: bytes, *, opcode: int = OP_TEXT) -> None:
         """Отправить кадр."""
@@ -160,7 +164,9 @@ class WebSocketServer:
         self.on_message = on_message
         self.on_connect = on_connect
         self._server: asyncio.AbstractServer | None = None
-        self._clients: set[_Client] = set()
+        #: Список, а не множество: порядок подключения тут значим. Команда
+        #: уходит **одному** клиенту — последнему подключившемуся, см. `send`.
+        self._clients: list[_Client] = []
         #: Задачи-обработчики всех соединений, включая ещё не прошедшие
         #: рукопожатие. Нужны для остановки: `wait_closed` с версии 3.12 ждёт
         #: завершения каждого обработчика, и один зависший на чтении клиент
@@ -199,21 +205,29 @@ class WebSocketServer:
             self._server = None
 
     async def send(self, text: str) -> int:
-        """Разослать сообщение всем клиентам.
+        """Отправить команду браузеру.
 
-        :return: сколько клиентов его получили.
+        **Ровно одному клиенту, а не всем.** Каждое сообщение тут — приказ
+        («открой вкладку»), а не новость, и разосланный веером приказ
+        выполняется столько раз, сколько нашлось соединений: на живом запуске
+        расширение подключилось дважды, и каждая команда открывала **две
+        одинаковые вкладки**. Выбирается последний подключившийся: если старое
+        соединение осталось от уснувшего служебного потока, работает как раз
+        новое.
+
+        :return: 1, если команда ушла, иначе 0.
         """
         payload = text.encode("utf-8")
-        delivered = 0
-        for client in list(self._clients):
+        while self._clients:
+            client = self._clients[-1]
             try:
                 await client.send(payload)
             except OSError as exc:
                 logger.debug("Клиент отвалился при отправке: %s", exc)
                 await self._drop(client)
-            else:
-                delivered += 1
-        return delivered
+                continue
+            return 1
+        return 0
 
     # --- соединение --------------------------------------------------------
 
@@ -227,7 +241,8 @@ class WebSocketServer:
             client = await self._handshake(reader, writer)
             if client is None:
                 return
-            self._clients.add(client)
+            await self._replace_same_origin(client)
+            self._clients.append(client)
             logger.info("Расширение подключилось (%s)", client.origin or "без origin")
             if self.on_connect is not None:
                 await self.on_connect()
@@ -243,7 +258,8 @@ class WebSocketServer:
                 self._handlers.discard(handler)
             if client is not None:
                 await self._drop(client)
-                logger.info("Расширение отключилось")
+                if not client.replaced:
+                    logger.info("Расширение отключилось")
             else:
                 writer.close()
 
@@ -335,9 +351,26 @@ class WebSocketServer:
         payload = await reader.readexactly(length) if length else b""
         return fin, opcode, unmask(payload, mask)
 
+    async def _replace_same_origin(self, fresh: _Client) -> None:
+        """Закрыть прежние соединения того же расширения.
+
+        Один и тот же origin — это одно и то же расширение в одном и том же
+        браузере, а держать от него два соединения незачем: служебный поток
+        Manifest V3 засыпает и подключается заново, и старое соединение к этому
+        моменту уже никуда не ведёт. Живой случай был хуже: расширение открывало
+        второе соединение, не закрыв первое, и каждая команда выполнялась дважды.
+        """
+        if not fresh.origin:
+            return
+        for client in [item for item in self._clients if item.origin == fresh.origin]:
+            client.replaced = True
+            logger.info("Прежнее соединение расширения закрыто: подключилось новое")
+            await self._drop(client)
+
     async def _drop(self, client: _Client) -> None:
         """Забыть клиента и закрыть его соединение."""
-        self._clients.discard(client)
+        if client in self._clients:
+            self._clients.remove(client)
         try:
             client.writer.close()
         except OSError:

@@ -30,10 +30,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import re
 from typing import Any, Literal, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import quote_plus, urlsplit
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
@@ -205,6 +206,38 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
     },
     "google.com": {"first": ({"click": ["#rso h3", "#search h3"]},)},
 }
+
+#: Где у сайта своя выдача: адрес поиска с подстановкой запроса.
+#:
+#: Нужно для «включи Don't Stop Me Now»: на странице этого трека нет, потому что
+#: его никто не искал. Ссылкой, а не набором текста в строке поиска, — по той же
+#: причине, по которой так устроен и `browser.search`: результат тот же, а
+#: промахнуться нечем. Открывается **в той же вкладке** (`browser.page_go`):
+#: новая была бы лишней, работа идёт там, куда смотрит владелец.
+SITE_SEARCH: dict[str, str] = {
+    "music.yandex.ru": "https://music.yandex.ru/search?text={query}",
+    "youtube.com": "https://www.youtube.com/results?search_query={query}",
+    "vk.com": "https://vk.com/audio?q={query}",
+}
+
+#: Сколько раз перепроверить страницу после перехода на выдачу.
+#:
+#: `loaded()` в расширении ждёт события браузера, но выдача у таких сайтов
+#: дорисовывается скриптом уже после него: разметка есть, треков ещё нет.
+SEARCH_ATTEMPTS = 3
+SEARCH_DELAY = 0.7
+
+
+def search_url_for(host: str, query: str) -> str:
+    """Адрес поиска по сайту — или пусто, если своей выдачи у него нет."""
+    template = ""
+    for name, pattern in SITE_SEARCH.items():
+        if host == name or host.endswith(f".{name}"):
+            template = pattern
+            break
+    if not template or not query.strip():
+        return ""
+    return template.format(query=quote_plus(query.strip()))
 
 #: Что сказать вслух. Реплики короткие: команда и так видна по результату.
 SPEECH: dict[str, tuple[str, str]] = {
@@ -768,6 +801,7 @@ class PageSkill(Skill):
             site=site,
             focused=True,
             extra=[{"item": names, "hint": list(PLAY_HINTS), "play": True}],
+            search=name,
             speech=(f"Включаю {name}.", f"Playing {name}."),
         )
 
@@ -856,11 +890,17 @@ class PageSkill(Skill):
         speech: tuple[str, str] | None = None,
         soft: bool = False,
         focused: bool = False,
+        search: str = "",
     ) -> ToolResult:
         """Выполнить действие в подходящей вкладке.
 
         Порядок такой: найти вкладку → собрать план из известного → выполнить →
         и только при неудаче один раз спросить модель и запомнить ответ.
+
+        :param search: что искать на самом сайте, если на странице этого не
+            нашлось. «Включи Don't Stop Me Now» — обычно просьба найти трек, а
+            не только нажать на него: на открытой странице его нет, потому что
+            никто его туда не выводил.
 
         :param soft: считать название сайта пожеланием, а не требованием.
             «Поставь ютуб на паузу» при закрытом ютубе разумно понять как
@@ -896,6 +936,8 @@ class PageSkill(Skill):
 
         steps = self._plan(action, host, seconds=seconds, extra=extra)
         result = await self._run(steps, tab)
+        if result is None and search:
+            result = await self._through_search(search, steps, tab=tab, host=host)
         if result is not None:
             self._note_attempt(host, action, result, learned=False)
             return self._done(action, result, speech)
@@ -968,6 +1010,40 @@ class PageSkill(Skill):
         if not result.ok or not isinstance(result.value, Mapping):
             return None
         return dict(result.value) if result.value.get("done") else None
+
+    async def _through_search(
+        self, query: str, steps: Sequence[Mapping[str, Any]], *, tab: int, host: str
+    ) -> dict[str, Any] | None:
+        """Поискать названное на самом сайте и попробовать снова.
+
+        «Включи Don't Stop Me Now» — это «найди и включи»: на открытой странице
+        трека нет и быть не должно. Выдача открывается **в этой же вкладке** и
+        ссылкой, а не набором текста в строке поиска: результат тот же, а
+        ошибиться нечем — тот же довод, что и у `browser.search`.
+
+        Ждать приходится дважды. Расширение ждёт события загрузки, но выдачу
+        такие сайты дорисовывают скриптом уже после него: разметка есть, треков
+        ещё нет. Поэтому план прогоняется по кругу несколько раз.
+        """
+        url = search_url_for(host, query)
+        if not url:
+            return None
+        if not self.tools.has("browser.page_go"):
+            return None
+
+        moved = await self.tools.invoke("browser.page_go", {"url": url, "tab": tab})
+        if not moved.ok:
+            self.log.info("Поиск на %s не открылся: %s", host, moved.error)
+            return None
+        self.log.info("На странице %r не нашлось — открыл поиск сайта: %s", query, url)
+
+        for attempt in range(SEARCH_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(SEARCH_DELAY)
+            result = await self._run(steps, tab)
+            if result is not None:
+                return result
+        return None
 
     async def _learn_action(
         self, action: str, *, tab: int, host: str, title: str, want: str

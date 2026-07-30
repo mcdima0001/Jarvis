@@ -65,8 +65,8 @@ class TimerSkill(Skill):
 
 | Скилл      | Состояние | Инструменты |
 |------------|-----------|-------------|
-| `browser`  | **работает** | `open_site`, `search`, `close`, `close_tab` (+ служебные `page_target`, `page_run`, `page_probe`) |
-| `page`     | **работает**, нужен расширение | `control`, `press` и голосовые обёртки: пауза, следующий трек, лайк, перемотка |
+| `browser`  | **работает** | `open_site`, `search`, `close`, `close_tab` (+ служебные `page_target`, `page_run`, `page_go`, `page_probe`) |
+| `page`     | **работает**, нужно расширение | `control`, `press`, `play_item`, `type_in` и голосовые обёртки: пауза, следующий трек, лайк, перемотка |
 | `windows`  | **работает**, только Windows | `launch_program`, `close_program`, `kill_program`, `list_programs`, `set_volume`, `lock` |
 | `search`   | **работает** | `web_search`, `answer` |
 | `weather`  | **работает** | `now`, `forecast` |

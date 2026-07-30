@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jarvis",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Мост между голосовым ассистентом Jarvis и браузером: вкладки и управление тем, что в них открыто.",
   "permissions": ["tabs", "alarms", "scripting"],
   "host_permissions": ["http://*/*", "https://*/*"],

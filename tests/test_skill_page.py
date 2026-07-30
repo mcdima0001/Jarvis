@@ -181,6 +181,47 @@ async def test_named_track_is_played_not_just_clicked(loaded) -> None:
     await manager.stop()
 
 
+@pytest.mark.parametrize(
+    ("host", "query", "expected"),
+    [
+        ("music.yandex.ru", "Don't Stop Me Now", "https://music.yandex.ru/search?text=don%27t+stop+me+now"),
+        ("m.youtube.com", "мем", "https://www.youtube.com/results?search_query=%D0%BC%D0%B5%D0%BC"),
+        ("example.com", "что угодно", ""),
+        ("music.yandex.ru", "   ", ""),
+    ],
+)
+def test_site_search_address(host: str, query: str, expected: str) -> None:
+    """Свой поиск есть не у всех сайтов, и запрос в адрес попадает закодированным."""
+    assert page.search_url_for(host, query.lower()) == expected
+
+
+async def test_missing_track_is_searched_on_the_site(loaded) -> None:
+    """«Включи Don't Stop Me Now» — это «найди и включи».
+
+    Живой случай: трека нет на открытой странице, потому что его туда никто не
+    выводил, и команда честно отказывала. Теперь открывается поиск **самого
+    сайта** — в той же вкладке, ссылкой, — и попытка повторяется.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [
+        {"done": None},
+        {"done": "item", "detail": "Don't Stop Me Now — Воспроизвести"},
+    ]
+
+    result = await registry.invoke("page.play_item", {"track": "Don't Stop Me Now"})
+
+    assert result.ok
+    assert [call[0] for call in fake.CALLS] == ["target", "run", "go", "run"]
+    assert fake.CALLS[2][1] == "https://music.yandex.ru/search?text=don%27t+stop+me+now"
+    # Вкладка та же самая: новая была бы лишней.
+    assert fake.CALLS[2][2] == fake.TARGET["tabId"]
+    assert fake.CALLS[3][1] == fake.CALLS[1][1], "ищем то же самое, что и искали"
+    await manager.stop()
+
+
 def test_typed_text_is_a_string_not_a_list() -> None:
     """Печатать — это текст, и он уходит в значение поля, а не в код."""
     plan = page.validate_plan([{"type": "  don't stop me now  ", "submit": True}])
@@ -375,6 +416,12 @@ class FakeBrowserSkill(Skill):
         CALLS.append(("run", plan, tab))
         reply = REPLIES.pop(0) if REPLIES else {"done": None}
         return ToolResult.success(dict(reply))
+
+    @tool(routable=False)
+    async def page_go(self, url: str, tab: int = 0) -> ToolResult:
+        """Увести вкладку по другому адресу."""
+        CALLS.append(("go", url, tab))
+        return ToolResult.success({"tabId": tab, "url": url})
 
     @tool(routable=False)
     async def page_probe(self, site: str = "", tab: int = 0, limit: int = 40) -> ToolResult:

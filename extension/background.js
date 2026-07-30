@@ -28,6 +28,16 @@ const ALARM = "jarvis-reconnect";
 
 let socket = null;
 let keepalive = null;
+/**
+ * Подключение, которое сейчас устанавливается.
+ *
+ * Без него connect() открывал по сокету на каждый вызов: между проверкой
+ * «уже подключены?» и созданием WebSocket стоит await за токеном, а зовут
+ * connect() сразу из трёх мест — с загрузки файла, из onInstalled и из
+ * будильника. Два соединения означают, что Jarvis шлёт команду, а браузер
+ * выполняет её дважды: «открой вкладку» открывало **две одинаковые вкладки**.
+ */
+let opening = null;
 
 /** Настройки соединения: их пишет Jarvis при запуске. */
 async function readConfig() {
@@ -36,12 +46,21 @@ async function readConfig() {
   return { token: data.token || "", port: data.port || DEFAULT_PORT };
 }
 
-/** Подключиться, если ещё не подключены. */
-async function connect() {
+/** Подключиться, если ещё не подключены. Повторный вызов ждёт первый. */
+function connect() {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-    return;
+    return Promise.resolve();
   }
+  if (!opening) {
+    opening = openSocket().finally(() => {
+      opening = null;
+    });
+  }
+  return opening;
+}
 
+/** Собственно открыть сокет. Зовётся только из connect(). */
+async function openSocket() {
   let config;
   try {
     config = await readConfig();
@@ -330,6 +349,22 @@ async function run(action, params) {
     const tab = await chrome.tabs.create({ url: params.url, active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
     return { tabId: tab.id, windowId: tab.windowId, reused: false };
+  }
+
+  if (action === "go") {
+    // Увести уже выбранную вкладку по другому адресу — так открывается поиск
+    // сайта. Именно в той же вкладке: новая была бы лишней, а работа идёт
+    // ровно там, куда смотрит пользователь.
+    if (!isWebUrl(params.url)) {
+      throw new Error("недопустимый адрес");
+    }
+    const tab = await pickTab(params);
+    if (!tab) {
+      throw new Error("нет подходящей вкладки");
+    }
+    const moved = await chrome.tabs.update(tab.id, { url: params.url });
+    const ready = await loaded({ ...moved, status: "loading" });
+    return { tabId: ready.id, windowId: ready.windowId, title: ready.title, url: ready.url };
   }
 
   if (action === "activate") {
