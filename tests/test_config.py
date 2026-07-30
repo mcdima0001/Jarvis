@@ -246,3 +246,81 @@ def test_typo_in_the_level_does_not_break_the_start(tmp_path) -> None:
     logging.shutdown()
 
     assert "всё равно пишем" in (tmp_path / "t.log").read_text(encoding="utf-8")
+
+
+def test_color_never_leaks_into_the_file(tmp_path) -> None:
+    """В файле цвета быть не может: он ломает и `grep`, и чтение глазами.
+
+    Гарантия тут не «не забыть отключить», а устройство: раскрашивающий
+    форматтер вешается только на консольный обработчик, и в файл его физически
+    некуда поставить.
+    """
+    import logging
+
+    from jarvis.core.config import LoggingConfig
+    from jarvis.core.logging import setup_logging
+
+    log = setup_logging(
+        LoggingConfig(dir=tmp_path, file="t.log", console=True, color="always")
+    )
+    log.error("красная строка")
+    log.info("Отвечаю: готово", extra={"tone": "said"})
+    logging.shutdown()
+
+    written = (tmp_path / "t.log").read_text(encoding="utf-8")
+    assert "\033" not in written
+    assert "красная строка" in written
+
+
+@pytest.mark.parametrize(
+    ("mode", "environment", "tty", "expected"),
+    [
+        ("always", {}, False, True),
+        ("never", {}, True, False),
+        ("auto", {}, True, True),
+        ("auto", {}, False, False),
+        ("auto", {"NO_COLOR": "1"}, True, False),
+        ("auto", {"TERM": "dumb"}, True, False),
+    ],
+)
+def test_when_to_paint(monkeypatch, mode, environment, tty, expected) -> None:
+    """Цвет — только для живого терминала, и NO_COLOR уважаем.
+
+    Вывод перенаправляют как раз тогда, когда собираются его читать, — и
+    управляющие последовательности там окажутся мусором.
+    """
+    from jarvis.core.logging import supports_color
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+
+    class Stream:
+        def isatty(self) -> bool:
+            return tty
+
+    assert supports_color(Stream(), mode) is expected
+
+
+def test_columns_do_not_shift_when_painted() -> None:
+    """Раскрашенная строка не должна разъезжаться по колонкам.
+
+    `%(levelname)-8s` считает длину вместе с невидимыми управляющими символами,
+    поэтому выравнивание делается до раскраски, а не шаблоном формата.
+    """
+    import logging
+    import re
+
+    from jarvis.core.logging import ColorFormatter
+
+    bare = re.compile(r"\033\[[0-9;]*m")
+    formatter = ColorFormatter(datefmt="%H:%M:%S")
+
+    def column(level: int) -> int:
+        """В каком столбце начинается сообщение, если цвета не считать."""
+        record = logging.LogRecord("jarvis", level, "f", 1, "текст", None, None)
+        return bare.sub("", formatter.format(record)).index("текст")
+
+    # INFO не красится, ERROR красится — а колонка одна и та же.
+    assert column(logging.INFO) == column(logging.ERROR)

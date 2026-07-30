@@ -22,6 +22,8 @@ import sys
 
 from jarvis.core.config import LoggingConfig
 
+from .colors import ColorFormatter, enable_windows_colors, supports_color
+
 #: Время стоит первым и в файле, и в консоли. Без него запись бесполезна для
 #: разбора: почти всё, что приходится выяснять по логу, — это «что было
 #: раньше, а что позже» и «сколько заняло».
@@ -72,7 +74,15 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
     if config.console:
         console = logging.StreamHandler(sys.stderr)
         console.setLevel(console_level)
-        console.setFormatter(logging.Formatter(_CONSOLE_FORMAT, datefmt=config.time_format))
+        # Цвет — свойство консоли, и только её. Форматтер с раскраской некуда
+        # поставить в файл: он вешается ровно на этот обработчик.
+        if supports_color(console.stream, config.color):
+            enable_windows_colors()
+            console.setFormatter(ColorFormatter(datefmt=config.time_format))
+        else:
+            console.setFormatter(
+                logging.Formatter(_CONSOLE_FORMAT, datefmt=config.time_format)
+            )
         root.addHandler(console)
 
     # Логгер должен пропускать самое подробное из двух: он решает **первым**, и
