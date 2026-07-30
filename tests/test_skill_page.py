@@ -244,17 +244,18 @@ async def test_missing_track_is_searched_on_the_site(loaded) -> None:
 async def test_play_by_name_belongs_to_the_open_site(loaded) -> None:
     """«Включи X» решает открытый сайт, и выбор тут не за моделью.
 
-    Двух инструментов на одну просьбу быть не должно: с `youtube.play_video` в
-    каталоге модель выбирала наугад и уводила с открытой Яндекс Музыки на ютуб.
-    Фразы, где про видео сказано прямо, у него остаются.
+    Двух инструментов на одну просьбу быть не должно: пока в каталоге лежал и
+    «включи ролик», модель выбирала наугад и уводила с открытой Яндекс Музыки на
+    ютуб. Фразы, где про видео сказано прямо, ведут в свой инструмент — но
+    модели он не показан.
     """
     manager, registry, _ = loaded
     await manager.start()
     catalog = {spec.name for spec in registry.specs() if spec.routable}
 
     assert "page.play_item" in catalog
-    assert "youtube.play_video" not in catalog
-    assert registry.has("youtube.play_video"), "по имени и фразам он доступен"
+    assert "page.play_video" not in catalog
+    assert registry.has("page.play_video"), "по фразам он доступен"
     await manager.stop()
 
 
@@ -709,9 +710,6 @@ def loaded(tmp_path: Path, sites_memory, smart_llm: LLMService):
     directory = tmp_path / "skills"
     directory.mkdir()
     shutil.copy(_ROOT / "skills" / "page" / "skill.py", directory / "page.py")
-    # YouTube тут настоящий: «включи трейлер X» — это две команды подряд,
-    # поиск и нажатие первого ролика, и связка проверяется целиком.
-    shutil.copy(_ROOT / "skills" / "youtube" / "skill.py", directory / "youtube.py")
     (directory / "browser.py").write_text(_FAKE_BROWSER, encoding="utf-8")
 
     events = LocalEventBus()
@@ -1032,53 +1030,45 @@ async def test_open_video_is_not_a_program(loaded) -> None:
     )
 
     assert intent is not None
-    assert intent.tool == "youtube.play_video"
+    assert intent.tool == "page.play_video"
     # «На сайте» сказано человеку — в запрос оно попадать не должно.
-    assert intent.arguments["query"] == "как Ян Топлис обманывал всех 10 лет"
+    assert intent.arguments["track"] == "как Ян Топлис обманывал всех 10 лет"
     await manager.stop()
 
 
-async def test_youtube_plays_the_first_result(loaded) -> None:
-    """«Включи трейлер X» открывает выдачу и нажимает первый ролик.
+async def test_video_goes_to_the_video_site(loaded, monkeypatch) -> None:
+    """«Включи видео X» ищет ролик, а не музыку.
 
-    Ключ API для этого не нужен: выдачу открывает браузер, нажимает
-    расширение. Скиллы друг друга не импортируют — только зовут по имени.
+    Фразы про видео жили в скилле youtube, а владелец его удалил. Забрать их
+    было обязательно: «открой видео Мегамозг» иначе снова достаётся шаблону
+    «открой {program}» из запуска программ — а это ровно тот случай, когда голос
+    вызвал запрос прав администратора.
     """
     manager, registry, _ = loaded
     await manager.start()
     fake = sys.modules["jarvis_skills.browser"]
+    monkeypatch.setattr(sys.modules["jarvis_skills.page"], "SEARCH_DELAY", 0)
+    monkeypatch.setattr(
+        fake, "TARGET", {"tabId": 7, "url": "https://example.com/", "title": "Ничего"}
+    )
+    monkeypatch.setitem(
+        fake.SITE_TARGETS,
+        "ютуб",
+        {"tabId": 5, "url": "https://www.youtube.com/", "title": "YouTube"},
+    )
     fake.CALLS.clear()
-    fake.CONTROLS.clear()
-    fake.TARGET["url"] = "https://www.youtube.com/results?search_query=мегамозг"
-    fake.REPLIES[:] = [{"done": "click", "detail": "Мегамозг, трейлер"}]
+    fake.REPLIES[:] = [
+        {"done": None},
+        {"done": None},
+        {"done": "item", "detail": "мегамозг", "played": True},
+    ]
 
-    result = await registry.invoke("youtube.play_video", {"query": "трейлер мегамозг"})
+    result = await registry.invoke("page.play_video", {"track": "трейлер мегамозг"})
 
     assert result.ok
-    assert result.speech_for("ru").startswith("Включаю")
-    assert [call[0] for call in fake.CALLS] == ["search", "target", "run"]
-    assert fake.CALLS[0][2] == "youtube"
-    fake.TARGET["url"] = "https://music.yandex.ru/home"
-    await manager.stop()
-
-
-async def test_youtube_does_not_promise_what_it_did_not_do(loaded) -> None:
-    """Не нажалось — значит открыта только выдача, так и надо сказать.
-
-    Обещать «включаю», когда играть нечего, — ровно то, чем провинился
-    свободный разговор: слова вместо дела.
-    """
-    manager, registry, _ = loaded
-    await manager.start()
-    fake = sys.modules["jarvis_skills.browser"]
-    fake.CALLS.clear()
-    fake.CONTROLS.clear()
-    fake.REPLIES.clear()
-
-    result = await registry.invoke("youtube.play_video", {"query": "трейлер мегамозг"})
-
-    assert result.ok
-    assert "Нашёл на Ютубе" in result.speech_for("ru")
+    assert ("open", "ютуб") in fake.CALLS, "музыкальный сайт тут не при чём"
+    kinds = [call[0] for call in fake.CALLS]
+    assert fake.CALLS[kinds.index("go")][1].startswith("https://www.youtube.com/results")
     await manager.stop()
 
 

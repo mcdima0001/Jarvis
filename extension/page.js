@@ -177,6 +177,12 @@ async function jarvisRunPlan(plan) {
       if (!caption_ || caption_.length > 200) {
         continue;
       }
+      // Голый адрес — не название. На странице с текстом прошлого разговора
+      // ссылка «youtube.com/results?search_query=dua+lipa+-+break+my+heart»
+      // содержала все слова просьбы и «совпала» лучше любого трека.
+      if (/^https?:\/\/\S+$/.test(caption_)) {
+        continue;
+      }
       const label = spaced(caption_);
       // Запрет сильнее совпадения: «не нравится» содержит «нравится» целиком,
       // и без этой проверки лайк превращается в дизлайк.

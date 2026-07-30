@@ -86,6 +86,10 @@ class VoicePipeline:
         #: Что произнесли последним. Нужно `--say`: реплику выбирает персона, и
         #: угадать её со стороны нельзя — напечатали бы не то, что сказали.
         self.last_reply = ""
+        #: Не озвучивать вовсе. Пропустить сервис синтеза недостаточно: голоса
+        #: грузятся лениво, при первом обращении, и `--no-voice` всё равно
+        #: поднимал модель — просто позже и молча, уже после ответа.
+        self.silent = False
         self._follow_up_until = 0.0
         self._speaking = False
         self._mute_until = 0.0
@@ -190,6 +194,11 @@ class VoicePipeline:
         # приходится как раз расхождение между ними.
         logger.info("Отвечаю: %s", text)
         self.last_reply = text
+        if self.silent:
+            # Голос выключен целиком: реплика уже в логе, а трогать синтез
+            # нельзя — он загрузит модель при первом же обращении.
+            self._events.emit(AssistantReplied(source="voice", text=text, spoken=False))
+            return
         self._speaking = True
         spoken = True
         try:

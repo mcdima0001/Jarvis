@@ -245,6 +245,10 @@ class JarvisApp:
         """
         _quiet_broken_connections()
         skip = {name for name, needed in ((EARS, ears), (VOICE, voice)) if not needed}
+        # Пропустить сервис синтеза недостаточно: голоса грузятся лениво, при
+        # первом обращении, и без этого флага `--no-voice` всё равно поднимал
+        # модель — просто позже и молча, уже после напечатанного ответа.
+        self.pipeline.silent = not voice
         await self.runner.start_all(without=skip)
         self.models_loaded = ears and voice
 

@@ -796,9 +796,10 @@ class PageSkill(Skill):
         self._seconds = float(self.context.setting("seek_seconds", 15))
         self._volume_step = float(self.context.setting("volume_step", 0.1))
         self._section = str(self.context.setting("memory_section", "sites"))
-        #: Где искать музыку, если открытый сайт искать не умеет. «Включи трек X»
-        #: — про музыку, и уводить такую просьбу на ютуб неверно.
+        #: Где искать, если открытый сайт искать не умеет. «Включи трек X» — про
+        #: музыку, «включи видео X» — про ролики, и путать их нельзя.
         self._music_site = str(self.context.setting("music_site", "яндекс музыка"))
+        self._video_site = str(self.context.setting("video_site", "ютуб"))
         #: Выученное читается из памяти один раз и обновляется при записи.
         self._known: dict[str, Any] | None = None
         #: Что нажали последним — это и отменяет «не сохраняй в память».
@@ -965,6 +966,12 @@ class PageSkill(Skill):
         :param track: название, как оно написано в списке.
         :param site: на каком сайте; пусто — там, куда смотришь.
         """
+        return await self._play(track, site=site, fallback=self._music_site)
+
+    async def _play(self, track: str, *, site: str, fallback: str) -> ToolResult:
+        """Включить названное. Отличие трека от ролика — только в том, куда
+        отступать, если открытый сайт искать не умеет.
+        """
         names = label_variants(track)
         if not names:
             return ToolResult.failure(
@@ -984,10 +991,35 @@ class PageSkill(Skill):
             extra=[{"item": names, "hint": list(PLAY_HINTS), "play": True}],
             search=name,
             # Открытый сайт искать не умеет (или браузера нет вовсе) — значит
-            # ищем там, где музыка и живёт.
-            otherwise=lambda: self._on_music_site(names, speech),
+            # идём туда, где это и живёт.
+            otherwise=lambda: self._elsewhere(fallback, names, speech),
             speech=speech,
         )
+
+    # Фразы про видео жили в скилле youtube, а он удалён владельцем 30.07.2026
+    # («он не нужен»). Забрать их обязательно: «открой видео Мегамозг» иначе
+    # снова достаётся шаблону «открой {program}» из запуска программ — а это
+    # ровно тот случай, когда голос вызвал запрос прав администратора.
+    #
+    # В каталог для модели не идёт: «включи X» решает открытый сайт (см.
+    # `play_item`), а тут про видео сказано прямо.
+    @tool(routable=False,
+          phrases=["включи видео {track}", "открой видео {track}",
+                   "включи трейлер {track}", "открой трейлер {track}",
+                   "включи видео {track} на сайте", "открой видео {track} на сайте",
+                   "включи в ютубе {track}", "открой в ютубе {track}",
+                   "поставь {track} на ютубе",
+                   "play {track} on youtube", "open the video {track}"])
+    async def play_video(self, track: str, site: str = "") -> ToolResult:
+        """Включить названный ролик: на открытом видеосайте или в его поиске.
+
+        То же, что `play_item`, но отступать некуда иначе: про видео сказано
+        прямо, и уводить такую просьбу на музыкальный сайт неверно.
+
+        :param track: название ролика.
+        :param site: на каком сайте; пусто — там, куда смотришь.
+        """
+        return await self._play(track, site=site, fallback=self._video_site)
 
     @tool(phrases=["введи в поиск {text}", "введи {text} в поиск",
                    "введи в поиск на сайте {text}", "найди на странице {text}",
@@ -1215,6 +1247,23 @@ class PageSkill(Skill):
         host = host_of(str(target.get("url", "")))
 
         steps = self._plan(action, host, seconds=seconds, extra=extra)
+
+        # На сайте, где искать нечем, и на странице делать нечего.
+        #
+        # Живой случай, стоивший двух заходов: открыта была веб-панель, а в ней
+        # висел текст прошлого разговора — вместе со ссылкой
+        # «youtube.com/results?search_query=dua+lipa+-+break+my+heart». Слова
+        # просьбы в ней нашлись все, ссылка «совпала», Jarvis её нажал и честно
+        # доложил «нашёл, но не заиграло». Музыкальный сайт при этом стоял
+        # рядом открытым и не получил ни одной команды.
+        #
+        # Признак прямой: `search` заполняют только просьбы «включи названное», а
+        # `search_url_for` знает, у каких сайтов есть своя выдача. Нет её — сайт
+        # не про музыку и не про видео, и сравнивать названия на нём незачем.
+        if search and otherwise is not None and not search_url_for(host, search):
+            self.log.info("На %s искать нечем — на странице даже не смотрю", host or "этой странице")
+            return await otherwise()
+
         result = await self._run(steps, tab)
         if search and (result is None or silent(result)):
             # Нашлось не то или заиграть не смогло — поищем на самом сайте.
@@ -1305,30 +1354,29 @@ class PageSkill(Skill):
             self.log.info("На странице видно: %s", "; ".join(str(item) for item in saw))
         return None
 
-    async def _on_music_site(
-        self, names: Sequence[str], speech: Mapping[str, Sequence[str]]
+    async def _elsewhere(
+        self, site: str, names: Sequence[str], speech: Mapping[str, Sequence[str]]
     ) -> ToolResult:
-        """Искать на музыкальном сайте: на открытом искать оказалось нечем.
+        """Искать на своём сайте: на открытом искать оказалось нечем.
 
         Сюда попадают случаи, где текущий сайт не умеет искать — или браузер
-        вообще закрыт. Раньше просьба уходила ютубу, и это была ошибка: «включи
-        **трек** Dua Lipa» с открытым посторонним сайтом включало клип на ютубе,
-        хотя слово «трек» сказано прямо и Яндекс Музыка была открыта рядом.
+        вообще закрыт. Сначала тут был жёстко ютуб, и это была ошибка: «включи
+        **трек** Dua Lipa» с открытым посторонним сайтом включало клип, хотя
+        слово «трек» сказано прямо и Яндекс Музыка была открыта рядом.
 
-        Правило простое: где искать музыку, ассистент знает и без подсказки —
-        это `music_site` из конфига. Сайт сначала открывается (без его вкладки
-        искать негде), а дальше всё как обычно: не нашлось на странице — идём в
-        поиск сайта. Про видео есть свои фразы, и они ведут на ютуб.
+        Куда идти, решает вызывающий: `music_site` для трека, `video_site` для
+        ролика. Сайт сначала открывается (без его вкладки искать негде), а дальше
+        всё как обычно: не нашлось на странице — идём в поиск сайта.
         """
         name = names[0]
-        if not self._music_site:
+        if not site:
             return self._nothing(f"item:{name}")
 
-        self.log.info("На открытом сайте искать нечем — ищу %r на %s", name, self._music_site)
+        self.log.info("На открытом сайте искать нечем — ищу %r на %s", name, site)
         if self.tools.has("browser.open_site"):
-            # Без вкладки музыкального сайта искать негде, а открытая заодно
-            # означает, что владелец увидит результат.
-            opened = await self.tools.invoke("browser.open_site", {"site": self._music_site})
+            # Без вкладки нужного сайта искать негде, а открытая заодно означает,
+            # что владелец увидит результат.
+            opened = await self.tools.invoke("browser.open_site", {"site": site})
             if not opened.ok:
                 return opened
 
@@ -1336,7 +1384,7 @@ class PageSkill(Skill):
         # бы круг из «искать негде» в самого себя.
         return await self._act(
             f"item:{name}",
-            site=self._music_site,
+            site=site,
             extra=[{"item": list(names), "hint": list(PLAY_HINTS), "play": True}],
             search=name,
             speech=speech,

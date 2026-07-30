@@ -667,6 +667,21 @@ check("нет верхнего результата — сравниваем н�
   assert(row.clicked === 1, "строка не нажата");
 });
 
+check("голый адрес не считается названием", async () => {
+  // Живой случай: на странице висел текст прошлого разговора, а в нём ссылка
+  // с запросом. Слова просьбы нашлись в ней все, и она «совпала» лучше трека.
+  const link = element({
+    tag: "a",
+    attributes: { "aria-label": "https://www.youtube.com/results?search_query=dua+lipa+-+break+my+heart" },
+  });
+  const api = load(makeDocument({ controls: [link] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["dua lipa break my heart"], play: true }]);
+
+  assert(result.done === null, "нажалась ссылка из текста");
+  assert(link.clicked === 0, "нажалась ссылка из текста");
+});
+
 check("кнопка без подписи находится по атрибутам", async () => {
   // На многих плеерах в строке только иконка, подписи нет вовсе.
   const play = element({ attributes: { "data-test-id": "PLAY_BUTTON" } });
