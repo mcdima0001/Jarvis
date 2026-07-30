@@ -57,8 +57,11 @@ MEDIA_ACTIONS = frozenset(
 )
 
 #: Глаголы шага. Список закрытый: чего тут нет, того странице не отправить.
-#: У `type` значение — строка (что напечатать), у остальных — список.
-STEP_VERBS = ("media", "label", "click", "item", "type")
+#: У `type` и `scroll` значение — строка, у остальных — список.
+STEP_VERBS = ("media", "label", "click", "item", "type", "scroll")
+
+#: Куда листать страницу. Тоже закрытый список — это данные, не код.
+SCROLL_WAYS = frozenset({"up", "down", "top", "bottom"})
 
 #: Как называется кнопка воспроизведения внутри строки трека. Нужно шагу
 #: `item`: нажатие по самой строке трек только выбирает, играть начинает она.
@@ -367,6 +370,45 @@ def host_of(url: str) -> str:
     return host.split("@")[-1].split(":")[0].removeprefix("www.")
 
 
+#: Куда листать: как сказали → что отправить странице. Русские слова сравниваются
+#: началом, поэтому «вверх», «наверх» и «вверху» попадают в одно и то же.
+_SCROLL_WORDS: tuple[tuple[str, str], ...] = (
+    ("начало", "top"),
+    ("верхн", "top"),
+    ("самый низ", "bottom"),
+    ("самое низ", "bottom"),
+    ("конец", "bottom"),
+    ("вверх", "up"),
+    ("наверх", "up"),
+    ("выше", "up"),
+    ("up", "up"),
+    ("top", "top"),
+    ("вниз", "down"),
+    ("ниже", "down"),
+    ("down", "down"),
+    ("bottom", "bottom"),
+)
+
+#: Что сказать вслух про листание.
+SCROLL_SPEECH: dict[str, tuple[str, str]] = {
+    "up": ("Пролистал вверх.", "Scrolled up."),
+    "down": ("Пролистал вниз.", "Scrolled down."),
+    "top": ("В начале страницы.", "At the top."),
+    "bottom": ("В конце страницы.", "At the bottom."),
+}
+
+
+def scroll_way(spoken: str) -> str:
+    """Понять, куда листать. Пусто — не понял."""
+    text = " ".join(str(spoken).split()).lower().strip(" «»\"'`.,!?")
+    if text in SCROLL_WAYS:
+        return text
+    for word, way in _SCROLL_WORDS:
+        if word in text:
+            return way
+    return "down" if not text else ""
+
+
 def origin_of(url: str) -> str:
     """Главная страница сайта: схема и домен без пути.
 
@@ -444,6 +486,11 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 number = step.get(extra)
                 if isinstance(number, (int, float)) and not isinstance(number, bool):
                     clean[extra] = float(number)
+        elif verb == "scroll":
+            where = str(step["scroll"]).strip().lower()
+            if where not in SCROLL_WAYS:
+                continue
+            clean = {"scroll": where}
         elif verb == "type":
             # Печатать — это текст, а не список. Он уходит в значение поля, то
             # есть в содержимое страницы: выполнить его нельзя ничем.
@@ -875,6 +922,36 @@ class PageSkill(Skill):
             speech=(f"Ввёл: {typed}.", f"Typed: {typed}."),
         )
 
+    # Направление обязано быть в шаблоне, иначе «пролистай вверх» и «пролистай
+    # вниз» — одна и та же фраза с одним и тем же аргументом по умолчанию.
+    @tool(phrases=["пролистай {where}", "пролистай страницу {where}",
+                   "прокрути {where}", "прокрути страницу {where}",
+                   "листай {where}", "в {where} страницы",
+                   "scroll {where}", "scroll the page {where}"])
+    async def scroll_page(self, where: str = "down", site: str = "") -> ToolResult:
+        """Пролистать страницу вверх, вниз, в самое начало или в конец.
+
+        Кнопки для этого нет ни на одном сайте, поэтому и отдельная команда.
+        Живой случай: «пролистай страницу вверх» модель разобрала как перемотку
+        назад — из всего каталога это было самое близкое.
+
+        :param where: куда: вверх, вниз, в начало, в конец.
+        :param site: на каком сайте; пусто — там, куда смотришь.
+        """
+        way = scroll_way(where)
+        if not way:
+            return ToolResult.failure(
+                f"не понял, куда листать: {where!r}",
+                speech={"ru": "Не понял, куда листать.", "en": "I didn't catch which way."},
+            )
+        return await self._act(
+            f"scroll:{way}",
+            site=site,
+            focused=True,
+            extra=[{"scroll": way}],
+            speech=SCROLL_SPEECH[way],
+        )
+
     @tool(phrases=["перейди на главную", "перейди на главную страницу",
                    "открой главную страницу", "вернись на главную",
                    "нажми на логотип", "нажми на лого", "нажми логотип",
@@ -1143,20 +1220,19 @@ class PageSkill(Skill):
             return None
         self.log.info("На странице %r не нашлось — открыл поиск сайта: %s", query, url)
 
-        # Нажали, но тишина — это ещё не ответ: строка могла остаться от прежней
-        # страницы. Поэтому попытки продолжаются, а последняя молчаливая
-        # сохраняется: сказать «нашёл, но не заиграло» честнее, чем «не нашёл».
-        quiet: dict[str, Any] | None = None
+        # Повторяем только пока **не нашли**: выдача дорисовывается скриптом уже
+        # после события загрузки, и первые попытки честно натыкаются на пустоту.
+        # А вот «нашли, но тишина» повторять нечего: строка на месте, все способы
+        # включить её уже перебраны внутри страницы, и второй круг — это ещё
+        # столько же нажатий впустую. Живой случай: четыре круга по два с
+        # лишним секунды складывались в 18 с на одну команду.
         for attempt in range(SEARCH_ATTEMPTS):
             if attempt:
                 await asyncio.sleep(SEARCH_DELAY)
             result = await self._run(steps, tab)
-            if result is None:
-                continue
-            if not silent(result):
+            if result is not None:
                 return result
-            quiet = result
-        return quiet
+        return None
 
     async def _learn_action(
         self, action: str, *, tab: int, host: str, title: str, want: str

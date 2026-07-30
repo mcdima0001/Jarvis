@@ -21,7 +21,8 @@
 /**
  * Выполнить план в текущей странице.
  *
- * @param {Array<Object>} plan шаги-варианты: {media}, {label}, {click}.
+ * @param {Array<Object>} plan шаги-варианты: {media}, {label}, {click}, {item},
+ *   {type}, {scroll}.
  * @returns {Promise<Object>} что сработало: {done, detail, title, url}.
  */
 async function jarvisRunPlan(plan) {
@@ -208,6 +209,33 @@ async function jarvisRunPlan(plan) {
   };
 
   /**
+   * Пролистать страницу.
+   *
+   * Кнопки для этого нет ни на одном сайте, а просьба обычная. Живой случай:
+   * «пролистай страницу вверх» модель разобрала как перемотку назад — из всего
+   * каталога это было самое близкое.
+   */
+  const scrollPage = (step) => {
+    const where = String(step.scroll || "").toLowerCase();
+    const height = window.innerHeight || 600;
+    const moves = {
+      down: [0, height * 0.9],
+      up: [0, -height * 0.9],
+      top: [0, -1e7],
+      bottom: [0, 1e7],
+    };
+    const move = moves[where];
+    if (!move) {
+      return null;
+    }
+    const before = window.scrollY;
+    window.scrollBy({ left: move[0], top: move[1], behavior: "instant" });
+    // Страница могла быть уже в самом низу — тогда листать было нечего, и это
+    // не успех: пусть план идёт дальше, вдруг у сайта своя кнопка.
+    return window.scrollY === before && where !== "top" && where !== "bottom" ? null : where;
+  };
+
+  /**
    * Напечатать текст в поле на странице — например в поиск сайта.
    *
    * Это **не** эмуляция клавиатуры на уровне системы: текст кладётся в
@@ -310,31 +338,58 @@ async function jarvisRunPlan(plan) {
     return text;
   };
 
-  /** Идёт ли звук прямо сейчас. Успех «включи» измеряется этим, а не нажатием. */
-  const sounding = () => players().some((item) => !item.paused && !item.ended);
+  /**
+   * Идёт ли звук прямо сейчас. Успех «включи» измеряется этим, а не нажатием.
+   *
+   * Спрашивается у **всех** плееров страницы, а не у тех, что прошли фильтр
+   * `players()`. Это не мелочь: тот фильтр требует `readyState`, длительности
+   * или сдвинутого времени, а свежесозданный плеер ничего этого ещё не имеет —
+   * и «уже играет» читалось как тишина. Ровно на этом Jarvis нажимал трек,
+   * не верил, что получилось, и шёл тыкать дальше.
+   *
+   * `muted` тоже считается тишиной: на YouTube наведение мыши запускает беззвучный
+   * предпросмотр ролика, а наведение — как раз то, что делает `playItem`.
+   */
+  const sounding = () =>
+    Array.from(document.querySelectorAll("video, audio")).some(
+      (item) => !item.paused && !item.ended && !item.muted,
+    );
 
   /**
    * Дождаться звука.
    *
    * Плеер запускается не мгновенно: сайт успевает сходить за ссылкой на файл.
-   * Проверять сразу после нажатия бессмысленно — тишина ничего не значит.
+   * Проверять сразу после нажатия бессмысленно — тишина ничего не значит. Но и
+   * ждать долго нельзя: расширение держит ответ, а у команды есть свой предел.
    */
   const awaitSound = async (limit) => {
-    for (let waited = 0; waited < limit; waited += 200) {
+    for (let waited = 0; waited < limit; waited += 100) {
       if (sounding()) {
         return true;
       }
-      await new Promise((done) => setTimeout(done, 200));
+      await new Promise((done) => setTimeout(done, 100));
     }
     return sounding();
   };
 
-  /** Что было рядом: подписи и устойчивые признаки. Это данные для лога. */
+  /**
+   * Что было рядом: подписи и признаки. Это данные для лога, по которым потом
+   * пишется рецепт сайта.
+   *
+   * Из классов берётся один, и не первый попавшийся: сборка склеивает их
+   * десятками (`uwk3hf… IlG7b1… HbaqudSq… undefined …`), и такой «селектор»
+   * бесполезен. Класс с двойным подчёркиванием — это имя из CSS-модуля
+   * (`PlayButtonWithPosition_playButton__7cfDQ`), единственное осмысленное.
+   */
   const listOf = (elements) =>
-    elements.slice(0, 8).map((item) => ({
-      name: caption(item).slice(0, 40),
-      sel: item.getAttribute("data-test-id") || item.getAttribute("class") || "",
-    }));
+    elements.slice(0, 8).map((item) => {
+      const classes = String(item.getAttribute("class") || "").split(/\s+/);
+      const telling = classes.find((name) => name.includes("__")) || classes[0] || "";
+      return {
+        name: caption(item).slice(0, 40),
+        sel: item.getAttribute("data-test-id") || telling,
+      };
+    });
 
   /**
    * Включить названное: трек в списке, ролик в подборке.
@@ -364,19 +419,36 @@ async function jarvisRunPlan(plan) {
     // love oliver nelson & tobtok remix… midnight city… the reason…».
     const found = bestMatch(ITEMS, wanted, [], true);
     if (!found) {
-      // Ничего не совпало. Расскажем, что вообще видно на странице: по этому
-      // списку сразу понятно, дело в названии или страница ещё не дорисовалась.
-      const saw = [];
+      // Ничего не совпало. Расскажем, что было **ближе всего** к просьбе, а не
+      // что попалось первым: первыми на странице стоят пункты бокового меню
+      // («главная; поиск; моя волна…»), и такой список не говорил ни о чём.
+      // По ближайшим сразу видно, дело в услышанном названии или выдача ещё не
+      // дорисовалась и сравнивать было не с чем.
+      // Мера тут своя, без порога: для отчёта важно даже одно общее слово, а
+      // для нажатия его мало. С порогом список опять уехал бы в меню — у всех
+      // пунктов ноль, а «поиск» ещё и короче остальных.
+      const nearness = (label) =>
+        Math.max(
+          ...wanted.map((word) => {
+            if (hits(label, word)) {
+              return 1;
+            }
+            const words = keywords(word);
+            return words.length
+              ? words.filter((one) => hits(label, one)).length / words.length
+              : 0;
+          }),
+        );
+
+      const near = [];
       for (const element of document.querySelectorAll(ITEMS)) {
-        if (saw.length >= 8) {
-          break;
-        }
         const text = seen(element) ? caption(element) : "";
-        if (text && text.length <= 60 && !saw.includes(text)) {
-          saw.push(text);
+        if (text && text.length <= 60 && !near.some((item) => item.text === text)) {
+          near.push({ text, rank: nearness(spaced(text)) });
         }
       }
-      return { saw };
+      near.sort((first, second) => second.rank - first.rank || first.text.length - second.text.length);
+      return { saw: near.slice(0, 8).map((item) => item.text) };
     }
 
     // Кнопка воспроизведения прячется до наведения, поэтому видимость у неё
@@ -428,14 +500,19 @@ async function jarvisRunPlan(plan) {
       return { detail, buttons: listOf(nearby) };
     }
 
-    if (pressed && (await awaitSound(1500))) {
+    // Пределы ожидания короткие намеренно. `paused` переключается сразу, как
+    // только сайт вызвал play(), то есть ждём не загрузку трека, а обработчик
+    // нажатия. А расширение всё это время держит ответ, и у команды есть свой
+    // предел: с секундными паузами на каждый шаг одна команда занимала 18 с и
+    // упиралась в «расширение не ответило».
+    if (pressed && (await awaitSound(700))) {
       return { detail, played: true };
     }
 
     // Кнопка не помогла или её не было — нажимаем саму строку. Нажатие могло
     // только выбрать трек, поэтому потом дожимаем плеер руками.
     found.click();
-    if (await awaitSound(1500)) {
+    if (await awaitSound(700)) {
       return { detail, played: true };
     }
     const target = mainPlayer();
@@ -446,7 +523,7 @@ async function jarvisRunPlan(plan) {
         // Автозапуск запрещён — но строку мы всё-таки нажали.
       }
     }
-    const played = await awaitSound(600);
+    const played = await awaitSound(400);
     // Звука так и нет — расскажем, что было рядом. По этому списку в логе
     // пишется точный рецепт сайта, без угадывания.
     return played ? { detail, played } : { detail, played, buttons: listOf(nearby) };
@@ -490,6 +567,11 @@ async function jarvisRunPlan(plan) {
         const detail = await media(step.media, step);
         if (detail) {
           return answer("media", detail);
+        }
+      } else if (typeof step.scroll === "string") {
+        const where = scrollPage(step);
+        if (where) {
+          return answer("scroll", where);
         }
       } else if (typeof step.type === "string") {
         const typed = typeInto(step);

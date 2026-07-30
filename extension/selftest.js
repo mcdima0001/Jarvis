@@ -163,6 +163,14 @@ function load(document) {
   const sandbox = {
     document,
     location: { href: "https://example.com/track" },
+    // Прокрутка: столько, сколько нужно шагу `scroll`.
+    window: {
+      innerHeight: 600,
+      scrollY: 100,
+      scrollBy(shift) {
+        this.scrollY = Math.max(0, Math.min(5000, this.scrollY + shift.top));
+      },
+    },
     getComputedStyle: () => ({ visibility: "visible", display: "block", opacity: "1" }),
     // Время тут ни при чём: page.js ждёт, пока сайт запустит плеер, а в
     // подделке он либо запускается сразу, либо не запускается вовсе. Ждать
@@ -393,6 +401,67 @@ check("название не нашлось — рассказываем, что
 
   assert(result.done === null, "нажалось не то");
   assert(result.saw && result.saw.includes("трек something else"), "не видно, что было на странице");
+});
+
+check("в списке видимого — самое близкое, а не самое первое", async () => {
+  // Живой случай: первыми на Яндекс Музыке стоят пункты меню, и в лог уезжало
+  // «главная; поиск; моя волна…» — по такому списку сказать нечего.
+  const menu = ["Главная", "Поиск", "Моя волна", "Концерты", "Коллекция"].map((name) =>
+    element({ attributes: { "aria-label": name } }),
+  );
+  const track = element({ attributes: { "aria-label": "Волшебная — Нервы" } });
+  const api = load(makeDocument({ controls: [...menu, track] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["нервы волшебные"], play: true }]);
+
+  assert(result.done === null, "совпадения тут и не должно быть");
+  assert(result.saw[0] === "волшебная — нервы", `в начале списка ${result.saw[0]}`);
+});
+
+check("уже играет — второй раз не тыкаем", async () => {
+  // Живой случай: плеер запускался, но проверка его не видела — фильтр
+  // «настоящих плееров» требует длительности, а свежесозданной её ещё нет.
+  const audio = { tag: "audio", paused: true, ended: false, muted: false, readyState: 0,
+                  duration: 0, currentTime: 0, played: 0,
+                  getBoundingClientRect: () => ({ width: 0, height: 0 }),
+                  async play() { this.played += 1; this.paused = false; },
+                  pause() { this.paused = true; } };
+  const play = element({ attributes: { "aria-label": "Воспроизвести" }, starts: audio });
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" }, children: [play] });
+  const api = load(makeDocument({ controls: [row], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["волшебная"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === true, "звук пошёл, а проверка его не увидела");
+  assert(row.clicked === 0, "по строке нажимать было незачем — уже играет");
+  assert(audio.played === 0, "плеер дожимать было незачем");
+});
+
+check("беззвучный предпросмотр за звук не считается", async () => {
+  // На YouTube наведение мыши запускает беззвучный ролик, а наведение — как
+  // раз то, что делает шаг item.
+  const preview = player({ paused: false, muted: true });
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" } });
+  const api = load(makeDocument({ controls: [row], players: [preview] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["волшебная"], play: true }]);
+
+  assert(result.played === false, "беззвучное видео сошло за успех");
+});
+
+check("страница листается", async () => {
+  const api = load(makeDocument({}));
+  const result = await api.jarvisRunPlan([{ scroll: "down" }]);
+  assert(result.done === "scroll", `ожидался scroll, пришло ${result.done}`);
+  assert(result.detail === "down", "направление потерялось");
+});
+
+check("незнакомое направление листания пропускается", async () => {
+  const api = load(makeDocument({}));
+  const result = await api.jarvisRunPlan([{ scroll: "боком" }]);
+  assert(result.done === null, "листать боком мы не умеем");
 });
 
 check("без кнопки нажимается строка и дожимается плеер", async () => {

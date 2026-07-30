@@ -243,9 +243,10 @@ async def test_clicked_but_silent_is_not_a_success(loaded, monkeypatch) -> None:
 
     assert not result.ok, "тишина — это не успех"
     assert "не началось" in (result.error or "")
-    # Молчаливая попытка не останавливает поиск: строка могла остаться от
-    # прежней страницы, поэтому ищем на сайте и пробуем ещё раз.
-    assert [call[0] for call in fake.CALLS].count("run") == page.SEARCH_ATTEMPTS + 1
+    # Круг ровно один: не нашли на странице — поискали на сайте. Дальше
+    # повторять нечего, строка найдена, и все способы включить её страница уже
+    # перебрала. Второй круг — это столько же нажатий впустую.
+    assert [call[0] for call in fake.CALLS] == ["target", "run", "go", "run"]
     await manager.stop()
 
 
@@ -281,6 +282,55 @@ async def test_home_goes_in_the_same_tab(loaded) -> None:
     assert [call[0] for call in fake.CALLS] == ["target", "go"]
     assert fake.CALLS[1][1] == "https://music.yandex.ru/"
     assert fake.CALLS[1][2] == fake.TARGET["tabId"], "вкладка та же"
+    await manager.stop()
+
+
+@pytest.mark.parametrize(
+    ("spoken", "way"),
+    [
+        ("вверх", "up"),
+        ("страницу вверх", "up"),
+        ("вниз", "down"),
+        ("ниже", "down"),
+        ("начало", "top"),
+        ("конец", "bottom"),
+        ("в самый низ", "bottom"),
+        ("down", "down"),
+        ("боком", ""),
+    ],
+)
+def test_scroll_direction_is_understood(spoken: str, way: str) -> None:
+    """Куда листать — из услышанного, а не из значения по умолчанию.
+
+    Живой случай: «пролистай страницу вверх» модель разобрала как перемотку
+    назад — своей команды для листания не было вовсе.
+    """
+    assert page.scroll_way(spoken) == way
+
+
+def test_scroll_step_takes_only_known_directions() -> None:
+    """Направление — данные из закрытого списка, как и всё, что уходит в страницу."""
+    # В шаг уходит английское слово, как и у всех остальных глаголов: русское
+    # «вверх» превращает в него `scroll_way`, до плана дело ещё не дошло.
+    assert page.validate_plan([{"scroll": " Up "}]) == [{"scroll": "up"}]
+    assert page.validate_plan([{"scroll": "вверх"}]) == []
+    assert page.validate_plan([{"scroll": "куда-нибудь"}]) == []
+
+
+async def test_scroll_reaches_the_page(loaded) -> None:
+    """«Пролистай страницу вверх» уходит в ту вкладку, куда смотрят."""
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "scroll", "detail": "up"}]
+
+    result = await registry.invoke("page.scroll_page", {"where": "вверх"})
+
+    assert result.ok
+    assert result.speech_for("ru") == "Пролистал вверх."
+    assert fake.CALLS[0] == ("target", "", True), "листают там, куда смотрят"
+    assert fake.CALLS[1][1] == [{"scroll": "up"}]
     await manager.stop()
 
 
