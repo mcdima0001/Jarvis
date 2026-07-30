@@ -169,6 +169,9 @@ ACTIONS: dict[str, tuple[dict[str, Any], ...]] = {
     # нет и быть не может: у каждого сайта своя разметка выдачи, поэтому
     # работает по рецепту сайта либо по выученному.
     "first": (),
+    # Канал в выдаче. Тоже только по рецепту сайта: подписи у такого блока нет
+    # вовсе — там название канала, а оно у каждого своё.
+    "channel": (),
     # Строка поиска сайта. Подпись у неё почти всегда одна и та же, а рецепты
     # сайтов идут раньше — если у кого-то кнопка называется иначе.
     "search": (
@@ -201,6 +204,20 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
                     "ytd-video-renderer a#video-title",
                     "ytd-rich-item-renderer a#video-title-link",
                     "a#video-title",
+                ]
+            },
+        ),
+        # Канал в выдаче — свой блок, `ytd-channel-renderer`, и он там ровно
+        # один. Ссылка на автора ролика (`/@имя` в подписи под названием) идёт
+        # последней намеренно: она ведёт на канал того, кто выложил **верхний
+        # ролик**, а это не обязательно тот канал, который просили.
+        "channel": (
+            {
+                "click": [
+                    "ytd-channel-renderer a#main-link",
+                    "ytd-channel-renderer #channel-title",
+                    "ytd-channel-renderer a",
+                    'a[href^="/@"]',
                 ]
             },
         ),
@@ -707,6 +724,17 @@ def with_amount(plan: Sequence[Mapping[str, Any]], *, seconds: float, step: floa
 #: а в аргумент шаблона попадает: «нажми кнопку поделиться **на сайте**».
 _TAILS = ("на сайте", "на странице", "в браузере", "на этой странице", "тут", "здесь")
 
+#: Как договаривают, где искать канал: «найди канал MrLoloLoshka **в YouTube**».
+#:
+#: Сайт от этого хвоста не меняется — каналы живут на видеосайте, — а в
+#: название он попадает целиком и уезжает в строку поиска вместе с ним.
+#: Написаний много, потому что алфавит выбирает не владелец: Whisper пишет
+#: «в YouTube», «в Ютубе» и «в ютюбе» на одну и ту же фразу.
+_SITE_TAILS = (
+    "в ютубе", "на ютубе", "с ютуба", "в ютюбе", "на ютюбе",
+    "в youtube", "on youtube", "в юtube",
+)
+
 #: И как начинают: «нажми **кнопку** поделиться», «нажми **на** логотип».
 _HEADS = ("на кнопку", "кнопку", "кнопка", "иконку", "значок", "на")
 
@@ -727,6 +755,24 @@ def clean_text(spoken: str) -> str:
             text = text[: -len(tail) - 1].strip(" ,")
     # Кавычки снимаются ещё раз: закрывающая стоит перед хвостом, а не в конце
     # фразы — «введи в поиск «Don't Stop Me Now» на сайте».
+    return text.strip(" «»\"'`.,!?")
+
+
+def channel_name(spoken: str) -> str:
+    """Название канала: без кавычек и без «в ютубе» на конце.
+
+    Хвост снимается в два захода: между названием и «в ютубе» бывает запятая,
+    и после её отбрасывания открывается ещё одно написание.
+    """
+    text = clean_text(spoken)
+    for _ in range(2):
+        low = text.lower()
+        for tail in _SITE_TAILS:
+            if low.endswith(f" {tail}"):
+                text = text[: -len(tail) - 1].strip(" ,")
+                break
+        else:
+            break
     return text.strip(" «»\"'`.,!?")
 
 
@@ -1060,6 +1106,54 @@ class PageSkill(Skill):
         :param site: на каком сайте; пусто — там, куда смотришь.
         """
         return await self._play(track, site=site, fallback=self._video_site)
+
+    # Канал — не трек и не ролик: это страница автора, включать там нечего.
+    # Своя команда нужна ещё и потому, что без неё просьба доставалась кому
+    # угодно, и оба промаха видны в логе от 30.07.2026: «открой канал
+    # Лололошка» ушло в шаблон «открой {program}» («Не знаю программу канал,
+    # MRLULULOUSHKA»), а «найди канал MrLoloLoshka в YouTube» — в веб-поиск,
+    # который ходит в Википедию с DuckDuckGo и про ютуб не знает ничего.
+    #
+    # На странице канал не ищется вовсе, и это намеренно: на открытом ютубе
+    # роликов этого автора полно, и подбор по названию нашёл бы **ролик**. Нужна
+    # выдача — там у канала свой блок, ни с чем не путается.
+    @tool(phrases=["открой канал {name}", "найди канал {name}",
+                   "включи канал {name}", "перейди на канал {name}",
+                   "покажи канал {name}", "канал {name}",
+                   "open the channel {name}", "find the channel {name}",
+                   "go to the channel {name}"])
+    async def open_channel(self, name: str, site: str = "") -> ToolResult:
+        """Открыть канал автора на видеосайте: найти его в поиске сайта и перейти.
+
+        :param name: название канала, как его произносят.
+        :param site: на каком сайте; пусто — там, куда смотришь.
+        """
+        wanted = channel_name(name)
+        if not wanted:
+            return ToolResult.failure(
+                "не расслышал, какой канал",
+                speech={
+                    "ru": "Не понял, какой канал.",
+                    "en": "I didn't catch which channel.",
+                },
+            )
+        speech: dict[str, tuple[str, ...]] = {
+            "ru": (f"Открываю канал {wanted}.", f"Канал {wanted}, сейчас.",
+                   f"Иду на канал {wanted}."),
+            "en": (f"Opening the channel {wanted}.", f"{wanted}, coming up."),
+        }
+        return await self._act(
+            "channel",
+            site=site,
+            focused=True,
+            search=wanted,
+            # Открытый сайт искать не умеет (или браузера нет вовсе) — значит
+            # идём на видеосайт, где каналы и живут.
+            otherwise=lambda: self._elsewhere(
+                self._video_site, [wanted], speech, action="channel", extra=()
+            ),
+            speech=speech,
+        )
 
     @tool(phrases=["введи в поиск {text}", "введи {text} в поиск",
                    "введи в поиск на сайте {text}", "найди на странице {text}",
@@ -1432,7 +1526,13 @@ class PageSkill(Skill):
         return None
 
     async def _elsewhere(
-        self, site: str, names: Sequence[str], speech: Mapping[str, Sequence[str]]
+        self,
+        site: str,
+        names: Sequence[str],
+        speech: Mapping[str, Sequence[str]],
+        *,
+        action: str = "",
+        extra: Sequence[Mapping[str, Any]] | None = None,
     ) -> ToolResult:
         """Искать на своём сайте: на открытом искать оказалось нечем.
 
@@ -1442,12 +1542,23 @@ class PageSkill(Skill):
         слово «трек» сказано прямо и Яндекс Музыка была открыта рядом.
 
         Куда идти, решает вызывающий: `music_site` для трека, `video_site` для
-        ролика. Сайт сначала открывается (без его вкладки искать негде), а дальше
-        всё как обычно: не нашлось на странице — идём в поиск сайта.
+        ролика и для канала. Сайт сначала открывается (без его вкладки искать
+        негде), а дальше всё как обычно: не нашлось на странице — идём в поиск
+        сайта.
+
+        :param action: что делаем на том сайте; пусто — включаем названное.
+        :param extra: чем это делать; пусто — шаг `item` с дожатием плеера. У
+            канала он не нужен: включать там нечего, всё делает рецепт сайта.
         """
         name = names[0]
+        what = action or f"item:{name}"
+        steps = (
+            [{"item": list(names), "hint": list(PLAY_HINTS), "play": True}]
+            if extra is None
+            else list(extra)
+        )
         if not site:
-            return self._nothing(f"item:{name}")
+            return self._nothing(what)
 
         self.log.info("На открытом сайте искать нечем — ищу %r на %s", name, site)
         # Вкладку сайта открывает `page_target` — **в фоне**, если её нет.
@@ -1457,10 +1568,10 @@ class PageSkill(Skill):
         # Второй попытки не будет: `otherwise` тут не передаём, иначе получился
         # бы круг из «искать негде» в самого себя.
         return await self._act(
-            f"item:{name}",
+            what,
             site=site,
             open_missing=True,
-            extra=[{"item": list(names), "hint": list(PLAY_HINTS), "play": True}],
+            extra=steps,
             search=name,
             speech=speech,
         )

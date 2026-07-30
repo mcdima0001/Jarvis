@@ -1151,3 +1151,88 @@ async def test_site_correction_is_used(loaded, monkeypatch) -> None:
     # И после подсказки трек всё-таки ищется снова — иначе нажатие бессмысленно.
     assert "item" in plans[-1][0]
     await manager.stop()
+
+
+def test_channel_name_drops_the_site_tail() -> None:
+    """«Найди канал X в YouTube» — название канала тут X, а не «X в YouTube».
+
+    Сайт от хвоста не меняется (каналы живут на видеосайте), а в строку поиска
+    он уезжает вместе с названием. Алфавит выбирает не владелец: Whisper на одну
+    и ту же фразу пишет то «в YouTube», то «в Ютубе».
+    """
+    page = sys.modules["jarvis_skills.page"]
+
+    assert page.channel_name("MrLoloLoshka в YouTube") == "MrLoloLoshka"
+    assert page.channel_name("Лололошка, в Ютубе") == "Лололошка"
+    assert page.channel_name("«Лололошка» на ютубе") == "Лололошка"
+    # Своё «в» внутри названия трогать нельзя.
+    assert page.channel_name("Дом в лесу") == "Дом в лесу"
+
+
+async def test_channel_is_not_a_program(loaded) -> None:
+    """«Открой канал X» — это канал, а не программа.
+
+    Живой случай от 30.07.2026: фраза начиналась с «открой», её забирал шаблон
+    «открой {program}», и Jarvis отвечал «Не знаю программу канал,
+    MRLULULOUSHKA». А «найди канал …» доставалось веб-поиску, который ходит в
+    Википедию с DuckDuckGo и про ютуб не знает ничего.
+    """
+    from jarvis.core.contracts import Utterance
+    from jarvis.core.router import PhraseResolver
+
+    manager, registry, _ = loaded
+    await manager.start()
+    resolver = PhraseResolver(registry)
+
+    opened = await resolver.resolve(Utterance(text="открой канал Лололошка"))
+    found = await resolver.resolve(Utterance(text="найди канал MrLoloLoshka в YouTube"))
+
+    assert opened is not None and opened.tool == "page.open_channel"
+    assert opened.arguments["name"] == "Лололошка"
+    assert found is not None and found.tool == "page.open_channel"
+    await manager.stop()
+
+
+async def test_channel_is_looked_up_through_site_search(loaded, monkeypatch) -> None:
+    """Канал ищется в поиске видеосайта, а не подбором по открытой странице.
+
+    На открытом ютубе роликов этого автора полно, и подбор по названию нашёл бы
+    **ролик**. Нужна выдача: там у канала свой блок, ни с чем не путается.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "SEARCH_DELAY", 0)
+    monkeypatch.setattr(module, "SEARCH_OPEN_DELAY", 0)
+    monkeypatch.setattr(
+        fake, "TARGET", {"tabId": 7, "url": "https://example.com/", "title": "Ничего"}
+    )
+    monkeypatch.setitem(
+        fake.SITE_TARGETS,
+        "ютуб",
+        {"tabId": 5, "url": "https://www.youtube.com/", "title": "YouTube"},
+    )
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [
+        {"done": None},                                  # на главной канала нет
+        {"done": "label", "detail": "поиск"},            # нажали «Поиск»
+        {"done": "type", "detail": "Лололошка"},         # напечатали
+        {"done": "click", "detail": "MrLololoshka"},     # нажали блок канала
+    ]
+
+    result = await registry.invoke(
+        "page.open_channel", {"name": "Лололошка в ютубе"}
+    )
+
+    assert result.ok
+    # Вкладка ютуба открывается в фоне — выдёргивать владельца незачем.
+    assert ("target", "ютуб", False, True) in fake.CALLS
+    plans = [call[1] for call in fake.CALLS if call[0] == "run"]
+    # Печатается название без хвоста «в ютубе».
+    typed = [plan for plan in plans if "type" in plan[0]]
+    assert typed and typed[0][0]["type"] == "Лололошка"
+    # Подбора по названию среди шагов нет вовсе — только рецепт выдачи.
+    assert not [plan for plan in plans if any("item" in step for step in plan)]
+    assert "ytd-channel-renderer a#main-link" in plans[-1][0]["click"]
+    await manager.stop()
