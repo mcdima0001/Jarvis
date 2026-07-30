@@ -1201,6 +1201,7 @@ class PageSkill(Skill):
         soft: bool = False,
         focused: bool = False,
         search: str = "",
+        open_missing: bool = False,
         otherwise: Callable[[], Awaitable[ToolResult]] | None = None,
     ) -> ToolResult:
         """Выполнить действие в подходящей вкладке.
@@ -1241,7 +1242,7 @@ class PageSkill(Skill):
 
         # Вкладку узнаём заранее: без неё неизвестен сайт, а значит и рецепт.
         # Это один обмен по локальному сокету, зато дальше всё однозначно.
-        where = {"site": site, "active": focused}
+        where = {"site": site, "active": focused, "open_missing": open_missing}
         found = await self.tools.invoke("browser.page_target", where)
         if not found.ok and site and soft:
             self.log.info("Вкладки %r не нашлось — работаю с той, что звучит", site)
@@ -1404,18 +1405,16 @@ class PageSkill(Skill):
             return self._nothing(f"item:{name}")
 
         self.log.info("На открытом сайте искать нечем — ищу %r на %s", name, site)
-        if self.tools.has("browser.open_site"):
-            # Без вкладки нужного сайта искать негде, а открытая заодно означает,
-            # что владелец увидит результат.
-            opened = await self.tools.invoke("browser.open_site", {"site": site})
-            if not opened.ok:
-                return opened
-
+        # Вкладку сайта открывает `page_target` — **в фоне**, если её нет.
+        # Показывать музыкальный сайт незачем: владелец просил не выдёргивать его
+        # из того, чем он занят, и дело можно сделать молча.
+        #
         # Второй попытки не будет: `otherwise` тут не передаём, иначе получился
         # бы круг из «искать негде» в самого себя.
         return await self._act(
             f"item:{name}",
             site=site,
+            open_missing=True,
             extra=[{"item": list(names), "hint": list(PLAY_HINTS), "play": True}],
             search=name,
             speech=speech,

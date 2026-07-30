@@ -191,7 +191,7 @@ async def test_named_track_is_played_not_just_clicked(loaded) -> None:
     assert step["item"][0] == "midnight city"
     assert step["play"] is True and step["hint"], "нужна и подсказка, и дожим плеера"
     # Смотрят в одну вкладку, а играть может другая — берём ту, куда смотрят.
-    assert fake.CALLS[0] == ("target", "", True)
+    assert fake.CALLS[0] == ("target", "", True, False)
     await manager.stop()
 
 
@@ -289,7 +289,9 @@ async def test_track_goes_to_the_music_site_not_youtube(loaded, monkeypatch) -> 
 
     assert result.ok
     kinds = [call[0] for call in fake.CALLS]
-    assert ("open", "яндекс музыка") in fake.CALLS, "музыкальный сайт нужно открыть"
+    assert ("target", "яндекс музыка", False, True) in fake.CALLS, (
+        "вкладку музыкального сайта надо запросить, разрешив открыть её в фоне"
+    )
     assert not any(call[0] == "search" for call in fake.CALLS), "ютуб тут не при чём"
     went = fake.CALLS[kinds.index("go")][1]
     assert went.startswith("https://music.yandex.ru/search")
@@ -406,7 +408,7 @@ async def test_scroll_reaches_the_page(loaded) -> None:
 
     assert result.ok
     assert result.speech_for("ru") == "Пролистал вверх."
-    assert fake.CALLS[0] == ("target", "", True), "листают там, куда смотрят"
+    assert fake.CALLS[0] == ("target", "", True, False), "листают там, куда смотрят"
     assert fake.CALLS[1][1] == [{"scroll": "up"}]
     await manager.stop()
 
@@ -610,9 +612,11 @@ class FakeBrowserSkill(Skill):
     meta = SkillMeta(name="browser", description="Подделка браузера")
 
     @tool(routable=False)
-    async def page_target(self, site: str = "", active: bool = False) -> ToolResult:
+    async def page_target(
+        self, site: str = "", active: bool = False, open_missing: bool = False
+    ) -> ToolResult:
         """Вкладка, к которой относится команда."""
-        CALLS.append(("target", site, active))
+        CALLS.append(("target", site, active, open_missing))
         if site and site in MISSING:
             return ToolResult.failure("нет подходящей вкладки")
         if site and site in SITE_TARGETS:
@@ -992,7 +996,7 @@ async def test_first_video_looks_where_you_look(loaded) -> None:
     result = await registry.invoke("page.open_first")
 
     assert result.ok
-    assert fake.CALLS[0] == ("target", "", True), "нужна вкладка в фокусе"
+    assert fake.CALLS[0] == ("target", "", True, False), "нужна вкладка в фокусе"
     assert fake.CALLS[1][1][0]["click"][0].startswith("ytd-video-renderer")
     fake.TARGET["url"] = "https://music.yandex.ru/home"
     await manager.stop()
@@ -1008,7 +1012,7 @@ async def test_pause_follows_the_sound(loaded) -> None:
 
     await registry.invoke("page.pause")
 
-    assert fake.CALLS[0] == ("target", "", False)
+    assert fake.CALLS[0] == ("target", "", False, False)
     await manager.stop()
 
 
@@ -1066,7 +1070,7 @@ async def test_video_goes_to_the_video_site(loaded, monkeypatch) -> None:
     result = await registry.invoke("page.play_video", {"track": "трейлер мегамозг"})
 
     assert result.ok
-    assert ("open", "ютуб") in fake.CALLS, "музыкальный сайт тут не при чём"
+    assert ("target", "ютуб", False, True) in fake.CALLS, "музыкальный сайт тут не при чём"
     kinds = [call[0] for call in fake.CALLS]
     assert fake.CALLS[kinds.index("go")][1].startswith("https://www.youtube.com/results")
     await manager.stop()

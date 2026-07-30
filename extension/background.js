@@ -83,7 +83,15 @@ async function openSocket() {
   socket = new WebSocket(url);
 
   socket.onopen = () => {
-    send({ event: "hello", agent: navigator.userAgent });
+    // Версия обязательна. Распакованное расширение браузер сам не перечитывает,
+    // и «я обновил код» с «в браузере новый код» — разные утверждения. Их
+    // расхождение уже стоило целого разбора: Jarvis объяснял поведение
+    // страницы, которого в загруженной версии просто не было.
+    send({
+      event: "hello",
+      agent: navigator.userAgent,
+      version: chrome.runtime.getManifest().version,
+    });
     keepalive = setInterval(() => send({ event: "keepalive" }), KEEPALIVE_MS);
   };
 
@@ -455,7 +463,14 @@ async function run(action, params) {
   if (action === "target") {
     // Какая вкладка попадёт под команду. Спрашивается заранее: не зная сайта,
     // Jarvis не знает и рецепта — чем на этом сайте нажимают «дальше».
-    const tab = await pickTab(params);
+    let tab = await pickTab(params);
+    if (!tab && params.open && isWebUrl(params.url)) {
+      // Вкладки нужного сайта нет — открываем **в фоне**. Владелец просил не
+      // выдёргивать его из того, чем он занят: «включи трек» не повод показывать
+      // ему музыкальный сайт, дело можно сделать и молча.
+      const opened = await chrome.tabs.create({ url: params.url, active: false });
+      tab = await arrived({ ...opened, url: "" }, "");
+    }
     if (!tab) {
       throw new Error("нет подходящей вкладки");
     }

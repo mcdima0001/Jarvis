@@ -365,13 +365,16 @@ class _FakeServer:
         return 1
 
 
-def _bridge(**kwargs):
+def _bridge(*, expect_version: str = "", **kwargs):
     """Мост поверх поддельного сервера."""
     import logging
 
     server = _FakeServer(**kwargs)
     bridge = browser._Extension(
-        server=server, logger=logging.getLogger("test-browser"), timeout=0.2
+        server=server,
+        logger=logging.getLogger("test-browser"),
+        timeout=0.2,
+        expect_version=expect_version,
     )
     server.bridge = bridge
     return bridge, server
@@ -432,6 +435,48 @@ async def test_search_opens_a_new_tab_when_the_site_is_closed() -> None:
     skill = _with_extension(bridge)
 
     assert await skill._go("https://www.google.com/search?q=x") is None
+
+
+async def test_stale_extension_is_reported_out_loud(caplog) -> None:
+    """Расхождение версий должно быть видно сразу, а не выясняться по логу.
+
+    Распакованное расширение браузер сам не перечитывает, поэтому «я обновил
+    код» и «в браузере новый код» — разные утверждения. Их расхождение стоило
+    целого разбора: Jarvis объяснял поведение страницы, которого в загруженной
+    версии просто не было, и понять это удалось только по отсутствию одного
+    поля в ответе.
+    """
+    import json as _json
+
+    bridge, _ = _bridge(expect_version="0.4.0")
+    with caplog.at_level("INFO", logger="test-browser"):
+        await bridge.on_message(_json.dumps({"event": "hello", "version": "0.3.0"}))
+
+    assert "Расширение старое" in caplog.text
+    assert "0.3.0" in caplog.text and "0.4.0" in caplog.text
+
+
+async def test_matching_version_says_nothing_extra(caplog) -> None:
+    """Совпали версии — обычная строка о готовности, без предупреждений."""
+    import json as _json
+
+    bridge, _ = _bridge(expect_version="0.4.0")
+    with caplog.at_level("INFO", logger="test-browser"):
+        await bridge.on_message(_json.dumps({"event": "hello", "version": "0.4.0"}))
+
+    assert "Расширение готово" in caplog.text
+    assert "старое" not in caplog.text
+
+
+def test_version_read_from_the_manifest(tmp_path) -> None:
+    """Версию берём из manifest.json — того самого файла, что грузит браузер."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"version": "1.2.3"}', encoding="utf-8")
+
+    assert browser.read_version(manifest) == "1.2.3"
+    assert browser.read_version(tmp_path / "нет.json") == ""
+    (tmp_path / "битый.json").write_text("{", encoding="utf-8")
+    assert browser.read_version(tmp_path / "битый.json") == ""
 
 
 async def test_error_from_extension_is_not_a_result() -> None:

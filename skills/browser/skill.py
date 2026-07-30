@@ -465,11 +465,22 @@ def running_browser(processes: list[str]) -> str | None:
 #: Куда Jarvis кладёт токен для расширения и на каком порту его ждёт.
 EXTENSION_DIR = "extension"
 TOKEN_FILE = "token.json"
+MANIFEST_FILE = "manifest.json"
 DEFAULT_PORT = 8765
 
 #: Кому разрешено подключаться. Идентификатор расширения меняется при
 #: переустановке, а схема — нет, поэтому сравнение по началу строки.
 EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://")
+
+
+def read_version(path: Path) -> str:
+    """Версия расширения из manifest.json на диске; пусто — если не прочиталась."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    version = data.get("version")
+    return str(version) if isinstance(version, str) else ""
 
 
 def read_token(path: Path) -> str:
@@ -495,10 +506,21 @@ class _Extension:
     ответ на «закрой».
     """
 
-    def __init__(self, *, server: WebSocketServer, logger, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        *,
+        server: WebSocketServer,
+        logger,
+        timeout: float = 5.0,
+        expect_version: str = "",
+    ) -> None:
         self._server = server
         self._log = logger
         self._timeout = timeout
+        #: Версия из manifest.json на диске. Расширение сообщает свою при
+        #: подключении, и расхождение означает ровно одно: браузер работает по
+        #: старому коду.
+        self._expect_version = expect_version
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._last_id = 0
         self._last_error = ""
@@ -547,6 +569,27 @@ class _Extension:
         он должен своими словами, а не общим «не ответило».
         """
         return self._last_error
+
+    def _greet(self, version: str, agent: str) -> None:
+        """Поздороваться и сверить версии.
+
+        **Распакованное расширение браузер сам не перечитывает.** «Я обновил
+        код» и «в браузере новый код» — разные утверждения, и их расхождение уже
+        стоило целого разбора: Jarvis объяснял поведение страницы, которого в
+        загруженной версии просто не было, а понять это удалось только по
+        отсутствию одного поля в ответе. Теперь об этом говорится сразу и вслух.
+        """
+        self._log.info("Расширение готово: v%s, %s", version or "?", agent)
+        if not version or not self._expect_version:
+            return
+        if version != self._expect_version:
+            self._log.warning(
+                "Расширение старое: в браузере v%s, на диске v%s. Открой "
+                "browser://extensions (или chrome://extensions) и нажми «Обновить» "
+                "у Jarvis — распакованные расширения браузер сам не перечитывает",
+                version,
+                self._expect_version,
+            )
 
     async def call(self, action: str, **params: object) -> dict | None:
         """Выполнить команду в браузере.
@@ -608,7 +651,7 @@ class _Extension:
         event = message.get("event")
         if event == "hello":
             self._ready.set()
-            self._log.info("Расширение готово: %s", message.get("agent", ""))
+            self._greet(str(message.get("version", "")), str(message.get("agent", "")))
         elif event and event != "keepalive":
             self._log.debug("Событие расширения: %s", event)
 
@@ -706,7 +749,10 @@ class BrowserSkill(Skill):
             origins=origins,
         )
         bridge = _Extension(
-            server=server, logger=self.log, timeout=float(settings.get("timeout", 5.0))
+            server=server,
+            logger=self.log,
+            timeout=float(settings.get("timeout", 5.0)),
+            expect_version=read_version(directory / MANIFEST_FILE),
         )
         # Сколько ждать самого первого подключения. Служебный поток браузера
         # просыпается по будильнику, и сразу после запуска Jarvis его ещё нет.
@@ -1057,7 +1103,9 @@ class BrowserSkill(Skill):
     # скилл `page` — про то, что делать внутри страницы.
 
     @tool(routable=False)
-    async def page_target(self, site: str = "", active: bool = False) -> ToolResult:
+    async def page_target(
+        self, site: str = "", active: bool = False, open_missing: bool = False
+    ) -> ToolResult:
         """Сказать, к какой вкладке относится команда о странице.
 
         :param site: название сайта; пусто — та вкладка, откуда идёт звук, а
@@ -1065,8 +1113,13 @@ class BrowserSkill(Skill):
         :param active: брать вкладку в фокусе, даже если звук идёт из другой.
             «Нажми первую ссылку» относится к тому, куда смотрят, а не к тому,
             что играет в соседнем окне.
+        :param open_missing: открыть названный сайт, если его вкладки нет.
+            Открывается **в фоне**: «включи трек» не повод выдёргивать владельца
+            из того, чем он занят, — дело делается молча.
         """
-        return await self._page_call("target", {"active": active}, site=site, tab=0)
+        return await self._page_call(
+            "target", {"active": active, "open": open_missing}, site=site, tab=0
+        )
 
     @tool(routable=False)
     async def page_run(self, plan: list[dict], site: str = "", tab: int = 0) -> ToolResult:
