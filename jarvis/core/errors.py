@@ -56,3 +56,7 @@ class MemoryError_(JarvisError):
 
 class AudioError(JarvisError):
     """Ошибка захвата или воспроизведения звука."""
+
+
+class STTError(JarvisError):
+    """Распознавание речи не поднялось: нет модели, не хватило памяти."""

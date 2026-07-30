@@ -15,6 +15,7 @@ import logging
 from typing import Any
 
 from jarvis.core.config import STTConfig
+from jarvis.core.errors import STTError
 from jarvis.core.runtime import BlockingWorker
 
 from .protocol import Transcript
@@ -23,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 #: Whisper ждёт float32 в диапазоне [-1, 1]; PCM16 приходит целыми.
 _PCM16_SCALE = 32768.0
+
+#: Как ctranslate2 сообщает, что памяти не хватило. Своего типа исключения у
+#: него нет — только RuntimeError с текстом «mkl_malloc: failed to allocate
+#: memory», поэтому смотрим на слова.
+_NO_MEMORY = ("malloc", "allocate", "out of memory", "bad_alloc")
+
+
+def out_of_memory(error: BaseException) -> bool:
+    """Про нехватку памяти ли эта ошибка."""
+    if isinstance(error, MemoryError):
+        return True
+    text = str(error).lower()
+    return any(mark in text for mark in _NO_MEMORY)
 
 
 class FasterWhisperSTT:
@@ -97,7 +111,19 @@ class FasterWhisperSTT:
             device,
             compute,
         )
-        self._model = await self._worker.run(self._load, device, compute)
+        try:
+            self._model = await self._worker.run(self._load, device, compute)
+        except Exception as exc:  # noqa: BLE001 — объясняем причину, а не показываем стек
+            if not out_of_memory(exc):
+                raise
+            # Своя ошибка объясняет себя сама: стек тут ничего не добавит, а
+            # человеку нужно знать, что делать.
+            raise STTError(
+                f"не хватило памяти на модель {self._config.model!r}. Whisper держит "
+                f"её в оперативной памяти целиком, а свободной почти не осталось. "
+                f"Закрой тяжёлые программы либо возьми модель полегче: "
+                f"stt.model: base в config.yaml"
+            ) from exc
         logger.info("Whisper готов")
 
     def _load(self, device: str, compute_type: str) -> Any:
@@ -210,6 +236,8 @@ class FasterWhisperSTT:
         try:
             parts = [segment.text for segment in segments]
         except RuntimeError as exc:
+            if not out_of_memory(exc):
+                raise
             # Whisper выделяет память лениво, уже при переборе сегментов, и на
             # загруженной машине падает именно здесь («mkl_malloc: failed to
             # allocate memory»). Полный стек тут ничего не объясняет, а фразу

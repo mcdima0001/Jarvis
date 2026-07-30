@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Protocol, runtime_checkable
 
+from jarvis.core.errors import JarvisError
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +67,13 @@ class ServiceRunner:
                 continue
             try:
                 await service.start()
+            except JarvisError as exc:
+                # Своя ошибка объясняет себя сама: в ней написано, что делать.
+                # Стек рядом с таким текстом только мешает — человек читает
+                # первую строку и видит простыню вместо ответа.
+                logger.error("Сервис %s не запустился: %s", service.service_name, exc)
+                await self.stop_all()
+                raise
             except Exception:
                 logger.exception("Сервис %s не запустился", service.service_name)
                 await self.stop_all()
