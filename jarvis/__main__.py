@@ -98,9 +98,12 @@ async def _say(app: JarvisApp, text: str) -> int:
     await app.start()
     try:
         result = await app.say(text)
-        # Реплика бывает набором вариантов по языкам — выбираем нужный,
-        # иначе в консоль уезжает сырой словарь.
-        spoken = result.speech_for(detect_language(text, default=app.config.app.language))
+        # Печатаем **сказанное**, а не догадку о нём: вариант реплики выбирает
+        # персона, и `speech_for` вернул бы первый из набора — то есть в консоли
+        # оказалось бы одно, а в колонках другое.
+        spoken = app.pipeline.last_reply or result.speech_for(
+            detect_language(text, default=app.config.app.language)
+        )
         print()
         print(f"Команда:    {text}")
         print(f"Инструмент: {result.tool or '—'}")

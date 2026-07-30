@@ -83,6 +83,9 @@ class VoicePipeline:
             maxsize=max(1, config.pending_limit or _PENDING_LIMIT)
         )
         self._tasks: list[asyncio.Task[None]] = []
+        #: Что произнесли последним. Нужно `--say`: реплику выбирает персона, и
+        #: угадать её со стороны нельзя — напечатали бы не то, что сказали.
+        self.last_reply = ""
         self._follow_up_until = 0.0
         self._speaking = False
         self._mute_until = 0.0
@@ -186,6 +189,7 @@ class VoicePipeline:
         # видно команду и её результат, а произнесённой фразы — нет. А разбирать
         # приходится как раз расхождение между ними.
         logger.info("Отвечаю: %s", text)
+        self.last_reply = text
         self._speaking = True
         spoken = True
         try:
