@@ -463,10 +463,33 @@ async function jarvisRunPlan(plan) {
       return null;
     }
 
-    // Побеждает самое тесное совпадение. У списка треков подпись начинается с
-    // первого трека, и без этого выбирался весь список целиком: «i need your
-    // love oliver nelson & tobtok remix… midnight city… the reason…».
-    const found = bestMatch(ITEMS, wanted, [], true);
+    // Верхний результат выдачи, если он назван, важнее сравнения названий:
+    // порядок расставил сайт, и знает он о треках больше, чем мы — об
+    // услышанном названии. Приходит это только с той выдачи, которую Jarvis
+    // открыл сам; на чужой странице `prefer` не присылают.
+    //
+    // Видимость намеренно не проверяется: кнопка на большой карточке появляется
+    // при наведении, и с проверкой её не найти никогда — та же причина, что и у
+    // кнопки внутри строки ниже.
+    const preferred = (selectors) => {
+      for (const selector of selectors) {
+        try {
+          const node = document.querySelector(String(selector));
+          if (node) {
+            return node;
+          }
+        } catch (error) {
+          continue; // селектор мог устареть вместе с редизайном
+        }
+      }
+      return null;
+    };
+    const top = Array.isArray(step.prefer) ? preferred(step.prefer) : null;
+
+    // Иначе побеждает самое тесное совпадение. У списка треков подпись
+    // начинается с первого трека, и без этого выбирался весь список целиком:
+    // «i need your love oliver nelson & tobtok remix… midnight city…».
+    const found = top || bestMatch(ITEMS, wanted, [], true);
     if (!found) {
       // Ничего не совпало. Расскажем, что было **ближе всего** к просьбе, а не
       // что попалось первым: первыми на странице стоят пункты бокового меню
@@ -544,7 +567,9 @@ async function jarvisRunPlan(plan) {
       node = node.parentElement;
     }
 
-    const name = caption(found);
+    // У кнопки на большой карточке своей подписи может не быть вовсе, а
+    // «воспроизведение — воспроизведение» в логе не говорит ни о чём.
+    const name = top ? `верхний результат${caption(found) ? `: ${caption(found)}` : ""}` : caption(found);
     const detail = pressed ? `${name} — ${pressed}` : name;
 
     // Просили просто нажать — на этом всё, звук тут никто не обещал.

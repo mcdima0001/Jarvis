@@ -620,6 +620,53 @@ check("обёртка списка не побеждает строку", async 
   assert(play.clicked === 1, `кнопка внутри строки не нажата (${result.detail})`);
 });
 
+check("верхний результат выдачи важнее совпадения слов", async () => {
+  // Живой случай: «Dua Lipa Break My Heart» пришло как «2, липа Brake My
+  // Heart». Верхней карточкой Яндекс поставил трек Dua Lipa, а совпадение по
+  // словам увело в ремиксы посторонних артистов — «break» и «heart» есть и там.
+  const audio = player({ tag: "audio", paused: true });
+  const cover = element({
+    attributes: { class: "PlayButtonWithCover_playButton__rV9pQ" },
+    hidden: true,
+    starts: audio,
+  });
+  const card = element({ attributes: { "aria-label": "Love Again" }, children: [cover] });
+  const remix = element({ attributes: { "aria-label": "you broke my heart" } });
+  const api = load(
+    makeDocument({
+      controls: [card, cover, remix],
+      bySelector: { '[class*="PlayButtonWithCover_playButton"]': cover },
+      players: [audio],
+    }),
+  );
+
+  const result = await api.jarvisRunPlan([
+    {
+      item: ["dua lipa break my heart"],
+      hint: ["воспроизв"],
+      play: true,
+      prefer: ['[class*="PlayButtonWithCover_playButton"]'],
+    },
+  ]);
+
+  assert(result.played === true, `не заиграло (${result.detail})`);
+  assert(remix.clicked === 0, "нажался ремикс вместо верхней карточки");
+  assert(cover.clicked === 1, "кнопка верхней карточки не нажата");
+  assert(result.detail.includes("верхний результат"), `в логе ${result.detail}`);
+});
+
+check("нет верхнего результата — сравниваем названия", async () => {
+  const row = element({ attributes: { "aria-label": "Трек Midnight City" } });
+  const api = load(makeDocument({ controls: [row] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["midnight city"], prefer: ['[class*="НетТакого"]'] },
+  ]);
+
+  assert(result.done === "item", "название искать всё равно надо");
+  assert(row.clicked === 1, "строка не нажата");
+});
+
 check("кнопка без подписи находится по атрибутам", async () => {
   // На многих плеерах в строке только иконка, подписи нет вовсе.
   const play = element({ attributes: { "data-test-id": "PLAY_BUTTON" } });

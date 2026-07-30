@@ -140,6 +140,20 @@ def test_like_never_means_dislike() -> None:
     assert "убрать" in avoid
 
 
+def test_top_result_is_added_only_for_our_own_search() -> None:
+    """«Сначала верхний результат» дописывается к шагу `item`, и только к нему."""
+    plan = page.validate_plan(
+        [{"item": ["трек"], "prefer": ['[class*="Play"]', "a" * (page.MAX_TEXT + 1)]}]
+    )
+
+    assert plan == [{"item": ["трек"], "prefer": ['[class*="Play"]']}]
+    # Слишком длинный селектор выбрасывается, как и везде: это данные из
+    # конфига и памяти, а не код.
+    assert page.validate_plan([{"item": ["трек"], "prefer": ["   "]}]) == [
+        {"item": ["трек"]}
+    ]
+
+
 def test_item_step_carries_the_play_hint() -> None:
     """У шага «включить названное» есть подсказка и признак «дожать плеер».
 
@@ -218,7 +232,12 @@ async def test_missing_track_is_searched_on_the_site(loaded) -> None:
     assert fake.CALLS[2][1] == "https://music.yandex.ru/search?text=don%27t+stop+me+now"
     # Вкладка та же самая: новая была бы лишней.
     assert fake.CALLS[2][2] == fake.TARGET["tabId"]
-    assert fake.CALLS[3][1] == fake.CALLS[1][1], "ищем то же самое, что и искали"
+    # На своей выдаче к тому же поиску добавляется «сначала верхний результат»:
+    # порядок расставил сайт, и знает он больше, чем мы об услышанном названии.
+    before, after = fake.CALLS[1][1][0], fake.CALLS[3][1][0]
+    assert after["item"] == before["item"]
+    assert "prefer" not in before, "на чужой странице верхнего результата нет"
+    assert after["prefer"] == ['[class*="PlayButtonWithCover_playButton"]']
     await manager.stop()
 
 

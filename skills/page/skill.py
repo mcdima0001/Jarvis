@@ -199,6 +199,10 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
         "play": ({"media": "play"}, {"click": ['[data-test-id="PLAY_BUTTON"]']}),
         "pause": ({"media": "pause"}, {"click": ['[data-test-id="PAUSE_BUTTON"]']}),
         "like": ({"click": ['[data-test-id="LIKE_BUTTON"]']},),
+        # Верхний результат выдачи — большая карточка с обложкой. Хвост класса
+        # (`__rV9pQ`) меняется при каждой сборке сайта, поэтому сравниваем
+        # куском: имя из CSS-модуля переживает пересборку, случайный хвост нет.
+        "first": ({"click": ['[class*="PlayButtonWithCover_playButton"]']},),
     },
     "vk.com": {
         "next": ({"click": [".audio_page_player_next"]},),
@@ -583,6 +587,10 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                     clean["hint"] = hint
                 if step.get("play"):
                     clean["play"] = True
+                # Что взять, не сравнивая названий: верхний результат выдачи.
+                prefer = _strings(step.get("prefer", ()))
+                if prefer:
+                    clean["prefer"] = prefer
             if verb == "label":
                 # Запретные слова: подпись «не нравится» содержит «нравится»
                 # целиком, и без них лайк оказывается дизлайком.
@@ -1298,6 +1306,20 @@ class PageSkill(Skill):
             return None
         self.log.info("На странице %r не нашлось — открыл поиск сайта: %s", query, url)
 
+        # На **своей** выдаче верхний результат главнее сравнения слов.
+        #
+        # Порядок в выдаче расставил сайт — по всему, что он знает о треках. У
+        # нас же есть только услышанное название, уже искажённое распознаванием,
+        # и ранжировать им поверх готового порядка — значит менять хорошее знание
+        # на плохое. Живой случай: «Dua Lipa Break My Heart» пришло как «2, липа
+        # Brake My Heart», верхней карточкой Яндекс поставил трек Dua Lipa, а
+        # совпадение по словам увело в ремиксы посторонних артистов ниже — «break»
+        # и «heart» нашлись и там.
+        #
+        # Только здесь и только так: на странице, которую открыл сам владелец,
+        # никакого «верхнего результата» нет, и там название решает всё.
+        plan = self._with_top(host, steps)
+
         # Повторяем только пока **не нашли**: выдача дорисовывается скриптом уже
         # после события загрузки, и первые попытки честно натыкаются на пустоту.
         # А вот «нашли, но тишина» повторять нечего: строка на месте, все способы
@@ -1307,10 +1329,30 @@ class PageSkill(Skill):
         for attempt in range(SEARCH_ATTEMPTS):
             if attempt:
                 await asyncio.sleep(SEARCH_DELAY)
-            result = await self._run(steps, tab)
+            result = await self._run(plan, tab)
             if result is not None:
                 return result
         return None
+
+    def _with_top(
+        self, host: str, steps: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Дописать в шаг `item` «сначала верхний результат выдачи».
+
+        Селекторы берутся из рецепта `first` этого сайта — того же, которым
+        работает «включи первый результат». Один источник на две команды: сайт
+        переделает выдачу — правится одно место.
+        """
+        top = [
+            selector
+            for step in self._plan("first", host)
+            for selector in step.get("click", ())
+        ]
+        if not top:
+            return list(steps)
+        return validate_plan(
+            [{**step, "prefer": top} if "item" in step else step for step in steps]
+        )
 
     async def _learn_action(
         self, action: str, *, tab: int, host: str, title: str, want: str
