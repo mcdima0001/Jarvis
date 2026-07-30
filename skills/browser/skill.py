@@ -739,7 +739,10 @@ class BrowserSkill(Skill):
 
         return ToolResult.success(
             {"url": url},
-            speech={"ru": f"Открываю {name}.", "en": f"Opening {name}."},
+            speech={
+                "ru": (f"Открываю {name}.", f"{name} — открываю.", f"Секунду, {name}."),
+                "en": (f"Opening {name}.", f"{name}, coming up."),
+            },
         )
 
     # «За гугли» и «за гугл» — не опечатка: Whisper слышит «загугли» как два
@@ -775,10 +778,16 @@ class BrowserSkill(Skill):
         # звучит лучше, чем внутреннее имя google, которое голос прочтёт
         # латиницей.
         where = engine.strip()
-        speech = (
-            {"ru": f"Ищу в {where}: {query}.", "en": f"Searching {where} for {query}."}
+        speech: dict[str, tuple[str, ...]] = (
+            {
+                "ru": (f"Ищу в {where}: {query}.", f"Смотрю в {where}: {query}."),
+                "en": (f"Searching {where} for {query}.", f"Looking in {where}: {query}."),
+            }
             if where
-            else {"ru": f"Ищу: {query}.", "en": f"Searching for {query}."}
+            else {
+                "ru": (f"Ищу: {query}.", f"Смотрю: {query}.", f"Сейчас поищу: {query}."),
+                "en": (f"Searching for {query}.", f"Looking up {query}.", f"Let's see: {query}."),
+            }
         )
         return ToolResult.success(
             {"url": url, "engine": chosen, "query": query}, speech=speech
@@ -834,7 +843,10 @@ class BrowserSkill(Skill):
                 self.log.info("Служебная страница: %s", result.get("url", pages[0]))
                 return ToolResult.success(
                     result,
-                    speech={"ru": f"Открываю {name}.", "en": f"Opening {name}."},
+                    speech={
+                        "ru": (f"Открываю {name}.", f"{name} — открываю."),
+                        "en": (f"Opening {name}.", f"{name}, coming up."),
+                    },
                 )
 
         # Открытая вкладка: «переключись на Marshall Tech».
@@ -861,7 +873,10 @@ class BrowserSkill(Skill):
         self.log.info("Переключаюсь на вкладку %r", result.get("title", name))
         return ToolResult.success(
             result,
-            speech={"ru": f"Показываю {name}.", "en": f"Switching to {name}."},
+            speech={
+                "ru": (f"Показываю {name}.", f"Перехожу на {name}.", f"Вот {name}."),
+                "en": (f"Switching to {name}.", f"Here's {name}.", f"Over to {name}."),
+            },
         )
 
     async def _open_tab(self, url: str, name: str, *, reuse: bool) -> ToolResult | None:
@@ -940,7 +955,10 @@ class BrowserSkill(Skill):
             )
         return ToolResult.success(
             closed,
-            speech={"ru": f"Закрываю {name}.", "en": f"Closing {name}."},
+            speech={
+                "ru": (f"Закрываю {name}.", f"{name} закрыл.", f"Убрал {name}."),
+                "en": (f"Closing {name}.", f"{name} closed.", f"Shut {name}."),
+            },
         )
 
     # --- страница ----------------------------------------------------------

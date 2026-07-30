@@ -8,10 +8,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
-#: Реплика: одна строка или варианты по языкам — ``{"ru": "...", "en": "..."}``.
-Speakable = str | Mapping[str, str] | None
+#: Реплика инструмента. Четыре вида, от простого к полному:
+#:
+#: * ``"Готово."`` — одна строка на всех;
+#: * ``("Пауза.", "Остановил.")`` — несколько равноправных вариантов;
+#: * ``{"ru": "Пауза.", "en": "Paused."}`` — по языку вопроса;
+#: * ``{"ru": ("Пауза.", "Остановил."), "en": ("Paused.",)}`` — и то, и другое.
+#:
+#: Варианты нужны там, где реплика звучит десятки раз в день: одна зашитая
+#: строка за неделю превращается в сигнал будильника, её перестают слышать.
+#: Кто именно выберет вариант — не дело инструмента: этим занята персона,
+#: она же помнит, что уже говорила, и не повторяется.
+Speakable = str | Sequence[str] | Mapping[str, str | Sequence[str]] | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -56,21 +66,32 @@ class ToolResult:
         """Неудачный результат с описанием причины."""
         return cls(ok=False, error=error, tool=tool, speech=speech, duration=duration)
 
-    def speech_for(self, language: str | None, *, fallback: str = "ru") -> str | None:
-        """Выбрать реплику под язык вопроса.
+    def speech_options(
+        self, language: str | None, *, fallback: str = "ru"
+    ) -> tuple[str, ...]:
+        """Все варианты реплики под язык вопроса.
 
-        Если скилл задал одну строку, она и вернётся: не всякая реплика
-        нуждается в переводе.
+        Выбирать из них — забота того, у кого есть персона: она помнит, что
+        уже говорила. Здесь только разбор четырёх видов :data:`Speakable`.
         """
-        if self.speech is None or isinstance(self.speech, str):
-            return self.speech
+        if self.speech is None:
+            return ()
+        if isinstance(self.speech, Mapping):
+            code = (language or fallback).split("-")[0].lower()
+            for key in (code, fallback):
+                if key in self.speech:
+                    return _lines(self.speech[key])
+            return _lines(next(iter(self.speech.values()), None))
+        return _lines(self.speech)
 
-        code = (language or fallback).split("-")[0].lower()
-        return (
-            self.speech.get(code)
-            or self.speech.get(fallback)
-            or next(iter(self.speech.values()), None)
-        )
+    def speech_for(self, language: str | None, *, fallback: str = "ru") -> str | None:
+        """Первый вариант реплики под язык вопроса.
+
+        Годится там, где персоны под рукой нет: текстовый ввод, отладочный
+        вывод, тесты. Голосовой конвейер берёт весь набор и выбирает сам.
+        """
+        options = self.speech_options(language, fallback=fallback)
+        return options[0] if options else None
 
     def unwrap(self) -> Any:
         """Вернуть значение или бросить исключение — для внутреннего кода ядра."""
@@ -79,3 +100,19 @@ class ToolResult:
 
             raise ToolError(self.error or f"Инструмент {self.tool!r} завершился ошибкой")
         return self.value
+
+
+def _lines(value: Any) -> tuple[str, ...]:
+    """Привести реплику к набору непустых строк.
+
+    Строка — это один вариант, а не последовательность символов, поэтому
+    проверяется первой: иначе «Готово.» распалось бы на буквы.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else ()
+    if isinstance(value, Sequence):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()

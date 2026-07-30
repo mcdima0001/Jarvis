@@ -39,6 +39,49 @@ def test_listening_has_at_least_ten_variants():
         assert len(persona.variants(LISTENING, language)) >= 10
 
 
+def test_every_situation_has_enough_variants():
+    """Одна-две фразы на ситуацию — это тот же будильник, только тише."""
+    persona = Persona()
+    for situation in SITUATIONS:
+        for language in ("ru", "en"):
+            assert len(persona.variants(situation, language)) >= 5, f"{situation}/{language}"
+
+
+def test_skill_replies_are_chosen_without_repeats():
+    """Свои слова у команды есть, а вот не повторяться — работа персоны.
+
+    «Пауза» звучит десятки раз за вечер, и одна зашитая строка на слух
+    превращается в сигнал будильника. Выбирает персона: она одна помнит, что
+    уже было сказано.
+    """
+    persona = Persona()
+    variants = ("Пауза.", "Остановил.", "Тишина.", "Замолчали.")
+
+    said = [persona.choose("page.pause", variants) for _ in range(2)]
+
+    assert said[0] != said[1], "два раза подряд одно и то же"
+    assert set(said) <= set(variants)
+
+
+def test_each_command_remembers_its_own_replies():
+    """У «паузы» своя память, у «включаю» — своя.
+
+    Общая вытесняла бы чужие варианты: сказал «пауза» — и «включаю» уже
+    считается недавним, хотя его никто не произносил.
+    """
+    persona = Persona(choice=_first)
+    first = persona.choose("page.pause", ("Пауза.", "Остановил."))
+    other = persona.choose("page.play", ("Пауза.", "Остановил."))
+
+    assert first == other == "Пауза."
+
+
+def test_choose_without_variants_says_nothing():
+    """Нет вариантов — нет реплики: молчание тут лучше выдумки."""
+    assert Persona().choose("page.pause", ()) == ""
+    assert Persona().choose("page.pause", ("", "   ")) == ""
+
+
 def test_every_situation_has_both_languages():
     """Ассистент двуязычный: молчать на английском он не должен."""
     for situation in SITUATIONS:

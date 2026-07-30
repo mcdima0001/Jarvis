@@ -258,22 +258,72 @@ def search_url_for(host: str, query: str) -> str:
     return template.format(query=quote_plus(query.strip()))
 
 #: Что сказать вслух. Реплики короткие: команда и так видна по результату.
-SPEECH: dict[str, tuple[str, str]] = {
-    "play": ("Включаю.", "Playing."),
-    "pause": ("Пауза.", "Paused."),
-    "toggle": ("Готово.", "Done."),
-    "next": ("Следующий.", "Next one."),
-    "previous": ("Предыдущий.", "Previous one."),
-    "like": ("Лайкнул.", "Liked."),
-    "unlike": ("Убрал лайк.", "Like removed."),
-    "dislike": ("Поставил дизлайк.", "Disliked."),
-    "first": ("Включаю.", "Playing it."),
-    "mute": ("Заглушил вкладку.", "Tab muted."),
-    "unmute": ("Вернул звук.", "Sound is back."),
-    "louder": ("Громче.", "Louder."),
-    "quieter": ("Тише.", "Quieter."),
-    "forward": ("Перемотал вперёд.", "Skipped ahead."),
-    "back": ("Перемотал назад.", "Skipped back."),
+#:
+#: Вариантов по нескольку намеренно. Эти фразы звучат чаще всех остальных в
+#: проекте — «пауза» десятки раз за вечер, — и одна зашитая строка на слух
+#: превращается в сигнал будильника: её перестают слышать. Выбирает вариант
+#: персона (`Persona.choose`), она же помнит, что уже говорила.
+SPEECH: dict[str, dict[str, tuple[str, ...]]] = {
+    "play": {
+        "ru": ("Включаю.", "Продолжаю.", "Есть.", "Играет.", "Возвращаю звук."),
+        "en": ("Playing.", "Resuming.", "Right away.", "Back on."),
+    },
+    "pause": {
+        "ru": ("Пауза.", "Остановил.", "Ставлю на паузу.", "Тишина.", "Замолчали."),
+        "en": ("Paused.", "Stopped.", "Pausing.", "Silence."),
+    },
+    "toggle": {
+        "ru": ("Готово.", "Переключил.", "Сделано."),
+        "en": ("Done.", "Toggled.", "There."),
+    },
+    "next": {
+        "ru": ("Следующий.", "Дальше.", "Переключил.", "Следующий трек.", "Идём дальше."),
+        "en": ("Next one.", "Moving on.", "Skipped.", "Next up."),
+    },
+    "previous": {
+        "ru": ("Предыдущий.", "Возвращаю.", "Назад.", "Прошлый трек."),
+        "en": ("Previous one.", "Going back.", "Back one."),
+    },
+    "like": {
+        "ru": ("Лайкнул.", "Отметил.", "Поставил лайк.", "Записал в понравившееся."),
+        "en": ("Liked.", "Noted.", "Marked as liked."),
+    },
+    "unlike": {
+        "ru": ("Убрал лайк.", "Снял отметку.", "Больше не нравится."),
+        "en": ("Like removed.", "Unmarked.", "No longer liked."),
+    },
+    "dislike": {
+        "ru": ("Поставил дизлайк.", "Отметил как не понравившееся.", "Больше не предложу."),
+        "en": ("Disliked.", "Marked as disliked.", "Won't suggest it again."),
+    },
+    "first": {
+        "ru": ("Включаю.", "Открываю первое.", "Первое из списка.", "Есть, включаю."),
+        "en": ("Playing it.", "Opening the first one.", "First on the list."),
+    },
+    "mute": {
+        "ru": ("Заглушил вкладку.", "Звук выключен.", "Вкладка молчит."),
+        "en": ("Tab muted.", "Sound off.", "Muted."),
+    },
+    "unmute": {
+        "ru": ("Вернул звук.", "Звук включён.", "Слышно."),
+        "en": ("Sound is back.", "Unmuted.", "Audio on."),
+    },
+    "louder": {
+        "ru": ("Громче.", "Добавил громкости.", "Прибавил."),
+        "en": ("Louder.", "Turned it up.", "Volume up."),
+    },
+    "quieter": {
+        "ru": ("Тише.", "Убавил.", "Сделал потише."),
+        "en": ("Quieter.", "Turned it down.", "Volume down."),
+    },
+    "forward": {
+        "ru": ("Перемотал вперёд.", "Промотал.", "Вперёд."),
+        "en": ("Skipped ahead.", "Fast-forwarded.", "Ahead."),
+    },
+    "back": {
+        "ru": ("Перемотал назад.", "Отмотал.", "Назад."),
+        "en": ("Skipped back.", "Rewound.", "Back."),
+    },
 }
 
 #: Чего именно мы хотим — этой строкой действие объясняется модели.
@@ -390,11 +440,29 @@ _SCROLL_WORDS: tuple[tuple[str, str], ...] = (
 )
 
 #: Что сказать вслух про листание.
-SCROLL_SPEECH: dict[str, tuple[str, str]] = {
-    "up": ("Пролистал вверх.", "Scrolled up."),
-    "down": ("Пролистал вниз.", "Scrolled down."),
-    "top": ("В начале страницы.", "At the top."),
-    "bottom": ("В конце страницы.", "At the bottom."),
+SCROLL_SPEECH: dict[str, dict[str, tuple[str, ...]]] = {
+    "up": {
+        "ru": ("Пролистал вверх.", "Поднял выше.", "Вверх."),
+        "en": ("Scrolled up.", "Moved up.", "Up."),
+    },
+    "down": {
+        "ru": ("Пролистал вниз.", "Опустил ниже.", "Вниз."),
+        "en": ("Scrolled down.", "Moved down.", "Down."),
+    },
+    "top": {
+        "ru": ("В начале страницы.", "Поднял в самое начало.", "Вот начало."),
+        "en": ("At the top.", "Back to the top.", "Top of the page."),
+    },
+    "bottom": {
+        "ru": ("В конце страницы.", "Опустил в самый низ.", "Вот конец."),
+        "en": ("At the bottom.", "Down to the bottom.", "End of the page."),
+    },
+}
+
+#: Если у действия своих слов нет вовсе.
+_ANYWAY: dict[str, tuple[str, ...]] = {
+    "ru": ("Готово.", "Сделано.", "Есть."),
+    "en": ("Done.", "All set.", "There."),
 }
 
 
@@ -787,7 +855,10 @@ class PageSkill(Skill):
             site=site,
             extra=[{"label": variants}],
             want=f"нажать кнопку «{name}»",
-            speech=(f"Нажал {name}.", f"Pressed {name}."),
+            speech={
+                "ru": (f"Нажал {name}.", f"Готово: {name}.", f"{name} — нажал."),
+                "en": (f"Pressed {name}.", f"Done: {name}."),
+            },
         )
 
     # Обёртки под голос: фраза узнаётся мгновенно и бесплатно. В каталог для
@@ -891,7 +962,11 @@ class PageSkill(Skill):
             focused=True,
             extra=[{"item": names, "hint": list(PLAY_HINTS), "play": True}],
             search=name,
-            speech=(f"Включаю {name}.", f"Playing {name}."),
+            speech={
+                "ru": (f"Включаю {name}.", f"{name}, сейчас.", f"Ставлю {name}.",
+                       f"Есть, {name}."),
+                "en": (f"Playing {name}.", f"{name}, coming up.", f"Putting on {name}."),
+            },
         )
 
     @tool(phrases=["введи в поиск {text}", "введи {text} в поиск",
@@ -919,7 +994,10 @@ class PageSkill(Skill):
             site=site,
             focused=True,
             extra=[{"type": typed, "submit": True}],
-            speech=(f"Ввёл: {typed}.", f"Typed: {typed}."),
+            speech={
+                "ru": (f"Ввёл: {typed}.", f"Напечатал: {typed}.", f"Ищу: {typed}."),
+                "en": (f"Typed: {typed}.", f"Entered: {typed}.", f"Searching: {typed}."),
+            },
         )
 
     # Направление обязано быть в шаблоне, иначе «пролистай вверх» и «пролистай
@@ -1058,7 +1136,7 @@ class PageSkill(Skill):
         seconds: float = 0,
         extra: Sequence[Mapping[str, Any]] = (),
         want: str = "",
-        speech: tuple[str, str] | None = None,
+        speech: Mapping[str, Sequence[str]] | None = None,
         soft: bool = False,
         focused: bool = False,
         search: str = "",
@@ -1443,16 +1521,16 @@ class PageSkill(Skill):
     # --- ответы ------------------------------------------------------------
 
     def _done(
-        self, action: str, result: Mapping[str, Any], speech: tuple[str, str] | None
+        self, action: str, result: Mapping[str, Any], speech: Mapping[str, Sequence[str]] | None
     ) -> ToolResult:
         """Успех: сказать коротко, подробности оставить в значении."""
-        ru, en = speech or SPEECH.get(action, ("Готово.", "Done."))
+        lines = speech or SPEECH.get(action, _ANYWAY)
         detail = str(result.get("detail", "")).strip()
         self.log.info(
             "Страница %s: %s (%s)", result.get("url", ""), action, detail or result.get("done")
         )
         self._log_nearby(result)
-        return ToolResult.success(dict(result), speech={"ru": ru, "en": en})
+        return ToolResult.success(dict(result), speech={key: tuple(items) for key, items in lines.items()})
 
     def _not_playing(self, result: Mapping[str, Any]) -> ToolResult:
         """Строку нашли и нажали, а звука нет.

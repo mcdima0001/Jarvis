@@ -162,9 +162,12 @@ class VoicePipeline:
                 source=utterance.source,
             )
         result = await self._dispatcher.handle(utterance)
-        reply = result.speech_for(utterance.language) or self._describe(
-            result, utterance.language
-        )
+        # Вариант выбирает персона, а не скилл: она помнит, что уже говорила, и
+        # у каждой команды своя память — «пауза» не вытесняет «включаю».
+        options = result.speech_options(utterance.language)
+        reply = self._persona.choose(
+            result.tool or "tool", options, utterance.language
+        ) or self._describe(result, utterance.language)
         if reply:
             await self._say(reply, language=utterance.language)
         return result

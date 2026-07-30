@@ -319,6 +319,38 @@ def test_unknown_language_falls_back() -> None:
     assert result.speech_for("de") == "Готово."
 
 
+def test_speech_may_be_several_variants() -> None:
+    """Реплика бывает набором: выбирать из него — дело персоны, не инструмента."""
+    result = ToolResult.success(
+        True, speech={"ru": ("Пауза.", "Остановил."), "en": ("Paused.",)}
+    )
+
+    assert result.speech_options("ru") == ("Пауза.", "Остановил.")
+    assert result.speech_options("en-GB") == ("Paused.",)
+    # Без персоны берётся первый — так текстовый ввод и тесты остаются
+    # предсказуемыми.
+    assert result.speech_for("ru") == "Пауза."
+
+
+def test_variants_without_languages() -> None:
+    """Набор без языков — тоже набор, а строка не рассыпается на буквы."""
+    assert ToolResult.success(1, speech=("Есть.", "Готово.")).speech_options("ru") == (
+        "Есть.",
+        "Готово.",
+    )
+    assert ToolResult.success(1, speech="Готово.").speech_options("ru") == ("Готово.",)
+    assert ToolResult.success(1).speech_options("ru") == ()
+
+
+async def test_pipeline_varies_skill_replies(pipeline: VoicePipeline) -> None:
+    """Одна и та же команда не должна звучать одинаково два раза подряд."""
+    said = [
+        pipeline._persona.choose("page.pause", ("Пауза.", "Остановил.", "Тишина."))
+        for _ in range(2)
+    ]
+    assert said[0] != said[1]
+
+
 def test_voice_chosen_per_language() -> None:
     """Голос подбирается под язык, при отсутствии — язык по умолчанию."""
     from jarvis.core.config import TTSConfig

@@ -675,7 +675,11 @@ class WindowsSkill(Skill):
         self.log.info("Запущено: %s (%s)", name, target)
         return ToolResult.success(
             {"program": name, "target": target},
-            speech={"ru": f"Запускаю {name}.", "en": f"Launching {name}."},
+            speech={
+                "ru": (f"Запускаю {name}.", f"{name} запускается.", f"Открываю {name}.",
+                       f"Секунду, {name}."),
+                "en": (f"Launching {name}.", f"Starting {name}.", f"{name}, coming up."),
+            },
         )
 
     @tool(phrases=["заблокируй компьютер", "заблокируй пк", "заблокируй экран",
@@ -696,7 +700,13 @@ class WindowsSkill(Skill):
                 },
             )
         self.log.info("Компьютер заблокирован")
-        return ToolResult.success(True, speech={"ru": "Блокирую.", "en": "Locking."})
+        return ToolResult.success(
+            True,
+            speech={
+                "ru": ("Блокирую.", "Запираю компьютер.", "Готово, заблокировал."),
+                "en": ("Locking.", "Locking up.", "Screen locked."),
+            },
+        )
 
     @tool(phrases=["закрой {program}", "заверши {program}",
                    "close {program}", "quit {program}"])
@@ -832,7 +842,10 @@ class WindowsSkill(Skill):
         self.log.info("Закрыто окно %r (%d шт.)", title, sent)
         return ToolResult.success(
             {"window": title, "closed": sent},
-            speech={"ru": f"Закрываю {name}.", "en": f"Closing {name}."},
+            speech={
+                "ru": (f"Закрываю {name}.", f"{name} закрыл.", f"Убрал {name}."),
+                "en": (f"Closing {name}.", f"{name} closed.", f"Shut {name} down."),
+            },
         )
 
     async def _close(

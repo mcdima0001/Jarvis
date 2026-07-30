@@ -6,9 +6,15 @@
 подряд один и тот же не повторяется.
 
 Наборы собраны здесь, а не размазаны по конвейеру и скиллам, потому что
-характер — это одно решение, а не двадцать. Скилл по-прежнему говорит своё
-(«Запускаю Steam»); персона отвечает там, где сказать нечего: позвали по
-имени, команда выполнена, команда не вышла, запуск, остановка.
+характер — это одно решение, а не двадцать. Персона отвечает там, где сказать
+нечего: позвали по имени, команда выполнена, команда не вышла, запуск,
+остановка.
+
+Свои слова у команды остаются («Запускаю Steam»), но **выбирать из вариантов —
+тоже работа персоны** (:meth:`Persona.choose`). Скилл перечисляет, чем можно
+ответить, а «не повторяться» и «помнить, что уже сказал» — одна забота на всю
+систему, а не по копии в каждом скилле. Память своя на каждый ключ: сказанная
+«пауза» не должна вытеснять «включаю».
 
 Обращение вынесено в поле ``{address}``: в фильме это «сэр», но заменить его
 на имя или убрать совсем — правка одной строки конфига, а не всех фраз. Если
@@ -63,6 +69,12 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Что для вас сделать, {address}?",
             "Внимательно слушаю.",
             "Слушаю, {address}. Говорите.",
+            "Да, {address}. Я тут.",
+            "Весь ваш, {address}.",
+            "Слушаю внимательно, {address}.",
+            "Я на месте, {address}.",
+            "Говорите, {address}.",
+            "К вашим услугам.",
         ),
         "en": (
             "Yes, {address}?",
@@ -77,6 +89,10 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "You have my attention, {address}.",
             "Yes? I'm here.",
             "At once, {address}. Go ahead.",
+            "I'm all ears, {address}.",
+            "Here, {address}.",
+            "Whenever you're ready, {address}.",
+            "Awaiting instructions, {address}.",
         ),
     },
     DONE: {
@@ -91,6 +107,16 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Считайте, что сделано.",
             "Всё в порядке, {address}.",
             "Готово.",
+            "Исполнено, {address}.",
+            "Сию минуту, {address}.",
+            "Разумеется. Готово.",
+            "Принято, {address}.",
+            "Уже, {address}.",
+            "С удовольствием, {address}.",
+            "Как пожелаете.",
+            "Сделал, {address}.",
+            "Не вопрос, {address}.",
+            "Всё готово.",
         ),
         "en": (
             "Done, {address}.",
@@ -103,6 +129,14 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "All set.",
             "Certainly, {address}.",
             "Done.",
+            "At once, {address}.",
+            "Already handled, {address}.",
+            "With pleasure, {address}.",
+            "Noted, {address}.",
+            "That's done.",
+            "Very good, {address}.",
+            "As requested, {address}.",
+            "Complete.",
         ),
     },
     FAILED: {
@@ -115,6 +149,14 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "К сожалению, ничего не вышло.",
             "Что-то пошло не так, {address}.",
             "Не смог выполнить, {address}.",
+            "Увы, {address}.",
+            "Не получилось, {address}. Попробуем иначе?",
+            "Боюсь, это выше моих сил.",
+            "Ничего не вышло, {address}.",
+            "Не сработало, {address}.",
+            "Здесь я вам не помощник, {address}.",
+            "Не удалось, {address}.",
+            "Пока не выходит, {address}.",
         ),
         "en": (
             "That didn't work, {address}.",
@@ -125,6 +167,12 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Something went wrong, {address}.",
             "I'm afraid not, {address}.",
             "Unable to do that.",
+            "Afraid that's beyond me, {address}.",
+            "That one got away from me, {address}.",
+            "It didn't take, {address}.",
+            "No joy, {address}.",
+            "Not this time, {address}.",
+            "I couldn't manage it, {address}.",
         ),
     },
     GREETING: {
@@ -135,6 +183,10 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "{greeting}, {address}. Системы запущены.",
             "{greeting}, {address}. Готов к работе.",
             "{greeting}, {address}. Я в сети.",
+            "{greeting}, {address}. Все службы поднялись.",
+            "{greeting}, {address}. Жду распоряжений.",
+            "{greeting}, {address}. Как обычно, к вашим услугам.",
+            "{greeting}, {address}. Я на связи.",
         ),
         "en": (
             "{greeting}, {address}. All systems are online.",
@@ -142,6 +194,9 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "{greeting}, {address}. Standing by.",
             "{greeting}, {address}. Systems are up.",
             "{greeting}, {address}. Ready to work.",
+            "{greeting}, {address}. Everything's running.",
+            "{greeting}, {address}. Awaiting your orders.",
+            "{greeting}, {address}. Back online.",
         ),
     },
     FAREWELL: {
@@ -152,6 +207,10 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Ухожу в спящий режим, {address}.",
             "Работу завершаю, {address}.",
             "До скорого, {address}.",
+            "Всё выключаю, {address}.",
+            "Буду нужен — позовите, {address}.",
+            "Хорошего дня, {address}.",
+            "Ухожу, {address}.",
         ),
         "en": (
             "Goodbye, {address}.",
@@ -159,6 +218,9 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Until next time, {address}.",
             "Going offline, {address}.",
             "Powering down, {address}.",
+            "Call me when you need me, {address}.",
+            "Signing off, {address}.",
+            "Have a good one, {address}.",
         ),
     },
 }
@@ -305,6 +367,25 @@ class Persona:
                 **fields,
             },
         )
+
+    def choose(
+        self, key: str, variants: Sequence[str], language: str | None = None
+    ) -> str:
+        """Выбрать один из вариантов чужой реплики, не повторяя недавние.
+
+        Нужно скиллам: «Пауза.» звучит десятки раз в день, и одна зашитая
+        строка на слух превращается в сигнал будильника. Свои слова у команды
+        есть — варьировать их персона всё равно обязана, потому что «не
+        повторяться» и «помнить, что уже сказал» — это ровно её работа, а не
+        работа каждого скилла по отдельности.
+
+        :param key: чья это реплика; обычно имя инструмента. Своя память на
+            каждый ключ: «пауза» не должна вытеснять «включаю».
+        """
+        pool = tuple(str(item).strip() for item in variants if str(item).strip())
+        if not pool:
+            return ""
+        return self._pick(key, _code(language or self._default), pool)
 
     def _pick(self, situation: str, code: str, pool: tuple[str, ...]) -> str:
         """Взять вариант, которого давно не было.
