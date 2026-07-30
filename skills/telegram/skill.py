@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+from telethon import TelegramClient
+
 from jarvis.core.contracts import Event, ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.tools import tool
@@ -38,17 +40,21 @@ class TelegramSkill(Skill):
     )
 
     async def on_setup(self) -> None:
-        """Проверить токен бота."""
-        self._token = str(self.context.setting("token", ""))
-        if not self._token:
-            self.log.warning("Токен Telegram не задан — инструменты вернут ошибку")
+        self._api_id = int(self.context.setting("api_id", 0) or 0)
+        self._api_hash = str(self.context.setting("api_hash", ""))
 
-    @tool(phrases=["отправь сообщение {chat}", "send a message to {chat}"])
+        client = TelegramClient("session", self._api_id, self._api_hash)
+        client.start()
+
+        if not self._api_id or not self._api_hash:
+            self.log.warning("Telegram не настроен: добавь api_id и api_hash в .env")
+
+    @tool(phrases=["отправь сообщение {chat}", "напиши {chat}", "отправь {chat}", "send a message to {chat}"])
     async def send_message(self, chat: str, text: str) -> ToolResult:
         """Отправить сообщение в чат.
 
-        :param chat: имя или идентификатор чата.
-        :param text: текст сообщения.
+        :param chat: Имя или идентификатор чата.
+        :param text: Текст сообщения.
         """
         if not self._token:
             return ToolResult.failure(
@@ -68,7 +74,7 @@ class TelegramSkill(Skill):
     async def get_recent_chats(self, limit: int = 5) -> ToolResult:
         """Вернуть последние непрочитанные чаты.
 
-        :param limit: сколько чатов вернуть.
+        :param limit: Сколько чатов вернуть.
         """
         if not self._token:
             return ToolResult.failure(
@@ -114,3 +120,4 @@ class TelegramSkill(Skill):
         if not self._token:
             return HealthStatus.degraded("не задан токен бота")
         return HealthStatus.healthy("заглушка, токен задан")
+
