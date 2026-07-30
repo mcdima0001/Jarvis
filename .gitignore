@@ -23,3 +23,7 @@ venv/
 
 # Telegram
 .session
+tests.py
+*.session
+skills/telegram/tests.py
+skills/telegram/tests.py

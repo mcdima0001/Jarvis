@@ -43,8 +43,10 @@ class TelegramSkill(Skill):
         self._api_id = int(self.context.setting("api_id", 0) or 0)
         self._api_hash = str(self.context.setting("api_hash", ""))
 
+        global client
         client = TelegramClient("session", self._api_id, self._api_hash)
         client.start()
+        client.run_until_disconnected()
 
         if not self._api_id or not self._api_hash:
             self.log.warning("Telegram не настроен: добавь api_id и api_hash в .env")
@@ -56,13 +58,18 @@ class TelegramSkill(Skill):
         :param chat: Имя или идентификатор чата.
         :param text: Текст сообщения.
         """
-        if not self._token:
+        if not self._api_hash and self._api_id:
             return ToolResult.failure(
                 "Нет токена Telegram: задай JARVIS_TELEGRAM_TOKEN в .env",
-                speech={"ru": "Телеграм не подключён. Добавь токен бота в настройки.",
-                       "en": "Telegram isn't connected. Add the bot token in settings."},
+                speech={"ru": "Телеграм не подключён. Добавь токены в настройки.",
+                       "en": "Telegram isn't connected. Add the tokens in settings."},
             )
-        # TODO: Bot API sendMessage
+        # Получение последних 10 чатов и отправка сообщений
+
+        async for dialog in client.iter_dialogs():
+            if dialog.is_user:
+                print(dialog.name)
+
         self.log.info("Сообщение в %s: %s", chat, text)
         return ToolResult.success(
             {"chat": chat, "text": text},
@@ -76,7 +83,7 @@ class TelegramSkill(Skill):
 
         :param limit: Сколько чатов вернуть.
         """
-        if not self._token:
+        if not self._api_hash and self._api_id:
             return ToolResult.failure(
                 "Нет токена Telegram: задай JARVIS_TELEGRAM_TOKEN в .env",
                 speech={"ru": "Телеграм не подключён.", "en": "Telegram isn't connected."},
@@ -117,7 +124,7 @@ class TelegramSkill(Skill):
 
     async def health(self) -> HealthStatus:
         """Готовность определяется наличием токена."""
-        if not self._token:
+        if not self._api_hash and self._api_id:
             return HealthStatus.degraded("не задан токен бота")
         return HealthStatus.healthy("заглушка, токен задан")
 
