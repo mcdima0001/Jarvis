@@ -796,6 +796,9 @@ class PageSkill(Skill):
         self._seconds = float(self.context.setting("seek_seconds", 15))
         self._volume_step = float(self.context.setting("volume_step", 0.1))
         self._section = str(self.context.setting("memory_section", "sites"))
+        #: Где искать музыку, если открытый сайт искать не умеет. «Включи трек X»
+        #: — про музыку, и уводить такую просьбу на ютуб неверно.
+        self._music_site = str(self.context.setting("music_site", "яндекс музыка"))
         #: Выученное читается из памяти один раз и обновляется при записи.
         self._known: dict[str, Any] | None = None
         #: Что нажали последним — это и отменяет «не сохраняй в память».
@@ -969,20 +972,21 @@ class PageSkill(Skill):
                 speech={"ru": "Не понял, что включить.", "en": "I didn't catch what to play."},
             )
         name = names[0]
+        speech: dict[str, tuple[str, ...]] = {
+            "ru": (f"Включаю {name}.", f"{name}, сейчас.", f"Ставлю {name}.",
+                   f"Есть, {name}."),
+            "en": (f"Playing {name}.", f"{name}, coming up.", f"Putting on {name}."),
+        }
         return await self._act(
             f"item:{name}",
             site=site,
             focused=True,
             extra=[{"item": names, "hint": list(PLAY_HINTS), "play": True}],
             search=name,
-            # Сайт не музыкальный и не видеохостинг (или браузера нет вовсе) —
-            # значит это «найди и включи», а такое умеет ютуб.
-            otherwise=lambda: self._on_youtube(name),
-            speech={
-                "ru": (f"Включаю {name}.", f"{name}, сейчас.", f"Ставлю {name}.",
-                       f"Есть, {name}."),
-                "en": (f"Playing {name}.", f"{name}, coming up.", f"Putting on {name}."),
-            },
+            # Открытый сайт искать не умеет (или браузера нет вовсе) — значит
+            # ищем там, где музыка и живёт.
+            otherwise=lambda: self._on_music_site(names, speech),
+            speech=speech,
         )
 
     @tool(phrases=["введи в поиск {text}", "введи {text} в поиск",
@@ -1301,17 +1305,42 @@ class PageSkill(Skill):
             self.log.info("На странице видно: %s", "; ".join(str(item) for item in saw))
         return None
 
-    async def _on_youtube(self, name: str) -> ToolResult:
-        """Отдать «включи X» ютубу: на странице искать оказалось нечем.
+    async def _on_music_site(
+        self, names: Sequence[str], speech: Mapping[str, Sequence[str]]
+    ) -> ToolResult:
+        """Искать на музыкальном сайте: на открытом искать оказалось нечем.
 
-        Сюда попадают случаи, где сайт не музыкальный и не видеохостинг — или
-        браузер вообще закрыт. Тогда «включи X» означает «найди и включи», а это
-        умеет ютуб: открывает выдачу и нажимает первый ролик.
+        Сюда попадают случаи, где текущий сайт не умеет искать — или браузер
+        вообще закрыт. Раньше просьба уходила ютубу, и это была ошибка: «включи
+        **трек** Dua Lipa» с открытым посторонним сайтом включало клип на ютубе,
+        хотя слово «трек» сказано прямо и Яндекс Музыка была открыта рядом.
+
+        Правило простое: где искать музыку, ассистент знает и без подсказки —
+        это `music_site` из конфига. Сайт сначала открывается (без его вкладки
+        искать негде), а дальше всё как обычно: не нашлось на странице — идём в
+        поиск сайта. Про видео есть свои фразы, и они ведут на ютуб.
         """
-        if not self.tools.has("youtube.play_video"):
+        name = names[0]
+        if not self._music_site:
             return self._nothing(f"item:{name}")
-        self.log.info("На открытом сайте искать нечем — отдаю %r ютубу", name)
-        return await self.tools.invoke("youtube.play_video", {"query": name})
+
+        self.log.info("На открытом сайте искать нечем — ищу %r на %s", name, self._music_site)
+        if self.tools.has("browser.open_site"):
+            # Без вкладки музыкального сайта искать негде, а открытая заодно
+            # означает, что владелец увидит результат.
+            opened = await self.tools.invoke("browser.open_site", {"site": self._music_site})
+            if not opened.ok:
+                return opened
+
+        # Второй попытки не будет: `otherwise` тут не передаём, иначе получился
+        # бы круг из «искать негде» в самого себя.
+        return await self._act(
+            f"item:{name}",
+            site=self._music_site,
+            extra=[{"item": list(names), "hint": list(PLAY_HINTS), "play": True}],
+            search=name,
+            speech=speech,
+        )
 
     async def _through_search(
         self, query: str, steps: Sequence[Mapping[str, Any]], *, tab: int, host: str

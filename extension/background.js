@@ -25,6 +25,16 @@ const DEFAULT_PORT = 8765;
 const NO_GROUP = -1;
 const KEEPALIVE_MS = 20000;
 const ALARM = "jarvis-reconnect";
+/**
+ * Через сколько пробовать снова после обрыва.
+ *
+ * Будильник — единственный способ поднять уснувший поток, но реже раза в
+ * полминуты Chrome его не пускает, и всё это время Jarvis остаётся без
+ * браузера. Живой случай: ассистент запустился, команда к странице отработала
+ * за 0.18 с и получила «расширение не подключено», а расширение вышло на связь
+ * через девять секунд. Пока поток жив, повторять можно и часто.
+ */
+const RETRY_MS = 2000;
 
 let socket = null;
 let keepalive = null;
@@ -91,6 +101,9 @@ async function openSocket() {
     clearInterval(keepalive);
     keepalive = null;
     socket = null;
+    // Пока служебный поток жив, пробуем часто: Jarvis мог только что
+    // запуститься, и ждать будильника полминуты незачем.
+    setTimeout(connect, RETRY_MS);
   };
 
   socket.onerror = () => {

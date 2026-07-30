@@ -258,25 +258,40 @@ async def test_play_by_name_belongs_to_the_open_site(loaded) -> None:
     await manager.stop()
 
 
-async def test_nothing_to_search_on_falls_back_to_youtube(loaded, monkeypatch) -> None:
-    """Сайт не музыкальный и не видеохостинг — значит «найди и включи».
+async def test_track_goes_to_the_music_site_not_youtube(loaded, monkeypatch) -> None:
+    """«Включи трек X» — про музыку, даже если открыт посторонний сайт.
 
-    Такое умеет ютуб, и отдать ему просьбу честнее, чем отказать: без этого
-    «включи Imagine Dragons» с открытым гитхабом просто не сработало бы.
+    Живой случай: с открытым другим сайтом Jarvis включил клип на ютубе, хотя
+    слово «трек» сказано прямо, а Яндекс Музыка была открыта рядом. Где искать
+    музыку, ассистент знает и без подсказки — это `music_site` из конфига.
     """
     manager, registry, _ = loaded
     await manager.start()
     fake = sys.modules["jarvis_skills.browser"]
+    monkeypatch.setattr(sys.modules["jarvis_skills.page"], "SEARCH_DELAY", 0)
     monkeypatch.setattr(
         fake, "TARGET", {"tabId": 7, "url": "https://example.com/", "title": "Ничего"}
     )
+    monkeypatch.setitem(
+        fake.SITE_TARGETS,
+        "яндекс музыка",
+        {"tabId": 9, "url": "https://music.yandex.ru/home", "title": "Музыка"},
+    )
     fake.CALLS.clear()
-    fake.REPLIES.clear()
+    fake.REPLIES[:] = [
+        {"done": None},  # на посторонней странице трека нет
+        {"done": None},  # на главной музыкального сайта тоже
+        {"done": "item", "detail": "midnight city", "played": True},  # после поиска
+    ]
 
     result = await registry.invoke("page.play_item", {"track": "Midnight City"})
 
     assert result.ok
-    assert ("search", "midnight city", "youtube") in fake.CALLS
+    kinds = [call[0] for call in fake.CALLS]
+    assert ("open", "яндекс музыка") in fake.CALLS, "музыкальный сайт нужно открыть"
+    assert not any(call[0] == "search" for call in fake.CALLS), "ютуб тут не при чём"
+    went = fake.CALLS[kinds.index("go")][1]
+    assert went.startswith("https://music.yandex.ru/search")
     await manager.stop()
 
 
@@ -581,6 +596,8 @@ from jarvis.core.tools import tool
 
 CALLS = []
 TARGET = {"tabId": 7, "url": "https://music.yandex.ru/home", "title": "Моя волна"}
+# Вкладки названных сайтов: «включи трек X» умеет уходить на музыкальный сайт.
+SITE_TARGETS = {}
 REPLIES = []
 CONTROLS = []
 MISSING = []
@@ -597,6 +614,8 @@ class FakeBrowserSkill(Skill):
         CALLS.append(("target", site, active))
         if site and site in MISSING:
             return ToolResult.failure("нет подходящей вкладки")
+        if site and site in SITE_TARGETS:
+            return ToolResult.success(dict(SITE_TARGETS[site]))
         return ToolResult.success(dict(TARGET))
 
     @tool(routable=False)
@@ -617,6 +636,12 @@ class FakeBrowserSkill(Skill):
         """Кнопки страницы."""
         CALLS.append(("probe", tab))
         return ToolResult.success({"controls": [dict(item) for item in CONTROLS]})
+
+    @tool()
+    async def open_site(self, site: str = "") -> ToolResult:
+        """Открыть сайт."""
+        CALLS.append(("open", site))
+        return ToolResult.success({"url": site})
 
     @tool()
     async def search(self, query: str, engine: str = "") -> ToolResult:
