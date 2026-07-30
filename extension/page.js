@@ -310,6 +310,32 @@ async function jarvisRunPlan(plan) {
     return text;
   };
 
+  /** Идёт ли звук прямо сейчас. Успех «включи» измеряется этим, а не нажатием. */
+  const sounding = () => players().some((item) => !item.paused && !item.ended);
+
+  /**
+   * Дождаться звука.
+   *
+   * Плеер запускается не мгновенно: сайт успевает сходить за ссылкой на файл.
+   * Проверять сразу после нажатия бессмысленно — тишина ничего не значит.
+   */
+  const awaitSound = async (limit) => {
+    for (let waited = 0; waited < limit; waited += 200) {
+      if (sounding()) {
+        return true;
+      }
+      await new Promise((done) => setTimeout(done, 200));
+    }
+    return sounding();
+  };
+
+  /** Что было рядом: подписи и устойчивые признаки. Это данные для лога. */
+  const listOf = (elements) =>
+    elements.slice(0, 8).map((item) => ({
+      name: caption(item).slice(0, 40),
+      sel: item.getAttribute("data-test-id") || item.getAttribute("class") || "",
+    }));
+
   /**
    * Включить названное: трек в списке, ролик в подборке.
    *
@@ -318,6 +344,11 @@ async function jarvisRunPlan(plan) {
    * и она обычно появляется лишь при наведении мыши. Поэтому: находим строку
    * по названию, наводимся на неё, ищем внутри кнопку воспроизведения, а если
    * её нет — нажимаем саму строку и дожимаем плеер.
+   *
+   * **Нажатие — не то же самое, что звук.** Живой случай: на Яндекс Музыке
+   * строка нашлась, кнопка «Воспроизведение» нажалась, Jarvis отчитался
+   * «включаю» — и тишина. Поэтому с `play: true` успехом считается только
+   * появившийся звук: не появился — пробуем следующий способ, а не врём.
    */
   const playItem = async (step) => {
     const ITEMS =
@@ -333,7 +364,19 @@ async function jarvisRunPlan(plan) {
     // love oliver nelson & tobtok remix… midnight city… the reason…».
     const found = bestMatch(ITEMS, wanted, [], true);
     if (!found) {
-      return null;
+      // Ничего не совпало. Расскажем, что вообще видно на странице: по этому
+      // списку сразу понятно, дело в названии или страница ещё не дорисовалась.
+      const saw = [];
+      for (const element of document.querySelectorAll(ITEMS)) {
+        if (saw.length >= 8) {
+          break;
+        }
+        const text = seen(element) ? caption(element) : "";
+        if (text && text.length <= 60 && !saw.includes(text)) {
+          saw.push(text);
+        }
+      }
+      return { saw };
     }
 
     // Кнопка воспроизведения прячется до наведения, поэтому видимость у неё
@@ -342,6 +385,7 @@ async function jarvisRunPlan(plan) {
     const MARKS = '[data-test-id*="PLAY" i], [class*="play" i], [aria-label*="play" i]';
     let node = found;
     let nearby = [];
+    let pressed = "";
     for (let depth = 0; node && depth < 6; depth += 1) {
       for (const name of ["pointerover", "mouseover", "mouseenter"]) {
         try {
@@ -366,36 +410,46 @@ async function jarvisRunPlan(plan) {
       }
       if (button) {
         button.click();
-        return { detail: `${caption(found)} — ${caption(button) || "кнопка без подписи"}` };
+        pressed = caption(button) || "кнопка без подписи";
+        break;
       }
       node = node.parentElement;
     }
 
-    // Кнопку не нашли — расскажем, что рядом было. По этому списку в логе
-    // пишется точный рецепт сайта, без угадывания.
-    const buttons = nearby.slice(0, 8).map((item) => ({
-      name: caption(item).slice(0, 40),
-      sel: item.getAttribute("data-test-id") || item.getAttribute("class") || "",
-    }));
+    const name = caption(found);
+    const detail = pressed ? `${name} — ${pressed}` : name;
 
+    // Просили просто нажать — на этом всё, звук тут никто не обещал.
+    if (!step.play) {
+      if (pressed) {
+        return { detail };
+      }
+      found.click();
+      return { detail, buttons: listOf(nearby) };
+    }
+
+    if (pressed && (await awaitSound(1500))) {
+      return { detail, played: true };
+    }
+
+    // Кнопка не помогла или её не было — нажимаем саму строку. Нажатие могло
+    // только выбрать трек, поэтому потом дожимаем плеер руками.
     found.click();
-    if (step.play) {
-      // Нажатие могло только выбрать трек. Даём странице мгновение и, если
-      // тишина, включаем плеер сами.
-      await new Promise((done) => setTimeout(done, 400));
-      const playing = players().some((item) => !item.paused && !item.ended);
-      if (!playing) {
-        const target = mainPlayer();
-        if (target) {
-          try {
-            await target.play();
-          } catch (error) {
-            // Автозапуск запрещён — но строку мы всё-таки нажали.
-          }
-        }
+    if (await awaitSound(1500)) {
+      return { detail, played: true };
+    }
+    const target = mainPlayer();
+    if (target) {
+      try {
+        await target.play();
+      } catch (error) {
+        // Автозапуск запрещён — но строку мы всё-таки нажали.
       }
     }
-    return { detail: caption(found), buttons };
+    const played = await awaitSound(600);
+    // Звука так и нет — расскажем, что было рядом. По этому списку в логе
+    // пишется точный рецепт сайта, без угадывания.
+    return played ? { detail, played } : { detail, played, buttons: listOf(nearby) };
   };
 
   /** Первый видимый элемент по списку селекторов — вместе с самим селектором. */
@@ -424,6 +478,9 @@ async function jarvisRunPlan(plan) {
     url: location.href,
   });
 
+  //: Что видно на странице, если название не нашлось. Уходит в лог Jarvis.
+  let missed = null;
+
   for (const step of (plan || []).slice(0, MAX_STEPS)) {
     if (!step || typeof step !== "object") {
       continue;
@@ -441,12 +498,20 @@ async function jarvisRunPlan(plan) {
         }
       } else if (Array.isArray(step.item)) {
         const done = await playItem(step);
-        if (done) {
+        if (done && done.detail !== undefined) {
           const reply = answer("item", done.detail);
           if (done.buttons && done.buttons.length) {
             reply.buttons = done.buttons;
           }
+          if (done.played !== undefined) {
+            // Нажали, но звука нет: пусть Jarvis скажет об этом честно, а не
+            // отчитается «включаю» в тишину.
+            reply.played = done.played;
+          }
           return reply;
+        }
+        if (done && done.saw) {
+          missed = done.saw;
         }
       } else if (Array.isArray(step.label)) {
         const element = byLabel(step);
@@ -470,7 +535,11 @@ async function jarvisRunPlan(plan) {
     }
   }
 
-  return answer(null, "");
+  const nothing = answer(null, "");
+  if (missed) {
+    nothing.saw = missed;
+  }
+  return nothing;
 }
 
 /**

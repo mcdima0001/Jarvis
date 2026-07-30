@@ -222,6 +222,84 @@ async def test_missing_track_is_searched_on_the_site(loaded) -> None:
     await manager.stop()
 
 
+async def test_clicked_but_silent_is_not_a_success(loaded, monkeypatch) -> None:
+    """«Нашёл» и «включил» — разные вещи, и вслух это должно звучать честно.
+
+    Живой случай на Яндекс Музыке: строка нашлась, кнопка «Воспроизведение»
+    нажалась, ассистент сказал «включаю» — и тишина.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    # Ждать по-настоящему тут нечего: страницы нет, а пауза между попытками
+    # нужна живому браузеру. Скилл поднят загрузчиком, поэтому и правим его
+    # собственный модуль, а не тот, что импортирован тестом.
+    monkeypatch.setattr(sys.modules["jarvis_skills.page"], "SEARCH_DELAY", 0)
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    quiet = {"done": "item", "detail": "midnight city — воспроизведение", "played": False}
+    fake.REPLIES[:] = [dict(quiet) for _ in range(page.SEARCH_ATTEMPTS + 1)]
+
+    result = await registry.invoke("page.play_item", {"track": "Midnight City"})
+
+    assert not result.ok, "тишина — это не успех"
+    assert "не началось" in (result.error or "")
+    # Молчаливая попытка не останавливает поиск: строка могла остаться от
+    # прежней страницы, поэтому ищем на сайте и пробуем ещё раз.
+    assert [call[0] for call in fake.CALLS].count("run") == page.SEARCH_ATTEMPTS + 1
+    await manager.stop()
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://www.youtube.com/watch?v=abc", "https://www.youtube.com/"),
+        ("https://music.yandex.ru/search?text=a#b", "https://music.yandex.ru/"),
+        ("browser://extensions", ""),
+        ("", ""),
+    ],
+)
+def test_home_page_of_a_site(url: str, expected: str) -> None:
+    """«Перейди на главную» — это адрес сайта без пути, а не нажатие логотипа."""
+    assert page.origin_of(url) == expected
+
+
+async def test_home_goes_in_the_same_tab(loaded) -> None:
+    """Главная открывается в этой же вкладке: новая тут никому не нужна.
+
+    Логотип нажать не получается — это ссылка, а список для модели собирается
+    из кнопок, и его там нет. Живой случай: «нажми на лого YouTube» дважды
+    упёрлось в «модель не нашла кнопку».
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+
+    result = await registry.invoke("page.home", {})
+
+    assert result.ok
+    assert [call[0] for call in fake.CALLS] == ["target", "go"]
+    assert fake.CALLS[1][1] == "https://music.yandex.ru/"
+    assert fake.CALLS[1][2] == fake.TARGET["tabId"], "вкладка та же"
+    await manager.stop()
+
+
+def test_toggle_never_means_next_track() -> None:
+    """У модели про переключение больше не спрашивают.
+
+    Живой промах: «переключить воспроизведение» она поняла как «следующий
+    трек» и выбрала на Яндекс Музыке «Следующая песня» — это запомнилось
+    навсегда и потом мешало. Спрашивать тут не о чем: у переключения есть и
+    общий способ (сам плеер), и подписи кнопок.
+    """
+    assert not page.learnable("toggle")
+    assert page.ACTIONS["toggle"][0] == {"media": "toggle"}
+    labels = page.ACTIONS["toggle"][1]["label"]
+    assert "пауза" in labels and "воспроизвести" in labels
+    assert not any("следующ" in word for word in labels)
+    assert "следующий" not in page.INTENT_TEXT["toggle"]
+
+
 def test_typed_text_is_a_string_not_a_list() -> None:
     """Печатать — это текст, и он уходит в значение поля, а не в код."""
     plan = page.validate_plan([{"type": "  don't stop me now  ", "submit": True}])

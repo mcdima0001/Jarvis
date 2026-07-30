@@ -113,7 +113,12 @@ ACTIONS: dict[str, tuple[dict[str, Any], ...]] = {
         {"media": "pause"},
         {"label": ["пауза", "приостановить", "pause"]},
     ),
-    "toggle": ({"media": "toggle"},),
+    # У переключения общий способ есть всегда — сам плеер. Подписи идут вторыми
+    # и обе сразу: «переключить» — это либо включить, либо остановить.
+    "toggle": (
+        {"media": "toggle"},
+        {"label": ["воспроизвести", "слушать", "play", "пауза", "pause"]},
+    ),
     "next": (
         {"label": ["следующий", "следующая", "следующее", "next track", "next video", "next song"]},
     ),
@@ -224,8 +229,18 @@ SITE_SEARCH: dict[str, str] = {
 #:
 #: `loaded()` в расширении ждёт события браузера, но выдача у таких сайтов
 #: дорисовывается скриптом уже после него: разметка есть, треков ещё нет.
-SEARCH_ATTEMPTS = 3
-SEARCH_DELAY = 0.7
+SEARCH_ATTEMPTS = 4
+SEARCH_DELAY = 0.8
+
+
+def silent(result: Mapping[str, Any]) -> bool:
+    """Нажали, но звук не появился.
+
+    Расширение отвечает `played: false`, когда «включи» дошло до конца и
+    ничего не заиграло. Это не успех: отчитаться «включаю» в тишину — ровно та
+    ложь, за которую поправлен свободный разговор.
+    """
+    return result.get("done") == "item" and result.get("played") is False
 
 
 def search_url_for(host: str, query: str) -> str:
@@ -262,7 +277,9 @@ SPEECH: dict[str, tuple[str, str]] = {
 INTENT_TEXT: dict[str, str] = {
     "play": "включить воспроизведение",
     "pause": "поставить на паузу",
-    "toggle": "переключить воспроизведение",
+    # «Переключить воспроизведение» по-русски читается и как «следующий трек» —
+    # модель именно так и поняла, выбрав на Яндекс Музыке «Следующая песня».
+    "toggle": "нажать кнопку воспроизведения или паузы",
     "next": "включить следующий трек или видео",
     "previous": "вернуться к предыдущему треку или видео",
     "like": "поставить лайк текущему треку или видео",
@@ -284,8 +301,13 @@ INTENT_TEXT: dict[str, str] = {
 #: видео» — это ссылка в выдаче, её в списке нет и быть не может, и модель в
 #: ответ выбирает что попало: на живом YouTube она предложила деление шкалы
 #: времени, и это ушло в память как способ включить видео.
+#:
+#: `toggle` убран отсюда после живого промаха: на Яндекс Музыке модель выбрала
+#: «Следующая песня» и это запомнилось навсегда. Спрашивать тут и правда не о
+#: чем — у переключения есть общий способ (сам плеер) и подписи кнопок, а если
+#: плеера на странице нет, то и переключать нечего.
 LEARNABLE = frozenset(
-    {"play", "pause", "toggle", "next", "previous", "like", "unlike", "dislike",
+    {"play", "pause", "next", "previous", "like", "unlike", "dislike",
      "mute", "unmute"}
 )
 
@@ -343,6 +365,21 @@ def host_of(url: str) -> str:
     except ValueError:
         return ""
     return host.split("@")[-1].split(":")[0].removeprefix("www.")
+
+
+def origin_of(url: str) -> str:
+    """Главная страница сайта: схема и домен без пути.
+
+    Нужно для «перейди на главную»: нажать логотип нельзя — он ссылка, а не
+    кнопка, и в списке для модели его нет и не будет.
+    """
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return ""
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}/"
 
 
 def recipes_for(host: str, catalog: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -780,7 +817,12 @@ class PageSkill(Skill):
                    "включи {track} в яндекс музыке",
                    "play the track {track}", "play {track} on the page"])
     async def play_item(self, track: str, site: str = "") -> ToolResult:
-        """Включить названный трек или ролик из списка на странице.
+        """Включить песню или трек по названию на открытом сайте — например на Яндекс Музыке; если на странице его нет, найти в поиске этого же сайта.
+
+        Первая строка уезжает в каталог для модели, и слова в ней подобраны не
+        случайно. Раньше там было «из списка на странице», и «включи Don't Stop
+        Me Now» модель отправляла на YouTube: искать песню на музыкальном сайте
+        по описанию выходило нельзя. Теперь можно, и сказано об этом прямо.
 
         Отдельно от «нажми», потому что нажатие по строке трека
         воспроизведение не запускает: оно её только выбирает. Играть начинает
@@ -831,6 +873,58 @@ class PageSkill(Skill):
             focused=True,
             extra=[{"type": typed, "submit": True}],
             speech=(f"Ввёл: {typed}.", f"Typed: {typed}."),
+        )
+
+    @tool(phrases=["перейди на главную", "перейди на главную страницу",
+                   "открой главную страницу", "вернись на главную",
+                   "нажми на логотип", "нажми на лого", "нажми логотип",
+                   "go to the home page", "go home"])
+    async def home(self, site: str = "") -> ToolResult:
+        """Перейти на главную страницу сайта, не открывая новую вкладку.
+
+        Отдельная команда, потому что нажать логотип не получается: это ссылка,
+        а список для модели собирается из кнопок, и логотипа в нём нет.
+
+        :param site: на каком сайте; пусто — там, куда смотришь.
+        """
+        if not self.tools.has("browser.page_go"):
+            return ToolResult.failure(
+                "переходить по адресам умеет расширение браузера, а его нет",
+                speech={
+                    "ru": "Со страницами я тут не работаю.",
+                    "en": "I can't work with pages on this machine.",
+                },
+            )
+
+        found = await self.tools.invoke("browser.page_target", {"site": site, "active": True})
+        if not found.ok or not isinstance(found.value, Mapping):
+            return found if not found.ok else self._nothing("home")
+
+        url = str(dict(found.value).get("url", ""))
+        home = origin_of(url)
+        if not home:
+            return ToolResult.failure(
+                f"это не обычная страница сайта: {url!r}",
+                speech={
+                    "ru": "Тут нет главной страницы.",
+                    "en": "There's no home page here.",
+                },
+            )
+        if home == url:
+            return ToolResult.success(
+                {"url": url},
+                speech={"ru": "Мы и так на главной.", "en": "We're already on the home page."},
+            )
+
+        moved = await self.tools.invoke(
+            "browser.page_go", {"url": home, "tab": int(dict(found.value).get("tabId") or 0)}
+        )
+        if not moved.ok:
+            return moved
+        self.log.info("Перешёл на главную: %s", home)
+        return ToolResult.success(
+            {"url": home},
+            speech={"ru": "Открыл главную страницу.", "en": "Home page it is."},
         )
 
     @tool(routable=False, phrases=["включи первое видео", "открой первое видео",
@@ -936,10 +1030,15 @@ class PageSkill(Skill):
 
         steps = self._plan(action, host, seconds=seconds, extra=extra)
         result = await self._run(steps, tab)
-        if result is None and search:
-            result = await self._through_search(search, steps, tab=tab, host=host)
+        if search and (result is None or silent(result)):
+            # Нашлось не то или заиграть не смогло — поищем на самом сайте.
+            better = await self._through_search(search, steps, tab=tab, host=host)
+            if better is not None:
+                result = better
         if result is not None:
             self._note_attempt(host, action, result, learned=False)
+            if silent(result):
+                return self._not_playing(result)
             return self._done(action, result, speech)
 
         learned = await self._learn_action(
@@ -1009,7 +1108,14 @@ class PageSkill(Skill):
         )
         if not result.ok or not isinstance(result.value, Mapping):
             return None
-        return dict(result.value) if result.value.get("done") else None
+        if result.value.get("done"):
+            return dict(result.value)
+        # Название не нашлось. Что было на странице — единственный способ
+        # понять, дело в услышанном названии или страница ещё не дорисовалась.
+        saw = result.value.get("saw")
+        if saw:
+            self.log.info("На странице видно: %s", "; ".join(str(item) for item in saw))
+        return None
 
     async def _through_search(
         self, query: str, steps: Sequence[Mapping[str, Any]], *, tab: int, host: str
@@ -1037,13 +1143,20 @@ class PageSkill(Skill):
             return None
         self.log.info("На странице %r не нашлось — открыл поиск сайта: %s", query, url)
 
+        # Нажали, но тишина — это ещё не ответ: строка могла остаться от прежней
+        # страницы. Поэтому попытки продолжаются, а последняя молчаливая
+        # сохраняется: сказать «нашёл, но не заиграло» честнее, чем «не нашёл».
+        quiet: dict[str, Any] | None = None
         for attempt in range(SEARCH_ATTEMPTS):
             if attempt:
                 await asyncio.sleep(SEARCH_DELAY)
             result = await self._run(steps, tab)
-            if result is not None:
+            if result is None:
+                continue
+            if not silent(result):
                 return result
-        return None
+            quiet = result
+        return quiet
 
     async def _learn_action(
         self, action: str, *, tab: int, host: str, title: str, want: str
@@ -1262,18 +1375,44 @@ class PageSkill(Skill):
         self.log.info(
             "Страница %s: %s (%s)", result.get("url", ""), action, detail or result.get("done")
         )
-        # Кнопку воспроизведения в строке найти не удалось — расширение прислало
-        # список того, что рядом. По нему пишется точный рецепт сайта, без
-        # угадывания разметки вслепую.
-        nearby = result.get("buttons")
-        if nearby:
-            listed = "; ".join(
-                f"{str(item.get('name', '')) or '(без подписи)'} [{item.get('sel', '')}]"
-                for item in nearby
-                if isinstance(item, Mapping)
-            )
-            self.log.info("Кнопки рядом со строкой (кнопки воспроизведения не нашёл): %s", listed)
+        self._log_nearby(result)
         return ToolResult.success(dict(result), speech={"ru": ru, "en": en})
+
+    def _not_playing(self, result: Mapping[str, Any]) -> ToolResult:
+        """Строку нашли и нажали, а звука нет.
+
+        Отчитаться «включаю» в тишину нельзя — это ровно та ложь, за которую
+        поправлен свободный разговор. Живой случай: на Яндекс Музыке трек
+        нашёлся, кнопка «Воспроизведение» нажалась, ассистент сказал «включаю»,
+        и ничего не заиграло.
+        """
+        detail = str(result.get("detail", "")).strip()
+        self.log.info("Нажал %r, но звука так и нет: %s", detail, result.get("url", ""))
+        self._log_nearby(result)
+        return ToolResult.failure(
+            f"нашёл {detail!r}, но воспроизведение не началось",
+            speech={
+                "ru": f"Нашёл {detail}, но включить не получилось.",
+                "en": f"I found {detail}, but it wouldn't start playing.",
+            },
+        )
+
+    def _log_nearby(self, result: Mapping[str, Any]) -> None:
+        """Написать в лог, что было рядом со строкой.
+
+        Расширение присылает этот список, когда кнопку воспроизведения найти не
+        удалось или звук так и не появился. По нему рецепт сайта дописывается
+        точно, а не угадывается по чужой разметке вслепую.
+        """
+        nearby = result.get("buttons")
+        if not nearby:
+            return
+        listed = "; ".join(
+            f"{str(item.get('name', '')) or '(без подписи)'} [{item.get('sel', '')}]"
+            for item in nearby
+            if isinstance(item, Mapping)
+        )
+        self.log.info("Кнопки рядом со строкой: %s", listed)
 
     @staticmethod
     def _nothing(action: str, *, host: str = "") -> ToolResult:

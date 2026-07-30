@@ -50,6 +50,11 @@ function element(options) {
     },
     click() {
       self.clicked += 1;
+      // Настоящая кнопка воспроизведения запускает плеер. Без этого нельзя
+      // проверить главное: успех «включи» измеряется звуком, а не нажатием.
+      if (options.starts) {
+        options.starts.paused = false;
+      }
     },
   };
   children.forEach((child) => {
@@ -159,7 +164,13 @@ function load(document) {
     document,
     location: { href: "https://example.com/track" },
     getComputedStyle: () => ({ visibility: "visible", display: "block", opacity: "1" }),
-    setTimeout,
+    // Время тут ни при чём: page.js ждёт, пока сайт запустит плеер, а в
+    // подделке он либо запускается сразу, либо не запускается вовсе. Ждать
+    // по-настоящему означало бы секунды на каждую проверку.
+    setTimeout: (body) => {
+      body();
+      return 0;
+    },
     // Наведение мыши: без него не найти кнопку, которая появляется по hover.
     MouseEvent: class {
       constructor(type, init) {
@@ -329,21 +340,59 @@ check("неизвестный шаг пропускается", async () => {
 check("трек включается кнопкой внутри строки", async () => {
   // Кнопка спрятана до наведения — именно поэтому видимость у неё не
   // проверяется, а перед поиском страница получает mouseover.
-  const play = element({ attributes: { "aria-label": "Воспроизвести" }, hidden: true });
+  const audio = player({ tag: "audio", paused: true });
+  const play = element({
+    attributes: { "aria-label": "Воспроизвести" },
+    hidden: true,
+    starts: audio,
+  });
   const row = element({
     attributes: { "aria-label": "Трек Midnight City", role: "row" },
     children: [play],
   });
-  const api = load(makeDocument({ controls: [row] }));
+  const api = load(makeDocument({ controls: [row], players: [audio] }));
 
   const result = await api.jarvisRunPlan([
     { item: ["midnight city"], hint: ["воспроизв"], play: true },
   ]);
 
   assert(result.done === "item", `ожидалось item, пришло ${result.done}`);
+  assert(result.played === true, "звук пошёл, а в ответе этого нет");
   assert(row.hovered > 0, "на строку не наводились");
   assert(play.clicked === 1, "кнопка воспроизведения не нажата");
-  assert(row.clicked === 0, "по самой строке нажимать не нужно");
+  assert(row.clicked === 0, "звук уже идёт — по самой строке нажимать не нужно");
+});
+
+check("нажали, а звука нет — так и отвечаем", async () => {
+  // Живой случай на Яндекс Музыке: строка нашлась, «Воспроизведение»
+  // нажалось, Jarvis сказал «включаю» — и тишина.
+  const audio = player({ tag: "audio", paused: true, rejects: true });
+  const play = element({ attributes: { "aria-label": "Воспроизвести" } });
+  const row = element({
+    attributes: { "aria-label": "Трек Midnight City" },
+    children: [play],
+  });
+  const api = load(makeDocument({ controls: [row], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["midnight city"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.done === "item", "строку всё же нашли");
+  assert(result.played === false, "звука нет, а ответ говорит обратное");
+  assert(play.clicked === 1, "кнопку попробовать надо было");
+  assert(row.clicked === 1, "кнопка не помогла — надо было нажать строку");
+  assert(result.buttons && result.buttons.length, "список кнопок рядом не пришёл");
+});
+
+check("название не нашлось — рассказываем, что видно", async () => {
+  const row = element({ attributes: { "aria-label": "Трек Something Else" } });
+  const api = load(makeDocument({ controls: [row] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["midnight city"], play: true }]);
+
+  assert(result.done === null, "нажалось не то");
+  assert(result.saw && result.saw.includes("трек something else"), "не видно, что было на странице");
 });
 
 check("без кнопки нажимается строка и дожимается плеер", async () => {
