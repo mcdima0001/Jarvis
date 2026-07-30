@@ -489,6 +489,49 @@ check("трек уже играет — кнопку паузы не нажим�
   assert(row.clicked === 0, "по строке тыкать тоже незачем");
 });
 
+check("чужой играющий трек за успех не считается", async () => {
+  // Живой случай: на выдаче играл посторонний трек. Любое нажатие сходило бы за
+  // успех — «звучит же», — хотя нужный трек так и не включился.
+  const other = { tag: "audio", paused: false, ended: false, muted: false, readyState: 4,
+                  duration: 100, currentTime: 30, src: "blob:other", played: 0,
+                  getBoundingClientRect: () => ({ width: 0, height: 0 }),
+                  async play() { this.played += 1; },
+                  pause() { this.paused = true; } };
+  const play = element({ attributes: { "aria-label": "Воспроизвести" } });
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" }, children: [play] });
+  const api = load(makeDocument({ controls: [row], players: [other] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["волшебная"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === false, "чужой трек сошёл за включённый");
+});
+
+check("сменился трек — значит включилось", async () => {
+  const player_ = { tag: "audio", paused: false, ended: false, muted: false, readyState: 4,
+                    duration: 100, currentTime: 30, src: "blob:old", played: 0,
+                    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+                    async play() { this.played += 1; },
+                    pause() { this.paused = true; } };
+  // Настоящая кнопка переключает источник — подделке скажем об этом.
+  const play = element({ attributes: { "aria-label": "Воспроизвести" } });
+  const original = play.click;
+  play.click = () => {
+    original();
+    player_.src = "blob:new";
+  };
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" }, children: [play] });
+  const api = load(makeDocument({ controls: [row], players: [player_] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["волшебная"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === true, "источник сменился, а мы этого не заметили");
+  assert(row.clicked === 0, "нажатие принято — по строке тыкать незачем");
+});
+
 check("беззвучный предпросмотр за звук не считается", async () => {
   // На YouTube наведение мыши запускает беззвучный ролик, а наведение — как
   // раз то, что делает шаг item.
@@ -680,6 +723,19 @@ check("голый адрес не считается названием", async 
 
   assert(result.done === null, "нажалась ссылка из текста");
   assert(link.clicked === 0, "нажалась ссылка из текста");
+});
+
+check("пустая страница отличается от полной без совпадений", async () => {
+  // Пустой список в лог не попадал вовсе, и четыре попытки подряд не оставляли
+  // ни строки: выглядело как «Jarvis молча передумал».
+  const empty = load(makeDocument({}));
+  const nothing = await empty.jarvisRunPlan([{ item: ["midnight city"], play: true }]);
+  assert(nothing.counted === 0, `на пустой странице counted=${nothing.counted}`);
+
+  const row = element({ attributes: { "aria-label": "Совсем другой трек" } });
+  const full = load(makeDocument({ controls: [row] }));
+  const missed = await full.jarvisRunPlan([{ item: ["midnight city"], play: true }]);
+  assert(missed.counted === 1, `элементы были, а counted=${missed.counted}`);
 });
 
 check("кнопка без подписи находится по атрибутам", async () => {

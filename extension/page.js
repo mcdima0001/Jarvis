@@ -386,20 +386,35 @@ async function jarvisRunPlan(plan) {
     );
 
   /**
+   * Отпечаток того, что играет: адрес источника и состояние каждого плеера.
+   *
+   * Одного «идёт ли звук» мало, когда звук уже идёт. Живой случай: на выдаче
+   * играл посторонний трек, и любое нажатие сходило бы за успех — «звучит же».
+   * Сравнение отпечатков отвечает на нужный вопрос: **сменилось ли** то, что
+   * играет. Адрес у каждого трека свой (у Яндекс Музыки это blob), а флаг
+   * паузы ловит переход из тишины в звук.
+   */
+  const signature = () =>
+    Array.from(document.querySelectorAll("video, audio"))
+      .map((item) => `${item.currentSrc || item.src || ""}#${item.paused ? 0 : 1}`)
+      .join("|");
+
+  /**
    * Дождаться звука.
    *
    * Плеер запускается не мгновенно: сайт успевает сходить за ссылкой на файл.
    * Проверять сразу после нажатия бессмысленно — тишина ничего не значит. Но и
    * ждать долго нельзя: расширение держит ответ, а у команды есть свой предел.
    */
-  const awaitSound = async (limit) => {
+  const awaitSound = async (limit, before = null) => {
+    const started = () => sounding() && (before === null || signature() !== before);
     for (let waited = 0; waited < limit; waited += 100) {
-      if (sounding()) {
+      if (started()) {
         return true;
       }
       await new Promise((done) => setTimeout(done, 100));
     }
-    return sounding();
+    return started();
   };
 
   /** Подписи, которыми называют остановку. Кнопка с такой — уже играет. */
@@ -416,15 +431,17 @@ async function jarvisRunPlan(plan) {
   const saysPlaying = (button) =>
     Boolean(button) && PAUSE_WORDS.some((word) => hits(spaced(caption(button)), word));
 
-  /** Дождаться, что трек пошёл: либо слышно, либо кнопка стала паузой. */
-  const awaitStart = async (button, limit) => {
+  /** Дождаться, что пошёл **новый** трек: либо сменился звук, либо кнопка стала паузой. */
+  const awaitStart = async (button, limit, before) => {
+    const started = () =>
+      (sounding() && signature() !== before) || saysPlaying(button);
     for (let waited = 0; waited < limit; waited += 100) {
-      if (sounding() || saysPlaying(button)) {
+      if (started()) {
         return true;
       }
       await new Promise((done) => setTimeout(done, 100));
     }
-    return sounding() || saysPlaying(button);
+    return started();
   };
 
   /**
@@ -519,20 +536,31 @@ async function jarvisRunPlan(plan) {
         );
 
       const near = [];
+      let counted = 0;
       for (const element of document.querySelectorAll(ITEMS)) {
         const text = seen(element) ? caption(element) : "";
-        if (text && text.length <= 60 && !near.some((item) => item.text === text)) {
+        if (!text) {
+          continue;
+        }
+        counted += 1;
+        if (text.length <= 60 && !near.some((item) => item.text === text)) {
           near.push({ text, rank: nearness(spaced(text)) });
         }
       }
       near.sort((first, second) => second.rank - first.rank || first.text.length - second.text.length);
-      return { saw: near.slice(0, 8).map((item) => item.text) };
+      // `counted` важнее списка. Пустая страница и полная, но без нужного, —
+      // это разные болезни: первая лечится ожиданием, вторая названием. По
+      // одному списку они выглядели одинаково, потому что пустой список в лог
+      // просто не попадал.
+      return { saw: near.slice(0, 8).map((item) => item.text), counted };
     }
 
     // Кнопка воспроизведения прячется до наведения, поэтому видимость у неё
     // не проверяем — иначе её не найти никогда. И часто у неё вообще нет
     // подписи: внутри только иконка. Тогда остаётся признак в атрибутах.
     const MARKS = '[data-test-id*="PLAY" i], [class*="play" i], [aria-label*="play" i]';
+    // Что играло **до** нашего вмешательства. Сравнивать будем с этим.
+    const before = signature();
     let node = found;
     let nearby = [];
     let pressed = "";
@@ -593,14 +621,14 @@ async function jarvisRunPlan(plan) {
     // ссылкой на файл. Пределы короткие: расширение держит ответ, а с
     // секундными паузами на каждый шаг одна команда занимала 18 с и упиралась
     // в «расширение не ответило».
-    if (pressed && (await awaitStart(control, 1200))) {
+    if (pressed && (await awaitStart(control, 1200, before))) {
       return { detail, played: true };
     }
 
     // Кнопка не помогла или её не было — нажимаем саму строку. Нажатие могло
     // только выбрать трек, поэтому потом дожимаем плеер руками.
     found.click();
-    if (await awaitStart(control, 700)) {
+    if (await awaitStart(control, 700, before)) {
       return { detail, played: true };
     }
     const target = mainPlayer();
@@ -611,7 +639,7 @@ async function jarvisRunPlan(plan) {
         // Автозапуск запрещён — но строку мы всё-таки нажали.
       }
     }
-    const played = await awaitSound(400);
+    const played = await awaitSound(400, before);
     // Звука так и нет — расскажем, что было рядом. По этому списку в логе
     // пишется точный рецепт сайта, без угадывания.
     return played ? { detail, played } : { detail, played, buttons: listOf(nearby) };
@@ -680,8 +708,8 @@ async function jarvisRunPlan(plan) {
           }
           return reply;
         }
-        if (done && done.saw) {
-          missed = done.saw;
+        if (done && done.saw !== undefined) {
+          missed = { saw: done.saw, counted: done.counted || 0 };
         }
       } else if (Array.isArray(step.label)) {
         const element = byLabel(step);
@@ -707,7 +735,8 @@ async function jarvisRunPlan(plan) {
 
   const nothing = answer(null, "");
   if (missed) {
-    nothing.saw = missed;
+    nothing.saw = missed.saw;
+    nothing.counted = missed.counted;
   }
   return nothing;
 }

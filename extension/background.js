@@ -321,7 +321,14 @@ async function inPage(tab, func, args, allFrames) {
     func,
     args,
   });
-  const values = results.map((item) => item.result).filter(Boolean);
+  // Главный кадр первым. Порядок ответов от кадров браузер не обещает, а когда
+  // не сработал никто, в ответ уходит первый попавшийся — и это оказывался
+  // рекламный фрейм с пустой страницей. В логе Jarvis это выглядело как «на
+  // выдаче ничего нет», хотя выдача была на экране.
+  const ordered = results
+    .slice()
+    .sort((first, second) => (first.frameId || 0) - (second.frameId || 0));
+  const values = ordered.map((item) => item.result).filter(Boolean);
   return values.find((value) => value.done || (value.controls || []).length) || values[0] || {};
 }
 
