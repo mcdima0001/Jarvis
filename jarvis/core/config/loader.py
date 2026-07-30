@@ -233,8 +233,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             file=str(log.get("file", "jarvis.log")),
             console=bool(log.get("console", True)),
             time_format=str(log.get("time_format", "%d.%m.%y, %H:%M:%S")),
-            max_bytes=int(log.get("max_bytes", 5 * 1024 * 1024)),
-            backup_count=int(log.get("backup_count", 5)),
+            keep_days=int(log.get("keep_days", 14)),
         ),
         runtime=RuntimeConfig(
             worker_threads=int(runtime.get("worker_threads", 2)),

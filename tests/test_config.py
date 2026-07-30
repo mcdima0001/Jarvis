@@ -183,6 +183,15 @@ def test_persona_phrases_must_be_grouped_by_language(tmp_path: Path) -> None:
 # --- логирование -------------------------------------------------------------
 
 
+def _written(directory, name: str = "t.log") -> str:
+    """Прочитать дневной файл: один файл — один день, имя с датой."""
+    from datetime import date
+
+    from jarvis.core.logging.daily import dated_name
+
+    return dated_name(directory / name, date.today()).read_text(encoding="utf-8")
+
+
 def test_file_is_more_verbose_than_the_console(tmp_path, capsys) -> None:
     """Уровня два: консоль читают глазами, файл — когда что-то пошло не так.
 
@@ -204,7 +213,7 @@ def test_file_is_more_verbose_than_the_console(tmp_path, capsys) -> None:
     log.debug("подробность")
     logging.shutdown()
 
-    written = (tmp_path / "t.log").read_text(encoding="utf-8")
+    written = _written(tmp_path)
     assert "подробность" in written
     assert "видно везде" in written
     assert "подробность" not in capsys.readouterr().err
@@ -227,7 +236,7 @@ def test_third_party_debug_never_reaches_the_log(tmp_path) -> None:
     logging.getLogger("numba.core.ssa").warning("а это важно")
     logging.shutdown()
 
-    written = (tmp_path / "t.log").read_text(encoding="utf-8")
+    written = _written(tmp_path)
     assert "дизассемблер" not in written
     assert "а это важно" in written
 
@@ -245,7 +254,7 @@ def test_typo_in_the_level_does_not_break_the_start(tmp_path) -> None:
     log.debug("всё равно пишем")
     logging.shutdown()
 
-    assert "всё равно пишем" in (tmp_path / "t.log").read_text(encoding="utf-8")
+    assert "всё равно пишем" in _written(tmp_path)
 
 
 def test_color_never_leaks_into_the_file(tmp_path) -> None:
@@ -267,7 +276,7 @@ def test_color_never_leaks_into_the_file(tmp_path) -> None:
     log.info("Отвечаю: готово", extra={"tone": "said"})
     logging.shutdown()
 
-    written = (tmp_path / "t.log").read_text(encoding="utf-8")
+    written = _written(tmp_path)
     assert "\033" not in written
     assert "красная строка" in written
 
@@ -324,3 +333,75 @@ def test_columns_do_not_shift_when_painted() -> None:
 
     # INFO не красится, ERROR красится — а колонка одна и та же.
     assert column(logging.INFO) == column(logging.ERROR)
+
+
+def test_one_file_per_day(tmp_path) -> None:
+    """Имя файла и есть ответ на вопрос «за какой это день».
+
+    Просьба владельца: резать по размеру было неудобно — границы приходились на
+    случайные моменты, и «покажи, что было вчера» превращалось в поиск по времени
+    внутри файла. Он даже решил, что файл перезаписывается каждый сеанс: в
+    проводнике стояла дата создания трёхдневной давности.
+    """
+    import logging
+    from datetime import date, timedelta
+
+    from jarvis.core.logging.daily import DailyFileHandler, dated_name
+
+    base = tmp_path / "jarvis.log"
+    handler = DailyFileHandler(base, keep_days=0)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    # Ассистент работал всю ночь: файл открыт вчерашний, а сутки уже сменились.
+    yesterday = date.today() - timedelta(days=1)
+    handler.stream.close()
+    handler._day = yesterday
+    handler.baseFilename = str(dated_name(base, yesterday))
+    handler.stream = handler._open()
+    handler.stream.write("вчера\n")
+
+    handler.emit(logging.LogRecord("j", logging.INFO, "f", 1, "сегодня", None, None))
+    handler.close()
+
+    today = dated_name(base, date.today())
+    assert "сегодня" in today.read_text(encoding="utf-8")
+    # Вчерашний файл не переименован и не дописан: каждый с рождения назван
+    # своим днём, и трогать уже написанное незачем.
+    written = dated_name(base, yesterday).read_text(encoding="utf-8")
+    assert written == "вчера\n"
+    # Сам `jarvis.log` не создаётся вовсе: от него берутся только каталог,
+    # основа имени и расширение.
+    assert not base.exists()
+
+
+def test_old_days_are_removed(tmp_path) -> None:
+    """Хранится столько дней, сколько сказано, — остальное убирается само."""
+    import logging
+
+    from jarvis.core.logging.daily import DailyFileHandler
+
+    base = tmp_path / "jarvis.log"
+    for day in ("2026-07-01", "2026-07-02", "2026-07-03"):
+        (tmp_path / f"jarvis-{day}.log").write_text("старое", encoding="utf-8")
+    # Чужие файлы в том же каталоге трогать нельзя: чистка идёт по своему имени.
+    (tmp_path / "важное.txt").write_text("не мой", encoding="utf-8")
+
+    DailyFileHandler(base, keep_days=2).close()
+
+    left = sorted(path.name for path in tmp_path.iterdir())
+    assert "важное.txt" in left
+    assert "jarvis-2026-07-01.log" not in left, left
+    assert "jarvis-2026-07-03.log" in left
+
+
+def test_session_start_is_marked(tmp_path) -> None:
+    """Где начинается запуск, видно глазом: за день их бывает десяток."""
+    import logging
+
+    from jarvis.core.config import LoggingConfig
+    from jarvis.core.logging import setup_logging
+
+    setup_logging(LoggingConfig(dir=tmp_path, file="t.log", console=False))
+    logging.shutdown()
+
+    assert "Запуск" in _written(tmp_path)

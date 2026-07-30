@@ -19,10 +19,12 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
+import time
 
 from jarvis.core.config import LoggingConfig
 
 from .colors import ColorFormatter, enable_windows_colors, supports_color
+from .daily import DailyFileHandler
 
 #: Время стоит первым и в файле, и в консоли. Без него запись бесполезна для
 #: разбора: почти всё, что приходится выяснять по логу, — это «что было
@@ -61,11 +63,11 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
         root.removeHandler(handler)
 
     config.dir.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.handlers.RotatingFileHandler(
-        config.dir / config.file,
-        maxBytes=config.max_bytes,
-        backupCount=config.backup_count,
-        encoding="utf-8",
+    # Один файл — один день: `jarvis-2026-07-30.log`. Резать по размеру нельзя —
+    # границы файлов приходятся на случайные моменты, и «покажи, что было вчера»
+    # превращается в поиск по времени внутри файла.
+    file_handler = DailyFileHandler(
+        config.dir / config.file, keep_days=config.keep_days
     )
     file_handler.setLevel(file_level)
     file_handler.setFormatter(logging.Formatter(_FILE_FORMAT, datefmt=config.time_format))
@@ -91,4 +93,9 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
     for name in _APP_LOGGERS:
         logging.getLogger(name).setLevel(min(console_level, file_level))
 
-    return logging.getLogger("jarvis")
+    app = logging.getLogger("jarvis")
+    # Где начинается этот запуск. За день их бывает десяток, и без отметки
+    # начало приходится искать по времени — а владелец однажды из-за этого решил,
+    # что файл перезаписывается каждый сеанс.
+    app.info("%s Запуск %s %s", "─" * 24, time.strftime(config.time_format), "─" * 24)
+    return app

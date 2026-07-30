@@ -40,8 +40,9 @@ class LoggingConfig:
     #: файле и в консоли: искать причину приходится то там, то там, и разные
     #: написания времени этому только мешают.
     time_format: str = "%d.%m.%y, %H:%M:%S"
-    max_bytes: int = 5 * 1024 * 1024
-    backup_count: int = 5
+    #: Сколько дневных файлов хранить. Один файл — один день: имя файла и есть
+    #: ответ на вопрос «за какой это день».
+    keep_days: int = 14
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
