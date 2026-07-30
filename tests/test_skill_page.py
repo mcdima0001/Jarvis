@@ -196,49 +196,59 @@ async def test_named_track_is_played_not_just_clicked(loaded) -> None:
 
 
 @pytest.mark.parametrize(
-    ("host", "query", "expected"),
+    ("host", "expected"),
     [
-        ("music.yandex.ru", "Don't Stop Me Now", "https://music.yandex.ru/search?text=don%27t+stop+me+now"),
-        ("m.youtube.com", "мем", "https://www.youtube.com/results?search_query=%D0%BC%D0%B5%D0%BC"),
-        ("example.com", "что угодно", ""),
-        ("music.yandex.ru", "   ", ""),
+        ("music.yandex.ru", True),
+        ("m.youtube.com", True),
+        ("youtube.com", True),
+        ("claude-work.duckdns.org", False),
+        ("example.com", False),
+        ("", False),
     ],
 )
-def test_site_search_address(host: str, query: str, expected: str) -> None:
-    """Свой поиск есть не у всех сайтов, и запрос в адрес попадает закодированным."""
-    assert page.search_url_for(host, query.lower()) == expected
+def test_searchable_sites(host: str, expected: bool) -> None:
+    """Искать имеет смысл там, где есть своя строка поиска.
+
+    Живой случай: с открытой веб-панелью Jarvis нашёл в тексте прошлого
+    разговора ссылку со словами просьбы и нажал её. На таком сайте ни треков,
+    ни поиска по ним нет — и смотреть на него незачем.
+    """
+    assert page.searchable(host) is expected
 
 
-async def test_missing_track_is_searched_on_the_site(loaded) -> None:
-    """«Включи Don't Stop Me Now» — это «найди и включи».
+async def test_missing_track_is_searched_on_the_page(loaded, monkeypatch) -> None:
+    """«Включи Don't Stop Me Now» — это «найди и включи», и ищем **на странице**.
 
-    Живой случай: трека нет на открытой странице, потому что его туда никто не
-    выводил, и команда честно отказывала. Теперь открывается поиск **самого
-    сайта** — в той же вкладке, ссылкой, — и попытка повторяется.
+    Три шага, ровно как это делает человек: нажать «Поиск», напечатать название,
+    включить верхний результат. Адресом выдачи проще, но нельзя: переход
+    перезагружает приложение сайта и глушит то, что играло.
     """
     manager, registry, _ = loaded
     await manager.start()
     fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "SEARCH_DELAY", 0)
+    monkeypatch.setattr(module, "SEARCH_OPEN_DELAY", 0)
     fake.CALLS.clear()
     fake.REPLIES[:] = [
-        {"done": None},
-        {"done": "item", "detail": "Don't Stop Me Now — Воспроизвести"},
+        {"done": None},                                    # трека на странице нет
+        {"done": "label", "detail": "поиск"},              # нажали «Поиск»
+        {"done": "type", "detail": "don't stop me now"},   # напечатали
+        {"done": "item", "detail": "don't stop me now", "played": True},
     ]
 
     result = await registry.invoke("page.play_item", {"track": "Don't Stop Me Now"})
 
     assert result.ok
-    assert [call[0] for call in fake.CALLS] == ["target", "run", "go", "run"]
-    assert fake.CALLS[2][1] == "https://music.yandex.ru/search?text=don%27t+stop+me+now"
-    # Вкладка та же самая: новая была бы лишней.
-    assert fake.CALLS[2][2] == fake.TARGET["tabId"]
-    # На своей выдаче к тому же поиску добавляется «сначала верхний результат»:
-    # порядок расставил сайт, и знает он больше, чем мы об услышанном названии.
-    before, after = fake.CALLS[1][1][0], fake.CALLS[3][1][0]
-    assert after["item"] == before["item"]
-    assert "prefer" not in before, "на чужой странице верхнего результата нет"
-    assert after["prefer"] == ['[class*="PlayButtonWithCover_playButton"]']
+    # Ни одного перехода по адресу: работаем с тем, что открыто.
+    assert not any(call[0] == "go" for call in fake.CALLS), "переход глушит музыку"
+    plans = [call[1] for call in fake.CALLS if call[0] == "run"]
+    assert "label" in plans[1][0], "сначала нажать «Поиск»"
+    assert plans[2] == [{"type": "don't stop me now", "submit": True}]
+    # А на своей выдаче верхний результат главнее сравнения слов.
+    assert plans[3][0]["prefer"] == ['[class*="PlayButtonWithCover_playButton"]']
     await manager.stop()
+
 
 
 async def test_play_by_name_belongs_to_the_open_site(loaded) -> None:
@@ -269,7 +279,9 @@ async def test_track_goes_to_the_music_site_not_youtube(loaded, monkeypatch) -> 
     manager, registry, _ = loaded
     await manager.start()
     fake = sys.modules["jarvis_skills.browser"]
-    monkeypatch.setattr(sys.modules["jarvis_skills.page"], "SEARCH_DELAY", 0)
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "SEARCH_DELAY", 0)
+    monkeypatch.setattr(module, "SEARCH_OPEN_DELAY", 0)
     monkeypatch.setattr(
         fake, "TARGET", {"tabId": 7, "url": "https://example.com/", "title": "Ничего"}
     )
@@ -280,21 +292,20 @@ async def test_track_goes_to_the_music_site_not_youtube(loaded, monkeypatch) -> 
     )
     fake.CALLS.clear()
     fake.REPLIES[:] = [
-        {"done": None},  # на посторонней странице трека нет
-        {"done": None},  # на главной музыкального сайта тоже
-        {"done": "item", "detail": "midnight city", "played": True},  # после поиска
+        {"done": None},                            # на главной трека нет
+        {"done": "label", "detail": "поиск"},      # нажали «Поиск»
+        {"done": "type", "detail": "midnight city"},
+        {"done": "item", "detail": "midnight city", "played": True},
     ]
 
     result = await registry.invoke("page.play_item", {"track": "Midnight City"})
 
     assert result.ok
-    kinds = [call[0] for call in fake.CALLS]
     assert ("target", "яндекс музыка", False, True) in fake.CALLS, (
         "вкладку музыкального сайта надо запросить, разрешив открыть её в фоне"
     )
     assert not any(call[0] == "search" for call in fake.CALLS), "ютуб тут не при чём"
-    went = fake.CALLS[kinds.index("go")][1]
-    assert went.startswith("https://music.yandex.ru/search")
+    assert not any(call[0] == "go" for call in fake.CALLS), "переход глушит музыку"
     await manager.stop()
 
 
@@ -313,7 +324,7 @@ async def test_clicked_but_silent_is_not_a_success(loaded, monkeypatch) -> None:
     fake = sys.modules["jarvis_skills.browser"]
     fake.CALLS.clear()
     quiet = {"done": "item", "detail": "midnight city — воспроизведение", "played": False}
-    fake.REPLIES[:] = [dict(quiet) for _ in range(page.SEARCH_ATTEMPTS + 1)]
+    fake.REPLIES[:] = [dict(quiet) for _ in range(page.SEARCH_ATTEMPTS + 2)]
 
     result = await registry.invoke("page.play_item", {"track": "Midnight City"})
 
@@ -322,10 +333,9 @@ async def test_clicked_but_silent_is_not_a_success(loaded, monkeypatch) -> None:
     # Вслух называется то, что просили. Подпись найденного бывает какой угодно:
     # однажды в неё уехала склеенная выдача целиком, и ассистент прочитал её.
     assert result.speech_for("ru") == "Нашёл midnight city, но включить не получилось."
-    # Круг ровно один: не нашли на странице — поискали на сайте. Дальше
-    # повторять нечего, строка найдена, и все способы включить её страница уже
-    # перебрала. Второй круг — это столько же нажатий впустую.
-    assert [call[0] for call in fake.CALLS] == ["target", "run", "go", "run"]
+    # Круг ровно один: нашли и нажали — повторять нечего, все способы включить
+    # страница уже перебрала. Второй круг это столько же нажатий впустую.
+    assert [call[0] for call in fake.CALLS] == ["target", "run"]
     await manager.stop()
 
 
@@ -1051,7 +1061,9 @@ async def test_video_goes_to_the_video_site(loaded, monkeypatch) -> None:
     manager, registry, _ = loaded
     await manager.start()
     fake = sys.modules["jarvis_skills.browser"]
-    monkeypatch.setattr(sys.modules["jarvis_skills.page"], "SEARCH_DELAY", 0)
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "SEARCH_DELAY", 0)
+    monkeypatch.setattr(module, "SEARCH_OPEN_DELAY", 0)
     monkeypatch.setattr(
         fake, "TARGET", {"tabId": 7, "url": "https://example.com/", "title": "Ничего"}
     )
@@ -1063,7 +1075,8 @@ async def test_video_goes_to_the_video_site(loaded, monkeypatch) -> None:
     fake.CALLS.clear()
     fake.REPLIES[:] = [
         {"done": None},
-        {"done": None},
+        {"done": "label", "detail": "поиск"},
+        {"done": "type", "detail": "трейлер мегамозг"},
         {"done": "item", "detail": "мегамозг", "played": True},
     ]
 
@@ -1071,8 +1084,6 @@ async def test_video_goes_to_the_video_site(loaded, monkeypatch) -> None:
 
     assert result.ok
     assert ("target", "ютуб", False, True) in fake.CALLS, "музыкальный сайт тут не при чём"
-    kinds = [call[0] for call in fake.CALLS]
-    assert fake.CALLS[kinds.index("go")][1].startswith("https://www.youtube.com/results")
     await manager.stop()
 
 
