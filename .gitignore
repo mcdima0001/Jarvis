@@ -21,9 +21,11 @@ venv/
 /extension/token.json
 /.idea
 
-# Telegram
-.session
-tests.py
+# Файл сессии Telegram: он равносилен входу в аккаунт, ни пароля, ни кода к
+# нему не нужно. Звёздочка обязательна — шаблон `.session` совпадает только с
+# файлом, который так и называется, а наш зовётся telegram.session.
 *.session
-skills/telegram/tests.py
-skills/telegram/tests.py
+*.session-journal
+
+# Черновики рядом со скиллами
+tests.py

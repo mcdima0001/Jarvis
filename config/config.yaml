@@ -31,9 +31,18 @@ skills:
       host: ${JARVIS_ESP32_HOST:-192.168.1.50}
       port: 80
     telegram:
+      # Ключи приложения, а не бота: бот видит только те чаты, куда его
+      # добавили. Берутся на my.telegram.org, вход делается один раз:
+      #   python skills/telegram/login.py
       api_id: ${JARVIS_TELEGRAM_API_ID:-}
       api_hash: ${JARVIS_TELEGRAM_API_HASH:-}
-      session: memory/telegram.session   # путь тоже здесь, не в коде
+      # Файл сессии равносилен входу в аккаунт — держим его в memory/,
+      # который целиком в .gitignore.
+      session: memory/telegram.session
+      # Сообщать о входящих событием telegram.message.received в шину.
+      notify: true
+      # Сколько последних сообщений брать на пересказ.
+      history: 50
     youtube:
       api_key: ${JARVIS_YOUTUBE_KEY:-}
     search:
