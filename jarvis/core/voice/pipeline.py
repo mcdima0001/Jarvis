@@ -192,7 +192,10 @@ class VoicePipeline:
         # Что именно сказал ассистент, по логу иначе не восстановить: в нём
         # видно команду и её результат, а произнесённой фразы — нет. А разбирать
         # приходится как раз расхождение между ними.
-        logger.info("Отвечаю: %s", text)
+        # `tone` — пометка для консоли: реплики разговора там ищут глазами
+        # первыми. Помечаем полем записи, а не подсветкой по тексту сообщения:
+        # угадывание рассыпалось бы при первой правке формулировки.
+        logger.info("Отвечаю: %s", text, extra={"tone": "said"})
         self.last_reply = text
         if self.silent:
             # Голос выключен целиком: реплика уже в логе, а трогать синтез
@@ -359,6 +362,7 @@ class VoicePipeline:
             seconds,
             time.perf_counter() - started,
             transcript.text,
+            extra={"tone": "heard"},
         )
 
         command = self._extract_command(transcript.text, spoken_at=spoken_at)
