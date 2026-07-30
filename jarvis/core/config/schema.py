@@ -24,7 +24,11 @@ class AppConfig:
 class LoggingConfig:
     """Настройки логирования."""
 
+    #: Что показывать в консоли. Её читают глазами по ходу дела.
     level: str = "INFO"
+    #: Что писать в файл. По умолчанию подробнее консоли: файл читают, когда
+    #: уже что-то пошло не так, и нужны как раз те записи, которых не ждали.
+    file_level: str = "DEBUG"
     dir: Path = Path("logs")
     file: str = "jarvis.log"
     console: bool = True

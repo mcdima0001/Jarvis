@@ -1352,6 +1352,10 @@ class PageSkill(Skill):
         result = await self.tools.invoke(
             "browser.page_run", {"plan": steps, "tab": tab}
         )
+        # Сырой обмен — в файл, всегда и без условий. Это и есть ответ на вопрос
+        # «что вообще произошло»: план, который ушёл, и ответ, который пришёл.
+        # Условных подробностей тут больше нет — на них уже наступали.
+        self.log.debug("План %s → ответ %s", steps, result.value if result.ok else result.error)
         if not result.ok or not isinstance(result.value, Mapping):
             return None
         if result.value.get("done"):

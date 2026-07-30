@@ -178,3 +178,71 @@ def test_persona_phrases_must_be_grouped_by_language(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="listening"):
         load_config(_write(tmp_path, text))
+
+
+# --- логирование -------------------------------------------------------------
+
+
+def test_file_is_more_verbose_than_the_console(tmp_path, capsys) -> None:
+    """Уровня два: консоль читают глазами, файл — когда что-то пошло не так.
+
+    Идея владельца, и она чинит целый класс промахов. Пока подробности писались
+    через `info`, у них появлялось условие «писать, только если есть что
+    показать» — чтобы не мешать в консоли. Ровно такое условие однажды обнулило
+    диагностику: страница отвечала «ничего не вижу», условие не выполнялось, и
+    четыре попытки подряд не оставили в логе ни строки.
+    """
+    import logging
+
+    from jarvis.core.config import LoggingConfig
+    from jarvis.core.logging import setup_logging
+
+    log = setup_logging(
+        LoggingConfig(dir=tmp_path, file="t.log", console=True, level="INFO", file_level="DEBUG")
+    )
+    log.info("видно везде")
+    log.debug("подробность")
+    logging.shutdown()
+
+    written = (tmp_path / "t.log").read_text(encoding="utf-8")
+    assert "подробность" in written
+    assert "видно везде" in written
+    assert "подробность" not in capsys.readouterr().err
+
+
+def test_third_party_debug_never_reaches_the_log(tmp_path) -> None:
+    """Подробный файл не должен состоять из чужой отладки.
+
+    На DEBUG numba вываливает дизассемблер каждой компилируемой функции — сотни
+    строк на фразу. Поэтому корень держится на WARNING, а уровень из конфига
+    достаётся только логгерам приложения.
+    """
+    import logging
+
+    from jarvis.core.config import LoggingConfig
+    from jarvis.core.logging import setup_logging
+
+    setup_logging(LoggingConfig(dir=tmp_path, file="t.log", console=False, file_level="DEBUG"))
+    logging.getLogger("numba.core.ssa").debug("дизассемблер")
+    logging.getLogger("numba.core.ssa").warning("а это важно")
+    logging.shutdown()
+
+    written = (tmp_path / "t.log").read_text(encoding="utf-8")
+    assert "дизассемблер" not in written
+    assert "а это важно" in written
+
+
+def test_typo_in_the_level_does_not_break_the_start(tmp_path) -> None:
+    """Опечатка в уровне не должна ронять запуск: логи важнее их настройки."""
+    import logging
+
+    from jarvis.core.config import LoggingConfig
+    from jarvis.core.logging import setup_logging
+
+    log = setup_logging(
+        LoggingConfig(dir=tmp_path, file="t.log", console=False, level="ИНФО", file_level="ОТЛАДКА")
+    )
+    log.debug("всё равно пишем")
+    logging.shutdown()
+
+    assert "всё равно пишем" in (tmp_path / "t.log").read_text(encoding="utf-8")

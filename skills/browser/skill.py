@@ -566,9 +566,14 @@ class _Extension:
 
         try:
             request = json.dumps({"id": ident, "action": action, "params": params})
+            # Весь разговор с браузером — в файл. Читают его, когда уже что-то
+            # пошло не так, и тогда нужны ровно эти две строки: что попросили и
+            # что ответили. В консоли им места нет — их десятки на команду.
+            self._log.debug("Расширению: %.600s", request)
             if not await self._server.send(request):
                 return None
             reply = await asyncio.wait_for(future, self._timeout)
+            self._log.debug("От расширения: %.600s", reply)
         except TimeoutError:
             self._log.warning("Расширение не ответило на %s за %.0f с", action, self._timeout)
             self._last_error = "расширение не ответило"
