@@ -64,7 +64,7 @@ MEDIA_ACTIONS = frozenset(
 
 #: Глаголы шага. Список закрытый: чего тут нет, того странице не отправить.
 #: У `type` и `scroll` значение — строка, у остальных — список.
-STEP_VERBS = ("media", "label", "click", "item", "type", "scroll")
+STEP_VERBS = ("media", "label", "click", "item", "type", "scroll", "suggest")
 
 #: Куда листать страницу. Тоже закрытый список — это данные, не код.
 SCROLL_WAYS = frozenset({"up", "down", "top", "bottom"})
@@ -269,6 +269,18 @@ SEARCH_DELAY = 0.7
 
 #: Сколько ждать, пока сайт откроет строку поиска после нажатия «Поиск».
 SEARCH_OPEN_DELAY = 0.8
+
+#: Как сайт предлагает поправить запрос. Распознавание пишет названия как слышит
+#: («нервы, волшануя» вместо «нервы, волшебная»), и сайт сам знает, что имелось
+#: в виду, — надо только нажать его подсказку.
+SUGGEST_MARKS: tuple[str, ...] = (
+    "возможно, вы искали",
+    "возможно вы искали",
+    "показаны результаты для",
+    "искать вместо этого",
+    "did you mean",
+    "search instead for",
+)
 
 
 def silent(result: Mapping[str, Any]) -> bool:
@@ -604,7 +616,7 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
             if step.get("submit"):
                 clean["submit"] = True
         else:
-            items = _strings(step[verb])
+            items = _strings(step[verb], limit=MAX_AVOID)
             if not items:
                 continue
             clean = {verb: items}
@@ -1508,6 +1520,26 @@ class PageSkill(Skill):
         # тишина» повторять нечего: строка на месте, все способы включить её уже
         # перебраны внутри страницы, и второй круг — это ещё столько же нажатий
         # впустую.
+        found = await self._await_results(plan, tab)
+        if found is not None:
+            return found
+
+        # Ничего не нашлось — возможно, услышано с ошибкой, и сайт сам это знает.
+        # «Нервы, волшануя» он встречает баннером «Возможно, вы искали нервы,
+        # волшебная»; нажать надо исправленный запрос, а он в конце строки.
+        corrected = await self._run([{"suggest": list(SUGGEST_MARKS)}], tab)
+        if corrected is None:
+            return None
+        self.log.info(
+            "Сайт поправил запрос на %r — ищу снова",
+            str(corrected.get("detail", "")).strip(),
+        )
+        return await self._await_results(plan, tab)
+
+    async def _await_results(
+        self, plan: Sequence[Mapping[str, Any]], tab: int
+    ) -> dict[str, Any] | None:
+        """Прогнать план по кругу, пока выдача не дорисуется."""
         for attempt in range(SEARCH_ATTEMPTS):
             if attempt:
                 await asyncio.sleep(SEARCH_DELAY)

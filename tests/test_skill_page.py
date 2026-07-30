@@ -1106,3 +1106,48 @@ async def test_press_uses_spoken_label(loaded) -> None:
         {"label": ["подписаться", "подписатьс", "podpisatsya"]}
     ]
     await manager.stop()
+
+
+def test_suggest_step_is_a_closed_list() -> None:
+    """Приметы подсказки — данные, и проверяются как всё остальное."""
+    plan = page.validate_plan([{"suggest": ["возможно, вы искали", "did you mean"]}])
+
+    assert plan == [{"suggest": ["возможно, вы искали", "did you mean"]}]
+    assert page.validate_plan([{"suggest": []}]) == []
+    assert page.validate_plan([{"suggest": ["a" * (page.MAX_TEXT + 1)]}]) == []
+
+
+async def test_site_correction_is_used(loaded, monkeypatch) -> None:
+    """Не нашлось — нажимаем подсказку сайта и ищем снова.
+
+    Живой случай: распознавание услышало «нервы, волшануя», а Яндекс Музыка
+    предложила «Возможно, вы искали нервы, волшебная». Сайт знает, что имелось
+    в виду, лучше нас — надо только нажать его подсказку.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "SEARCH_DELAY", 0)
+    monkeypatch.setattr(module, "SEARCH_OPEN_DELAY", 0)
+    monkeypatch.setattr(module, "SEARCH_ATTEMPTS", 1)
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [
+        {"done": None},                                   # на странице трека нет
+        {"done": "label", "detail": "поиск"},             # нажали «Поиск»
+        {"done": "type", "detail": "нервы, волшануя"},    # напечатали как услышали
+        {"done": None},                                   # выдача пустая
+        {"done": "suggest", "detail": "нервы, волшебная"},  # нажали подсказку
+        {"done": "item", "detail": "нервы, волшебная", "played": True},
+    ]
+
+    result = await registry.invoke("page.play_item", {"track": "нервы, волшануя"})
+
+    assert result.ok
+    plans = [call[1] for call in fake.CALLS if call[0] == "run"]
+    asked = [plan for plan in plans if "suggest" in plan[0]]
+    assert asked, [list(plan[0]) for plan in plans]
+    assert "возможно, вы искали" in asked[0][0]["suggest"]
+    # И после подсказки трек всё-таки ищется снова — иначе нажатие бессмысленно.
+    assert "item" in plans[-1][0]
+    await manager.stop()

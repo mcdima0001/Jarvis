@@ -22,7 +22,7 @@
  * Выполнить план в текущей странице.
  *
  * @param {Array<Object>} plan шаги-варианты: {media}, {label}, {click}, {item},
- *   {type}, {scroll}.
+ *   {type}, {scroll}, {suggest}.
  * @returns {Promise<Object>} что сработало: {done, detail, title, url}.
  */
 async function jarvisRunPlan(plan) {
@@ -236,6 +236,47 @@ async function jarvisRunPlan(plan) {
       return null;
     }
     return bestMatch(CLICKABLE, wanted, forbidden, false);
+  };
+
+  /**
+   * Нажать исправление запроса: «Возможно, вы искали <правильно>».
+   *
+   * Распознавание пишет названия как слышит, и сайт сам предлагает поправку.
+   * Нажать нужно **исправленный запрос**, а не весь баннер: правильная часть
+   * стоит в конце строки и обычно оформлена ссылкой.
+   *
+   * Из подходящих элементов берётся тот, у кого подпись **короче всего**. Обход
+   * идёт от внешних к внутренним, и первым под приметное слово попадает тело
+   * страницы целиком — а «последняя ссылка внутри него» это ссылка в подвале.
+   */
+  const suggestion = (step) => {
+    const marks = (step.suggest || []).map((word) => spaced(word).trim()).filter(Boolean);
+    if (!marks.length) {
+      return null;
+    }
+    const WHERE = 'a[href], button, [role="button"], [role="link"], div, p, span';
+    let banner = null;
+    let tightest = Infinity;
+    for (const element of document.querySelectorAll(WHERE)) {
+      if (!seen(element)) {
+        continue;
+      }
+      const text = caption(element);
+      if (!text || text.length > 200) {
+        continue;
+      }
+      const label = spaced(text);
+      if (marks.some((word) => hits(label, word)) && text.length < tightest) {
+        tightest = text.length;
+        banner = element;
+      }
+    }
+    if (!banner) {
+      return null;
+    }
+    const inside = Array.from(banner.querySelectorAll(CLICKABLE)).filter(seen);
+    const target = inside.length ? inside[inside.length - 1] : banner;
+    return press(target) ? caption(target) || caption(banner) : null;
   };
 
   /**
@@ -750,6 +791,11 @@ async function jarvisRunPlan(plan) {
         const detail = await media(step.media, step);
         if (detail) {
           return answer("media", detail);
+        }
+      } else if (Array.isArray(step.suggest)) {
+        const corrected = suggestion(step);
+        if (corrected) {
+          return answer("suggest", corrected);
         }
       } else if (typeof step.scroll === "string") {
         const where = scrollPage(step);

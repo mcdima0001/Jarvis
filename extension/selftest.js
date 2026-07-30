@@ -20,7 +20,6 @@ function element(options) {
   const children = options.children || [];
   const self = {
     tag: options.tag || "button",
-    textContent: options.text || "",
     id: options.id || "",
     clicked: 0,
     hovered: 0,
@@ -71,6 +70,12 @@ function element(options) {
   };
   children.forEach((child) => {
     child.parentElement = self;
+  });
+  // Текст вместе с потомками — как в настоящем DOM. Это не придирка: подпись
+  // внешнего элемента поэтому длиннее подписи внутреннего, и «самый внутренний»
+  // отличается от «первого попавшегося».
+  Object.defineProperty(self, "textContent", {
+    get: () => (options.text || "") + children.map((child) => child.textContent).join(""),
   });
   return self;
 }
@@ -825,6 +830,48 @@ check("сломавшийся шаг рассказывает, на чём сп�
   assert(result.done === null, "сработать тут было нечему");
   assert(result.broke && result.broke.length === 1, "ошибка не попала в ответ");
   assert(String(result.broke[0]).includes("сопротивляется"), result.broke[0]);
+});
+
+check("исправление запроса нажимается за последнюю часть", async () => {
+  // Живой случай: распознавание услышало «нервы, волшануя», и Яндекс Музыка
+  // предложила «Возможно, вы искали нервы, волшебная». Нажать надо исправленный
+  // запрос — он в конце строки и оформлен ссылкой.
+  const fix = element({ tag: "a", attributes: { href: "/search?text=x" }, text: "нервы, волшебная" });
+  const banner = element({
+    tag: "div",
+    text: "Возможно, вы искали ",
+    children: [fix],
+  });
+  const api = load(makeDocument({ controls: [banner, fix] }));
+
+  const result = await api.jarvisRunPlan([{ suggest: ["возможно, вы искали"] }]);
+
+  assert(result.done === "suggest", `ожидался suggest, пришло ${result.done}`);
+  assert(fix.clicked === 1, "нажата не исправленная часть");
+  assert(banner.clicked === 0, "весь баннер нажимать не надо");
+});
+
+check("самый внутренний баннер, а не тело страницы", async () => {
+  // Обход идёт от внешних к внутренним, и первым под приметное слово попадает
+  // страница целиком — а «последняя ссылка внутри неё» это ссылка в подвале.
+  const footer = element({ tag: "a", attributes: { href: "/about" }, text: "правообладателям" });
+  const fix = element({ tag: "a", attributes: { href: "/search?text=x" }, text: "нервы, волшебная" });
+  const banner = element({ tag: "div", text: "Возможно, вы искали ", children: [fix] });
+  const body = element({ tag: "div", text: "Возможно, вы искали ", children: [banner, footer] });
+  const api = load(makeDocument({ controls: [body, banner, fix, footer] }));
+
+  await api.jarvisRunPlan([{ suggest: ["возможно, вы искали"] }]);
+
+  assert(fix.clicked === 1, "нажата не исправленная часть");
+  assert(footer.clicked === 0, "нажата ссылка из подвала");
+});
+
+check("нет подсказки — шаг не срабатывает", async () => {
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" } });
+  const api = load(makeDocument({ controls: [row] }));
+  const result = await api.jarvisRunPlan([{ suggest: ["возможно, вы искали"] }]);
+  assert(result.done === null, "нажалось что-то посторонее");
+  assert(row.clicked === 0, "нажалось что-то посторонее");
 });
 
 check("кнопка без подписи находится по атрибутам", async () => {
