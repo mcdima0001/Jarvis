@@ -56,7 +56,8 @@ MEDIA_ACTIONS = frozenset(
 )
 
 #: Глаголы шага. Список закрытый: чего тут нет, того странице не отправить.
-STEP_VERBS = ("media", "label", "click", "item")
+#: У `type` значение — строка (что напечатать), у остальных — список.
+STEP_VERBS = ("media", "label", "click", "item", "type")
 
 #: Как называется кнопка воспроизведения внутри строки трека. Нужно шагу
 #: `item`: нажатие по самой строке трек только выбирает, играть начинает она.
@@ -373,6 +374,18 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 number = step.get(extra)
                 if isinstance(number, (int, float)) and not isinstance(number, bool):
                     clean[extra] = float(number)
+        elif verb == "type":
+            # Печатать — это текст, а не список. Он уходит в значение поля, то
+            # есть в содержимое страницы: выполнить его нельзя ничем.
+            text = str(step["type"]).strip()
+            if not text or len(text) > MAX_TEXT:
+                continue
+            clean = {"type": text}
+            into = _strings(step.get("into", ()))
+            if into:
+                clean["into"] = into
+            if step.get("submit"):
+                clean["submit"] = True
         else:
             items = _strings(step[verb])
             if not items:
@@ -471,6 +484,17 @@ _ENDINGS = "аеёиоуыэюяaeiouy"
 _MIN_STEM = 6
 
 _CYRILLIC = re.compile(r"[а-яё]", re.IGNORECASE)
+
+
+def clean_text(spoken: str) -> str:
+    """Привести услышанный текст к тому, что печатают: без кавычек и хвостов."""
+    text = " ".join(str(spoken).split()).strip(" «»\"'`.,!?")
+    for tail in _TAILS:
+        if text.lower().endswith(f" {tail}"):
+            text = text[: -len(tail) - 1].strip(" ,")
+    # Кавычки снимаются ещё раз: закрывающая стоит перед хвостом, а не в конце
+    # фразы — «введи в поиск «Don't Stop Me Now» на сайте».
+    return text.strip(" «»\"'`.,!?")
 
 
 def label_variants(spoken: str) -> list[str]:
@@ -623,6 +647,7 @@ class PageSkill(Skill):
         return await self._act(str(action), site=site, seconds=seconds)
 
     @tool(phrases=["нажми {control}", "нажми кнопку {control}", "нажми на {control}",
+                   "открой {control} на странице", "открой {control} на сайте",
                    "press {control}", "click {control}"])
     async def press(self, control: str, site: str = "") -> ToolResult:
         """Нажать кнопку на странице по её подписи.
@@ -744,6 +769,34 @@ class PageSkill(Skill):
             focused=True,
             extra=[{"item": names, "hint": list(PLAY_HINTS), "play": True}],
             speech=(f"Включаю {name}.", f"Playing {name}."),
+        )
+
+    @tool(phrases=["введи в поиск {text}", "введи {text} в поиск",
+                   "введи в поиск на сайте {text}", "найди на странице {text}",
+                   "найди на сайте {text}", "поищи на странице {text}",
+                   "поищи на сайте {text}",
+                   "type {text}", "search the page for {text}"])
+    async def type_in(self, text: str, site: str = "") -> ToolResult:
+        """Напечатать текст в поле на странице — обычно в поиск сайта.
+
+        Именно на странице, а не в поисковике: «найди на Яндекс Музыке» и
+        «загугли» — разные просьбы, и путать их обидно.
+
+        :param text: что напечатать.
+        :param site: на каком сайте; пусто — там, куда смотришь.
+        """
+        typed = clean_text(text)
+        if not typed:
+            return ToolResult.failure(
+                "не расслышал, что вводить",
+                speech={"ru": "Не понял, что ввести.", "en": "I didn't catch what to type."},
+            )
+        return await self._act(
+            "type",
+            site=site,
+            focused=True,
+            extra=[{"type": typed, "submit": True}],
+            speech=(f"Ввёл: {typed}.", f"Typed: {typed}."),
         )
 
     @tool(routable=False, phrases=["включи первое видео", "открой первое видео",
@@ -1133,6 +1186,17 @@ class PageSkill(Skill):
         self.log.info(
             "Страница %s: %s (%s)", result.get("url", ""), action, detail or result.get("done")
         )
+        # Кнопку воспроизведения в строке найти не удалось — расширение прислало
+        # список того, что рядом. По нему пишется точный рецепт сайта, без
+        # угадывания разметки вслепую.
+        nearby = result.get("buttons")
+        if nearby:
+            listed = "; ".join(
+                f"{str(item.get('name', '')) or '(без подписи)'} [{item.get('sel', '')}]"
+                for item in nearby
+                if isinstance(item, Mapping)
+            )
+            self.log.info("Кнопки рядом со строкой (кнопки воспроизведения не нашёл): %s", listed)
         return ToolResult.success(dict(result), speech={"ru": ru, "en": en})
 
     @staticmethod

@@ -181,6 +181,42 @@ async def test_named_track_is_played_not_just_clicked(loaded) -> None:
     await manager.stop()
 
 
+def test_typed_text_is_a_string_not_a_list() -> None:
+    """Печатать — это текст, и он уходит в значение поля, а не в код."""
+    plan = page.validate_plan([{"type": "  don't stop me now  ", "submit": True}])
+
+    assert plan == [{"type": "don't stop me now", "submit": True}]
+    assert page.validate_plan([{"type": "   "}]) == []
+    assert page.validate_plan([{"type": "a" * (page.MAX_TEXT + 1)}]) == []
+
+
+def test_typed_text_loses_the_tail() -> None:
+    """«Введи в поиск X на сайте» — «на сайте» сказано человеку, не полю."""
+    assert page.clean_text("«Don't Stop Me Now» на сайте") == "Don't Stop Me Now"
+
+
+async def test_page_search_is_not_a_web_search(loaded) -> None:
+    """«Введи в поиск …» печатает на странице, а не открывает поисковик.
+
+    Живой случай: на Яндекс Музыке нажали «поиск», сказали «введи в поиск
+    Don't Stop Me Now» — и открылась выдача Яндекса. «Найди на Яндекс Музыке» и
+    «загугли» — разные просьбы.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "type", "detail": "don't stop me now"}]
+
+    result = await registry.invoke("page.type_in", {"text": "Don't Stop Me Now"})
+
+    assert result.ok
+    assert [call[0] for call in fake.CALLS] == ["target", "run"], "поисковик не открываем"
+    step = fake.CALLS[1][1][0]
+    assert step == {"type": "Don't Stop Me Now", "submit": True}
+    await manager.stop()
+
+
 def test_rejected_button_leaves_the_plan() -> None:
     """Что уже пробовали и что оказалось не тем, из плана вычитается.
 

@@ -29,6 +29,21 @@ function element(options) {
     getBoundingClientRect: () => ({ width: options.hidden ? 0 : 100, height: options.hidden ? 0 : 20 }),
     // Внутренности строки: по ним page.js ищет кнопку воспроизведения.
     querySelectorAll: () => children,
+    // Признак в атрибутах: `[data-test-id*="PLAY" i]` и подобное.
+    querySelector: (selector) => {
+      const marks = /\[([\w-]+)\*?="([^"]+)"(\s+i)?\]/g;
+      for (const match of String(selector).matchAll(marks)) {
+        const [, name, value] = match;
+        const found = children.find((child) => {
+          const own = child.getAttribute(name);
+          return own && own.toLowerCase().includes(value.toLowerCase());
+        });
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+    },
     dispatchEvent() {
       self.hovered += 1;
       return true;
@@ -40,6 +55,34 @@ function element(options) {
   children.forEach((child) => {
     child.parentElement = self;
   });
+  return self;
+}
+
+/** Поле ввода: столько, сколько нужно шагу `type`. */
+function field(options = {}) {
+  const self = {
+    tag: "input",
+    value: "",
+    textContent: "",
+    events: [],
+    keys: [],
+    focused: 0,
+    isContentEditable: Boolean(options.editable),
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ width: 200, height: 24 }),
+    matches: () => true,
+    closest: () => null,
+    focus() {
+      self.focused += 1;
+    },
+    dispatchEvent(event) {
+      self.events.push(event.type);
+      if (event.key) {
+        self.keys.push(event.key);
+      }
+      return true;
+    },
+  };
   return self;
 }
 
@@ -75,7 +118,7 @@ function player(options) {
  * Страница. Настоящий поиск по селектору тут не нужен: page.js спрашивает
  * либо все плееры, либо все кнопки, либо конкретный `[attr="value"]` и `#id`.
  */
-function makeDocument({ players = [], controls = [], bySelector = {} }) {
+function makeDocument({ players = [], controls = [], bySelector = {}, fields = [] }) {
   const pool = [...controls, ...Object.values(bySelector)];
   const attribute = /^\[([\w-]+)="(.*)"\]$/;
   const identifier = /^#([\w-]+)$/;
@@ -84,8 +127,12 @@ function makeDocument({ players = [], controls = [], bySelector = {} }) {
     if (selector.includes("video")) {
       return players;
     }
+    // Порядок важен: список кнопок в page.js включает input[type="button"].
     if (selector.includes('[role="button"]') || selector.startsWith("button")) {
       return controls;
+    }
+    if (selector.includes("input")) {
+      return fields;
     }
     const byAttribute = attribute.exec(selector);
     if (byAttribute) {
@@ -99,6 +146,7 @@ function makeDocument({ players = [], controls = [], bySelector = {} }) {
   };
   return {
     title: "Тестовая страница",
+    activeElement: null,
     querySelectorAll: (selector) => all(selector),
     querySelector: (selector) => all(selector)[0] || null,
   };
@@ -114,6 +162,18 @@ function load(document) {
     setTimeout,
     // Наведение мыши: без него не найти кнопку, которая появляется по hover.
     MouseEvent: class {
+      constructor(type, init) {
+        this.type = type;
+        Object.assign(this, init || {});
+      }
+    },
+    Event: class {
+      constructor(type, init) {
+        this.type = type;
+        Object.assign(this, init || {});
+      }
+    },
+    KeyboardEvent: class {
       constructor(type, init) {
         this.type = type;
         Object.assign(this, init || {});
@@ -306,6 +366,68 @@ check("чужое название не включается", async () => {
   const result = await api.jarvisRunPlan([{ item: ["midnight city"], hint: [] }]);
   assert(result.done === null, "нажалось не то");
   assert(row.clicked === 0, "нажалось не то");
+});
+
+check("самое тесное совпадение побеждает", async () => {
+  // Живой случай: у списка треков подпись начинается с первого трека, и
+  // выбирался весь список целиком вместо строки.
+  const play = element({ attributes: { "aria-label": "Воспроизвести" } });
+  const row = element({
+    attributes: { "aria-label": "Трек Midnight City" },
+    children: [play],
+  });
+  const list = element({
+    attributes: { "aria-label": "Midnight City 04:04 The Reason 03:53 Ты права 04:07" },
+  });
+  const api = load(makeDocument({ controls: [list, row] }));
+
+  await api.jarvisRunPlan([{ item: ["midnight city"], hint: ["воспроизв"] }]);
+
+  assert(play.clicked === 1, "нажата кнопка внутри строки");
+  assert(list.clicked === 0, "весь список нажимать нельзя");
+});
+
+check("кнопка без подписи находится по атрибутам", async () => {
+  // На многих плеерах в строке только иконка, подписи нет вовсе.
+  const play = element({ attributes: { "data-test-id": "PLAY_BUTTON" } });
+  const row = element({ attributes: { "aria-label": "Трек Midnight City" }, children: [play] });
+  const api = load(makeDocument({ controls: [row] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["midnight city"], hint: ["воспроизв"] }]);
+
+  assert(result.done === "item", "строка не найдена");
+  assert(play.clicked === 1, "кнопка по атрибуту не нажата");
+});
+
+check("не нашли кнопку — рассказываем, что рядом", async () => {
+  const other = element({ attributes: { "aria-label": "Ещё", "data-test-id": "MORE" } });
+  const row = element({ attributes: { "aria-label": "Трек Midnight City" }, children: [other] });
+  const api = load(makeDocument({ controls: [row] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["midnight city"], hint: ["воспроизв"] }]);
+
+  assert(row.clicked === 1, "строку нажать всё же нужно");
+  assert(result.buttons && result.buttons.length === 1, "список кнопок не пришёл");
+  assert(result.buttons[0].sel === "MORE", result.buttons[0].sel);
+});
+
+check("текст печатается в поле и отправляется", async () => {
+  const search = field();
+  const api = load(makeDocument({ fields: [search] }));
+
+  const result = await api.jarvisRunPlan([{ type: "don't stop me now", submit: true }]);
+
+  assert(result.done === "type", `ожидалось type, пришло ${result.done}`);
+  assert(search.value === "don't stop me now", `в поле ${search.value}`);
+  assert(search.focused === 1, "поле не получило фокус");
+  assert(search.events.includes("input"), "без события input фреймворки не заметят текст");
+  assert(search.keys.includes("Enter"), "Enter не отправлен");
+});
+
+check("нет поля — печатать некуда", async () => {
+  const api = load(makeDocument({ fields: [] }));
+  const result = await api.jarvisRunPlan([{ type: "что-нибудь" }]);
+  assert(result.done === null, "печатать было некуда");
 });
 
 check("список кнопок собирается с селекторами", async () => {

@@ -166,6 +166,109 @@ async function jarvisRunPlan(plan) {
   };
 
   /**
+   * Напечатать текст в поле на странице — например в поиск сайта.
+   *
+   * Это **не** эмуляция клавиатуры на уровне системы: текст кладётся в
+   * конкретное поле конкретной вкладки и никуда больше уйти не может. Значение
+   * ставится через родной сеттер, иначе React с Vue его не замечают: они
+   * следят за свойством, а не за атрибутом.
+   */
+  const typeInto = (step) => {
+    const FIELDS =
+      'input[type="search"], input[type="text"], input:not([type]), textarea, ' +
+      '[role="searchbox"], [role="combobox"] input, [contenteditable="true"]';
+    const text = String(step.type == null ? "" : step.type);
+    if (!text) {
+      return null;
+    }
+
+    let field = null;
+    // Поле уже в фокусе — печатаем в него: обычно пользователь только что сам
+    // нажал «поиск», и открылось именно оно.
+    const active = document.activeElement;
+    if (active && active.matches && seen(active)) {
+      try {
+        field = active.matches(FIELDS) ? active : null;
+      } catch (error) {
+        field = null;
+      }
+    }
+    const where = Array.isArray(step.into) && step.into.length ? step.into : [FIELDS];
+    for (const selector of where) {
+      if (field) {
+        break;
+      }
+      try {
+        field = Array.from(document.querySelectorAll(String(selector))).find(seen) || null;
+      } catch (error) {
+        continue;
+      }
+    }
+    if (!field) {
+      return null;
+    }
+
+    if (field.focus) {
+      field.focus();
+    }
+    if (field.isContentEditable) {
+      field.textContent = text;
+    } else {
+      let assigned = false;
+      try {
+        const proto =
+          typeof HTMLTextAreaElement !== "undefined" && field instanceof HTMLTextAreaElement
+            ? HTMLTextAreaElement
+            : HTMLInputElement;
+        const value = Object.getOwnPropertyDescriptor(proto.prototype, "value");
+        if (value && value.set) {
+          value.set.call(field, text);
+          assigned = true;
+        }
+      } catch (error) {
+        assigned = false;
+      }
+      if (!assigned) {
+        field.value = text;
+      }
+    }
+    for (const name of ["input", "change"]) {
+      try {
+        field.dispatchEvent(new Event(name, { bubbles: true }));
+      } catch (error) {
+        // Событие не прошло — значение всё равно на месте.
+      }
+    }
+
+    if (step.submit) {
+      for (const name of ["keydown", "keypress", "keyup"]) {
+        try {
+          field.dispatchEvent(
+            new KeyboardEvent(name, {
+              key: "Enter",
+              code: "Enter",
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+            }),
+          );
+        } catch (error) {
+          // Нажатие не прошло — ниже попробуем отправить форму.
+        }
+      }
+      const form = field.form || (field.closest ? field.closest("form") : null);
+      if (form && form.requestSubmit) {
+        try {
+          form.requestSubmit();
+        } catch (error) {
+          // Форма отказалась — поле всё равно заполнено, видно на экране.
+        }
+      }
+    }
+    return text;
+  };
+
+  /**
    * Включить названное: трек в списке, ролик в подборке.
    *
    * Нажатие по строке трека воспроизведение не запускает — оно её только
@@ -183,7 +286,11 @@ async function jarvisRunPlan(plan) {
       return null;
     }
 
+    // Побеждает самое тесное совпадение. У списка треков подпись начинается с
+    // первого трека, и без этого выбирался весь список целиком: «i need your
+    // love oliver nelson & tobtok remix… midnight city… the reason…».
     let found = null;
+    let tightest = Infinity;
     for (const element of document.querySelectorAll(ITEMS)) {
       if (!seen(element)) {
         continue;
@@ -193,9 +300,9 @@ async function jarvisRunPlan(plan) {
       if (!label.trim() || label.length > 200) {
         continue;
       }
-      if (wanted.some((word) => hits(label, word))) {
+      if (wanted.some((word) => hits(label, word)) && label.length < tightest) {
+        tightest = label.length;
         found = element;
-        break;
       }
     }
     if (!found) {
@@ -203,9 +310,12 @@ async function jarvisRunPlan(plan) {
     }
 
     // Кнопка воспроизведения прячется до наведения, поэтому видимость у неё
-    // не проверяем — иначе её не найти никогда.
+    // не проверяем — иначе её не найти никогда. И часто у неё вообще нет
+    // подписи: внутри только иконка. Тогда остаётся признак в атрибутах.
+    const MARKS = '[data-test-id*="PLAY" i], [class*="play" i], [aria-label*="play" i]';
     let node = found;
-    for (let depth = 0; node && depth < 5; depth += 1) {
+    let nearby = [];
+    for (let depth = 0; node && depth < 6; depth += 1) {
       for (const name of ["pointerover", "mouseover", "mouseenter"]) {
         try {
           node.dispatchEvent(new MouseEvent(name, { bubbles: true }));
@@ -213,15 +323,33 @@ async function jarvisRunPlan(plan) {
           // Событие не прошло — не страшно, кнопка может быть и так видна.
         }
       }
-      const button = Array.from(node.querySelectorAll(CLICKABLE)).find((item) =>
+      const inside = Array.from(node.querySelectorAll(CLICKABLE));
+      if (inside.length) {
+        nearby = inside;
+      }
+      let button = inside.find((item) =>
         hints.some((word) => hits(spaced(caption(item)), word)),
       );
+      if (!button) {
+        try {
+          button = node.querySelector(MARKS);
+        } catch (error) {
+          button = null;
+        }
+      }
       if (button) {
         button.click();
-        return `${caption(found)} — ${caption(button)}`;
+        return { detail: `${caption(found)} — ${caption(button) || "кнопка без подписи"}` };
       }
       node = node.parentElement;
     }
+
+    // Кнопку не нашли — расскажем, что рядом было. По этому списку в логе
+    // пишется точный рецепт сайта, без угадывания.
+    const buttons = nearby.slice(0, 8).map((item) => ({
+      name: caption(item).slice(0, 40),
+      sel: item.getAttribute("data-test-id") || item.getAttribute("class") || "",
+    }));
 
     found.click();
     if (step.play) {
@@ -240,7 +368,7 @@ async function jarvisRunPlan(plan) {
         }
       }
     }
-    return caption(found);
+    return { detail: caption(found), buttons };
   };
 
   /** Первый видимый элемент по списку селекторов — вместе с самим селектором. */
@@ -279,10 +407,19 @@ async function jarvisRunPlan(plan) {
         if (detail) {
           return answer("media", detail);
         }
+      } else if (typeof step.type === "string") {
+        const typed = typeInto(step);
+        if (typed) {
+          return answer("type", typed);
+        }
       } else if (Array.isArray(step.item)) {
-        const detail = await playItem(step);
-        if (detail) {
-          return answer("item", detail);
+        const done = await playItem(step);
+        if (done) {
+          const reply = answer("item", done.detail);
+          if (done.buttons && done.buttons.length) {
+            reply.buttons = done.buttons;
+          }
+          return reply;
         }
       } else if (Array.isArray(step.label)) {
         const element = byLabel(step);
