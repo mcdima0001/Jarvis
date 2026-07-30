@@ -165,7 +165,7 @@ async function jarvisRunPlan(plan) {
     return null;
   };
 
-  /** Первый видимый элемент по списку селекторов. */
+  /** Первый видимый элемент по списку селекторов — вместе с самим селектором. */
   const bySelector = (selectors) => {
     for (const selector of selectors) {
       let found = null;
@@ -175,15 +175,18 @@ async function jarvisRunPlan(plan) {
         continue; // селектор из памяти мог устареть или оказаться кривым
       }
       if (found && seen(found)) {
-        return found;
+        return { element: found, selector: String(selector) };
       }
     }
     return null;
   };
 
-  const answer = (done, detail) => ({
+  // `sel` возвращается, чтобы нажатое можно было потом назвать по имени: если
+  // нажалось не то, Jarvis запомнит это как «сюда больше не надо».
+  const answer = (done, detail, sel = "") => ({
     done,
     detail,
+    sel,
     title: document.title,
     url: location.href,
   });
@@ -205,10 +208,14 @@ async function jarvisRunPlan(plan) {
           return answer("label", caption(element));
         }
       } else if (Array.isArray(step.click)) {
-        const element = bySelector(step.click);
-        if (element) {
-          element.click();
-          return answer("click", element.getAttribute("aria-label") || caption(element));
+        const found = bySelector(step.click);
+        if (found) {
+          found.element.click();
+          return answer(
+            "click",
+            found.element.getAttribute("aria-label") || caption(found.element),
+            found.selector,
+          );
         }
       }
     } catch (error) {

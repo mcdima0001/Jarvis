@@ -64,6 +64,11 @@ MAX_STEPS = 8
 MAX_SELECTORS = 6
 MAX_TEXT = 200
 
+#: Запретов бывает больше, чем селекторов: к встроенным добавляются подписи
+#: кнопок, которые владелец уже отверг. Общий предел обрезал бы как раз их —
+#: они дописываются последними.
+MAX_AVOID = 16
+
 ACTION = Literal[
     "play",
     "pause",
@@ -268,7 +273,7 @@ def recipes_for(host: str, catalog: Mapping[str, Any]) -> Mapping[str, Any]:
     return {}
 
 
-def _strings(value: Any) -> list[str]:
+def _strings(value: Any, limit: int = MAX_SELECTORS) -> list[str]:
     """Список непустых строк разумной длины — или пусто, если это не он."""
     if isinstance(value, str):
         value = [value]
@@ -276,7 +281,7 @@ def _strings(value: Any) -> list[str]:
         return []
     found = [
         str(item).strip()
-        for item in value[:MAX_SELECTORS]
+        for item in value[:limit]
         if isinstance(item, (str, int, float)) and str(item).strip()
     ]
     return [item for item in found if len(item) <= MAX_TEXT]
@@ -321,7 +326,7 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
             if verb == "label":
                 # Запретные слова: подпись «не нравится» содержит «нравится»
                 # целиком, и без них лайк оказывается дизлайком.
-                avoid = _strings(step.get("avoid", ()))
+                avoid = _strings(step.get("avoid", ()), limit=MAX_AVOID)
                 if avoid:
                     clean["avoid"] = avoid
 
@@ -342,6 +347,39 @@ def merge_plans(*plans: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             if len(merged) >= MAX_STEPS:
                 return merged
     return merged
+
+
+#: Сколько отвергнутых кнопок помнить на одно действие. Больше и не нужно: если
+#: не подошли пять, дело не в выборе кнопки.
+MAX_REJECTED = 5
+
+
+def without_rejected(
+    plan: Sequence[Mapping[str, Any]], rejected: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Убрать из плана то, что уже пробовали и что оказалось не тем.
+
+    Селектор отвергнутой кнопки выбрасывается, её подпись уходит в запреты
+    шага `label`. Второй раз нажимать то же самое незачем: пользователь уже
+    сказал, что это не то.
+    """
+    names = [str(item.get("name", "")).strip().lower() for item in rejected]
+    names = [name for name in names if name]
+    selectors = {str(item.get("sel", "")).strip() for item in rejected}
+    selectors.discard("")
+
+    result: list[dict[str, Any]] = []
+    for step in plan:
+        clean = dict(step)
+        if "click" in clean:
+            left = [item for item in clean["click"] if item not in selectors]
+            if not left:
+                continue
+            clean["click"] = left
+        if "label" in clean and names:
+            clean["avoid"] = list(dict.fromkeys([*clean.get("avoid", ()), *names]))
+        result.append(clean)
+    return result
 
 
 def with_amount(plan: Sequence[Mapping[str, Any]], *, seconds: float, step: float) -> list[dict]:
@@ -436,8 +474,10 @@ class PageSkill(Skill):
         self._section = str(self.context.setting("memory_section", "sites"))
         #: Выученное читается из памяти один раз и обновляется при записи.
         self._known: dict[str, Any] | None = None
-        #: Что выучили последним — это и отменяет «не сохраняй в память».
-        self._last: tuple[str, str] = ("", "")
+        #: Что нажали последним — это и отменяет «не сохраняй в память».
+        #: Не только выученное: общий способ тоже может нажать не ту кнопку, и
+        #: тогда отменять нечего, а запомнить «сюда больше не надо» — нужно.
+        self._last: dict[str, Any] = {}
 
         self._own: dict[str, dict[str, list[dict]]] = {}
         for site, actions in dict(self.context.setting("sites", {})).items():
@@ -667,14 +707,34 @@ class PageSkill(Skill):
         steps = self._plan(action, host, seconds=seconds, extra=extra)
         result = await self._run(steps, tab)
         if result is not None:
+            self._note_attempt(host, action, result, learned=False)
             return self._done(action, result, speech)
 
         learned = await self._learn_action(
             action, tab=tab, host=host, title=str(target.get("title", "")), want=want
         )
         if learned is not None:
+            self._note_attempt(host, action, learned, learned=True)
             return self._done(action, learned, speech)
         return self._nothing(action, host=host)
+
+    def _note_attempt(
+        self, host: str, action: str, result: Mapping[str, Any], *, learned: bool
+    ) -> None:
+        """Запомнить, что именно нажали, — на случай «это не то».
+
+        Медиа-шаги сюда не попадают: пауза есть пауза, отменять в ней нечего.
+        """
+        if result.get("done") not in ("label", "click"):
+            self._last = {}
+            return
+        self._last = {
+            "host": host,
+            "action": action,
+            "learned": learned,
+            "name": str(result.get("detail", "")).strip(),
+            "sel": str(result.get("sel", "")).strip(),
+        }
 
     def _plan(
         self,
@@ -698,6 +758,9 @@ class PageSkill(Skill):
         merged = merge_plans(
             validate_plan(own), validate_plan(known), built_in, validate_plan(extra), common
         )
+        # То, что уже пробовали и что оказалось не тем, из плана вычитается:
+        # второй раз нажимать ту же не ту кнопку незачем.
+        merged = without_rejected(merged, self._rejected(host, action))
         return with_amount(
             merged,
             seconds=seconds if seconds > 0 else self._seconds,
@@ -733,6 +796,24 @@ class PageSkill(Skill):
 
         probed = await self.tools.invoke("browser.page_probe", {"tab": tab})
         controls = list((probed.value or {}).get("controls", [])) if probed.ok else []
+        # Отвергнутые кнопки модели даже не показываем: выбрать то, что уже
+        # признано неверным, она не должна — и объяснять ей это не нужно.
+        rejected = self._rejected(host, action)
+        if rejected:
+            names = {str(item.get("name", "")).strip().lower() for item in rejected}
+            selectors = {str(item.get("sel", "")).strip() for item in rejected}
+            controls = [
+                item
+                for item in controls
+                if str(item.get("name", "")).strip().lower() not in names
+                and str(item.get("sel", "")).strip() not in selectors
+            ]
+            self.log.info(
+                "Для %s на %s уже отвергнуто кнопок: %d — предлагаю модели остальные",
+                action,
+                host,
+                len(rejected),
+            )
         if not controls:
             return None
 
@@ -771,50 +852,104 @@ class PageSkill(Skill):
             if isinstance(value, Mapping)
         }
 
+    def _rejected(self, host: str, action: str) -> list[dict[str, Any]]:
+        """Кнопки, которые для этого действия уже признаны не теми."""
+        rejected = {
+            name: value.get("rejected", {})
+            for name, value in (self._known or {}).items()
+            if isinstance(value, Mapping)
+        }
+        listed = recipes_for(host, rejected).get(action, ())
+        return [dict(item) for item in listed if isinstance(item, Mapping)]
+
+    async def _write(self, host: str, entry: Mapping[str, Any]) -> bool:
+        """Сохранить запись о сайте целиком и обновить кеш."""
+        try:
+            await self.context.memory.documents.set(self._section, host, dict(entry))
+        except Exception as exc:  # noqa: BLE001 — не записалось, но команда выполнена
+            self.log.warning("Не смог записать память сайта %s: %s", host, exc)
+            return False
+        cache = dict(self._known or {})
+        cache[host] = dict(entry)
+        self._known = cache
+        return True
+
+    async def _entry(self, host: str) -> dict[str, Any]:
+        """Прочитать запись о сайте: сперва из кеша, иначе из памяти."""
+        cached = (self._known or {}).get(host)
+        if isinstance(cached, Mapping):
+            return dict(cached)
+        try:
+            return dict(await self.context.memory.documents.get(self._section, host, {}) or {})
+        except Exception as exc:  # noqa: BLE001 — память необязательна
+            self.log.warning("Не смог прочитать память сайта %s: %s", host, exc)
+            return {}
+
     async def _remember(self, host: str, action: str, plan: Sequence[Mapping[str, Any]]) -> None:
         """Записать удачный способ в память — раздел ``sites``."""
-        try:
-            known = dict(await self.context.memory.documents.get(self._section, host, {}) or {})
-            actions = dict(known.get("actions", {}))
-            actions[action] = [dict(step) for step in plan]
-            known["actions"] = actions
-            await self.context.memory.documents.set(self._section, host, known)
-        except Exception as exc:  # noqa: BLE001 — не записалось, но команда выполнена
-            self.log.warning("Не смог запомнить способ для %s: %s", host, exc)
-            return
-        cache = dict(self._known or {})
-        cache[host] = known
-        self._known = cache
-        self._last = (host, action)
+        entry = await self._entry(host)
+        actions = dict(entry.get("actions", {}))
+        actions[action] = [dict(step) for step in plan]
+        entry["actions"] = actions
+        await self._write(host, entry)
 
     @tool(routable=False)
     async def forget_last(self) -> ToolResult:
-        """Забыть последний выученный способ нажать что-то на странице.
+        """Забыть последнее нажатие: не только выученное, но и **куда** нажали.
+
+        Отмена работает в две стороны. Выученный способ убирается — раз он не
+        тот, второй раз его брать незачем. И отдельно запоминается сама кнопка:
+        «для этого действия на этом сайте — не сюда». В следующий раз она
+        выпадет из плана, а если дело дойдёт до модели, ей эту кнопку даже не
+        покажут. Так «попробуй другую» получается само, без второй просьбы.
+
+        Работает и там, где ничего не выучивалось: нажать не то мог и общий
+        способ по подписи кнопки.
 
         Имя не случайное: по нему ядро находит все скиллы, которые учатся сами,
         и общая команда «не сохраняй в память» отменяет и их работу тоже.
         """
-        host, action = self._last
-        if not host:
+        last = dict(self._last)
+        host = str(last.get("host", ""))
+        action = str(last.get("action", ""))
+        if not host or not action:
             return ToolResult.success("")
 
-        known = dict((self._known or {}).get(host, {}))
-        actions = dict(known.get("actions", {}))
-        if actions.pop(action, None) is None:
-            return ToolResult.success("")
-        known["actions"] = actions
-        try:
-            await self.context.memory.documents.set(self._section, host, known)
-        except Exception as exc:  # noqa: BLE001 — не забылось, но команда не сбойная
-            self.log.warning("Не смог забыть способ %s на %s: %s", action, host, exc)
+        entry = await self._entry(host)
+        changed = False
+
+        if last.get("learned"):
+            actions = dict(entry.get("actions", {}))
+            if actions.pop(action, None) is not None:
+                entry["actions"] = actions
+                changed = True
+
+        name = str(last.get("name", ""))
+        selector = str(last.get("sel", ""))
+        if name or selector:
+            rejected = dict(entry.get("rejected", {}))
+            listed = [
+                dict(item)
+                for item in rejected.get(action, ())
+                if isinstance(item, Mapping)
+            ]
+            mark = {"name": name, "sel": selector}
+            if mark not in listed:
+                listed.append(mark)
+                # Помним последние: если не подошли пять кнопок, дело не в них.
+                rejected[action] = listed[-MAX_REJECTED:]
+                entry["rejected"] = rejected
+                changed = True
+
+        if not changed or not await self._write(host, entry):
             return ToolResult.success("")
 
-        cache = dict(self._known or {})
-        cache[host] = known
-        self._known = cache
-        self._last = ("", "")
-        self.log.info("Забыл способ %s на %s", action, host)
-        return ToolResult.success(f"{action} на {host}")
+        self._last = {}
+        self.log.info(
+            "Больше не нажимаю %r для %s на %s", name or selector, action, host
+        )
+        described = f"{action} на {host}"
+        return ToolResult.success(f"{described}: {name}" if name else described)
 
     async def on_start(self) -> None:
         """Поднять из памяти то, что уже выучено."""

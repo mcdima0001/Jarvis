@@ -20,10 +20,14 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from jarvis.core.contracts import Intent, Utterance
 from jarvis.core.llm import LLMService
 from jarvis.core.tools import ToolRegistry
+
+if TYPE_CHECKING:  # только для типов: резолверы друг о друге знать не обязаны
+    from .learned import LearnedResolver
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +41,14 @@ class LLMResolver:
         llm: LLMService,
         *,
         tasks: tuple[str, ...] = ("intent",),
+        learner: "LearnedResolver | None" = None,
     ) -> None:
         self._registry = registry
         self._llm = llm
         #: Задачи по порядку: сначала дешёвая, потом та, что умнее.
         self._tasks = tuple(tasks) or ("intent",)
+        #: У него же спрашиваем, что для этой просьбы уже отвергли.
+        self._learner = learner
 
     @property
     def name(self) -> str:
@@ -58,6 +65,18 @@ class LLMResolver:
         if not catalog.specs:
             return None
 
+        # Что для этой просьбы уже пробовали и отвергли. Без этого модель
+        # уверенно предложит то же самое, и отмена окажется бессмысленной.
+        avoid: tuple[str, ...] = ()
+        if self._learner is not None:
+            avoid = await self._learner.rejected_for(utterance.text)
+            if avoid:
+                logger.info(
+                    "Для %r уже отвергнуто: %s — прошу модель выбрать другое",
+                    utterance.text,
+                    ", ".join(avoid),
+                )
+
         call = None
         for attempt, task in enumerate(self._tasks):
             if attempt:
@@ -66,7 +85,9 @@ class LLMResolver:
                     task,
                     utterance.text,
                 )
-            call = await self._llm.extract_intent(utterance.text, catalog, task=task)
+            call = await self._llm.extract_intent(
+                utterance.text, catalog, task=task, avoid=avoid
+            )
             if call is not None:
                 break
 

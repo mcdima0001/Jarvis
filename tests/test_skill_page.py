@@ -140,6 +140,27 @@ def test_like_never_means_dislike() -> None:
     assert "убрать" in avoid
 
 
+def test_rejected_button_leaves_the_plan() -> None:
+    """Что уже пробовали и что оказалось не тем, из плана вычитается.
+
+    Селектор выбрасывается, подпись уходит в запреты: второй раз нажимать ту
+    же не ту кнопку незачем.
+    """
+    plan = page.without_rejected(
+        [
+            {"click": ["#like", "#segmented-like-button"]},
+            {"click": ["#like"]},
+            {"label": ["нравится"], "avoid": ["не нравится"]},
+        ],
+        [{"name": "Нравится", "sel": "#like"}],
+    )
+
+    assert plan == [
+        {"click": ["#segmented-like-button"]},
+        {"label": ["нравится"], "avoid": ["не нравится", "нравится"]},
+    ]
+
+
 def test_amount_lands_in_media_steps() -> None:
     """Секунды перемотки и шаг громкости подставляются в медиа-шаги."""
     plan = page.with_amount(
@@ -400,7 +421,10 @@ async def test_learned_recipe_can_be_forgotten(loaded, provider: _Answer) -> Non
     fake = sys.modules["jarvis_skills.browser"]
     fake.CALLS.clear()
     fake.CONTROLS[:] = [{"name": "Пауза", "sel": "#pause"}, {"name": "Нравится", "sel": "#like"}]
-    fake.REPLIES[:] = [{"done": None}, {"done": "click", "detail": "Нравится"}]
+    fake.REPLIES[:] = [
+        {"done": None},
+        {"done": "click", "detail": "Нравится", "sel": "#like"},
+    ]
 
     await registry.invoke("page.like")
     assert (await memory.documents.get("sites", "music.yandex.ru"))["actions"]
@@ -408,10 +432,53 @@ async def test_learned_recipe_can_be_forgotten(loaded, provider: _Answer) -> Non
     forgotten = await registry.invoke("page.forget_last")
 
     assert forgotten.ok
-    assert forgotten.value == "like на music.yandex.ru"
-    assert (await memory.documents.get("sites", "music.yandex.ru"))["actions"] == {}
+    assert forgotten.value == "like на music.yandex.ru: Нравится"
+    saved = await memory.documents.get("sites", "music.yandex.ru")
+    assert saved["actions"] == {}
+    # И сама кнопка попала в «сюда больше не надо».
+    assert saved["rejected"]["like"] == [{"name": "Нравится", "sel": "#like"}]
     # Забывать второй раз нечего.
     assert (await registry.invoke("page.forget_last")).value == ""
+    await manager.stop()
+
+
+async def test_next_time_another_button_is_tried(loaded, provider: _Answer) -> None:
+    """Отменённая кнопка не предлагается снова — ни в плане, ни модели.
+
+    Это и есть «попробуй другую»: второй раз то же действие идёт мимо
+    отвергнутого, а модель видит список кнопок уже без него.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CONTROLS[:] = [
+        {"name": "Нравится", "sel": "#like"},
+        {"name": "В коллекцию", "sel": "#collect"},
+    ]
+    fake.REPLIES[:] = [
+        {"done": None},
+        {"done": "click", "detail": "Нравится", "sel": "#like"},
+    ]
+    await registry.invoke("page.like")
+    await registry.invoke("page.forget_last")
+
+    fake.CALLS.clear()
+    provider.asked.clear()
+    # В списке осталась одна кнопка — та, что не отвергнута.
+    provider.text = "1"
+    fake.REPLIES[:] = [
+        {"done": None},
+        {"done": "click", "detail": "В коллекцию", "sel": "#collect"},
+    ]
+
+    second = await registry.invoke("page.like")
+
+    assert second.ok
+    plan = fake.CALLS[1][1]
+    assert all("#like" not in step.get("click", []) for step in plan)
+    assert "нравится" in plan[-1].get("avoid", []), "подпись ушла в запреты"
+    assert "Нравится" not in provider.asked[0], "отвергнутую кнопку модели не показываем"
+    assert "В коллекцию" in provider.asked[0]
     await manager.stop()
 
 

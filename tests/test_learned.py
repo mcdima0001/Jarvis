@@ -205,15 +205,51 @@ async def test_forget_removes_the_last_lesson(store) -> None:
     await learner.remember("включи третье видео", Intent(tool="studio.press", arguments={}))
     await learner.remember("заблокируй ноутбук", Intent(tool="studio.light", arguments={}))
 
-    forgotten = await learner.forget()
+    forgotten = await learner.reject()
 
     assert forgotten == "заблокируй ноутбук"
     saved = await store.read("commands")
     assert "включи третье видео" in saved
-    assert "заблокируй ноутбук" not in saved
+    # Запись остаётся, но уже как «эти слова — не про это».
+    assert saved["заблокируй ноутбук"] == {"rejected": ["studio.light"]}
+    assert await learner.resolve(Utterance(text="заблокируй ноутбук")) is None
 
     # Второй раз забывать уже нечего — молча, без выдумок.
-    assert await learner.forget() == ""
+    assert await learner.reject() == ""
+
+
+async def test_rejected_tool_is_not_offered_again(store) -> None:
+    """Отвергнутое не выучивается заново и подсказывается модели.
+
+    Без этого отмена была бы бессмысленной: модель предложила бы то же самое,
+    разбор прошёл бы «удачно», и связка вернулась бы в память.
+    """
+    learner = LearnedResolver(store)
+    await learner.remember("включи третье видео", Intent(tool="studio.press", arguments={}))
+    await learner.reject()
+
+    assert await learner.rejected_for("Включи третье видео!") == ("studio.press",)
+    assert await learner.remember("включи третье видео", Intent(tool="studio.press")) == ""
+
+    # А другой инструмент для той же фразы выучить можно — это и есть «попробуй
+    # по-другому».
+    assert await learner.remember("включи третье видео", Intent(tool="studio.light"))
+    intent = await learner.resolve(Utterance(text="включи третье видео"))
+    assert intent is not None and intent.tool == "studio.light"
+
+
+async def test_rejection_survives_a_learned_hit(registry: ToolRegistry, studio: Studio, store) -> None:
+    """Отменить можно и то, что выучено давно, а сработало сегодня.
+
+    Промах чаще всего вылезает не в момент обучения, а при повторе: вчера
+    запомнили, сегодня повторили — и оказалось не то.
+    """
+    learner = LearnedResolver(store)
+    await learner.remember("включи третье видео", Intent(tool="studio.press", arguments={}))
+    learner._last = ""  # как после перезапуска: в памяти есть, в сеансе — нет
+
+    assert await learner.resolve(Utterance(text="включи третье видео")) is not None
+    assert await learner.reject() == "включи третье видео"
 
 
 async def test_forget_last_tool_covers_skills(registry: ToolRegistry, store) -> None:

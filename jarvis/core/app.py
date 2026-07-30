@@ -368,7 +368,9 @@ def _build_resolvers(
         "phrase": lambda: PhraseResolver(registry),
         "alias": lambda: AliasResolver(registry, config.router.aliases),
         "learned": lambda: learner,
-        "llm": lambda: LLMResolver(registry, llm, tasks=_intent_tasks(llm, config)),
+        "llm": lambda: LLMResolver(
+            registry, llm, tasks=_intent_tasks(llm, config), learner=learner
+        ),
         "fallback": lambda: FallbackResolver(),
     }
 

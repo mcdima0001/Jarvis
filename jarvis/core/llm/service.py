@@ -247,19 +247,31 @@ class LLMService:
         catalog: ToolCatalog,
         *,
         task: str = "intent",
+        avoid: Sequence[str] = (),
     ) -> ToolCall | None:
         """Определить, какой инструмент вызвать для реплики.
 
         Возвращает `None`, если модель не выбрала инструмент — тогда роутер
         передаст запрос дальше по цепочке.
+
+        :param avoid: инструменты, которые для этой просьбы уже пробовали и
+            которые владелец отверг. Модели о них говорится прямо: иначе она
+            уверенно предложит то же самое, и отмена окажется бессмысленной.
         """
         schemas = catalog.function_schemas()
         if not schemas:
             return None
 
+        question = utterance
+        if avoid:
+            question = (
+                f"{utterance}\n\nДля этой просьбы уже пробовали и это оказалось не тем: "
+                f"{', '.join(avoid)}. Выбери другой инструмент."
+            )
+
         try:
             response = await self.complete(
-                [Message.system(_INTENT_SYSTEM), Message.user(utterance)],
+                [Message.system(_INTENT_SYSTEM), Message.user(question)],
                 task=task,
                 tools=schemas,
                 tool_choice="auto",

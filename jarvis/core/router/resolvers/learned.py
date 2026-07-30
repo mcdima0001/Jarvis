@@ -156,10 +156,13 @@ class LearnedResolver:
             self._known = {}
             return self._known
 
+        # В записи бывает выученный инструмент, бывает список отвергнутых, а
+        # бывает и то и другое: «эти слова означают вот это, а вот это уже
+        # пробовали».
         self._known = {
             str(key): dict(value)
             for key, value in raw.items()
-            if isinstance(value, Mapping) and value.get("tool")
+            if isinstance(value, Mapping) and (value.get("tool") or value.get("rejected"))
         }
         if self._known:
             logger.info("Выученных формулировок в памяти: %d", len(self._known))
@@ -175,11 +178,15 @@ class LearnedResolver:
             return None
 
         entry = known.get(text)
+        key = text
         arguments: Mapping[str, Any] = {}
+        if entry is not None and not entry.get("tool"):
+            # Запись есть, но она про отвергнутое — подсказать нечего.
+            return None
         if entry is not None:
             arguments = dict(entry.get("arguments") or {})
         else:
-            entry, arguments = self._match(known, utterance.cleaned)
+            key, entry, arguments = self._match(known, utterance.cleaned)
             if entry is None:
                 return None
 
@@ -188,6 +195,9 @@ class LearnedResolver:
             utterance.text,
             entry["tool"],
         )
+        # Отменять просят последнее сделанное, а не последнее выученное: чаще
+        # всего мимо бьёт как раз то, что выучено вчера и повторилось сегодня.
+        self._last = key
         return Intent(
             tool=str(entry["tool"]),
             arguments=arguments,
@@ -200,7 +210,7 @@ class LearnedResolver:
 
     def _match(
         self, known: Mapping[str, Mapping[str, Any]], text: str
-    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any] | None, dict[str, Any]]:
         """Подобрать шаблон: от частного к общему, как и объявленные фразы."""
         scored: list[tuple[int, str, re.Pattern[str]]] = []
         for key in known:
@@ -214,13 +224,15 @@ class LearnedResolver:
             if match is None:
                 continue
             entry = dict(known[key])
+            if not entry.get("tool"):
+                continue
             arguments = fill(entry.get("arguments") or {}, match.groupdict())
             if not arguments and (entry.get("arguments") or {}):
                 # Шаблон совпал, а подставить нечего — запись битая.
                 logger.debug("Выученный шаблон %r не удалось заполнить", key)
                 continue
-            return entry, arguments
-        return None, {}
+            return key, entry, arguments
+        return "", None, {}
 
     # --- запись ------------------------------------------------------------
 
@@ -239,8 +251,20 @@ class LearnedResolver:
         if len(key) < MIN_UTTERANCE:
             return ""
 
-        entry = {"tool": intent.tool, "arguments": arguments}
-        previous = known.get(key)
+        previous = known.get(key) or {}
+        rejected = [str(name) for name in (previous.get("rejected") or ()) if name]
+        if intent.tool in rejected:
+            # Это уже пробовали, и владелец сказал «не то». Модель предложила
+            # то же самое второй раз — запоминать нельзя, иначе отмена
+            # бессмысленна: связка выучится снова.
+            logger.info(
+                "Формулировку %r с %s уже отвергали — не запоминаю", key, intent.tool
+            )
+            return ""
+
+        entry: dict[str, Any] = {"tool": intent.tool, "arguments": arguments}
+        if rejected:
+            entry["rejected"] = rejected
         if previous == entry:
             # Уже выучено — второй раз сюда попадаем, только если фраза дошла
             # до модели в обход выученного. Записывать нечего.
@@ -262,24 +286,66 @@ class LearnedResolver:
         )
         return key
 
-    async def forget(self, key: str = "") -> str:
-        """Убрать выученную формулировку; пусто — последнюю за сеанс.
+    async def rejected_for(self, utterance: str) -> tuple[str, ...]:
+        """Инструменты, которые для этой просьбы уже оказались не теми.
+
+        Нужно модели: показать ей то, что уже пробовали, дешевле, чем ждать,
+        пока она сама предложит другое.
+        """
+        known = await self._load()
+        text = normalize(utterance)
+        entry = known.get(text)
+        if entry is None:
+            for key in known:
+                pattern = compile_template(key)
+                if pattern is not None and pattern.match(text):
+                    entry = known[key]
+                    break
+        if entry is None:
+            return ()
+        return tuple(str(name) for name in (entry.get("rejected") or ()) if name)
+
+    async def reject(self, key: str = "") -> str:
+        """Отменить выученную формулировку и запомнить, что она была не той.
+
+        Отмена без памяти о причине бесполезна: модель предложила бы то же
+        самое, разбор прошёл бы «удачно», и формулировка выучилась бы снова. А
+        так следующий разбор идёт с оговоркой «это уже пробовали».
 
         :return: что забыли, либо пустую строку.
         """
         known = await self._load()
         target = normalize(key) if key else self._last
-        if not target or target not in known:
+        entry = known.get(target) if target else None
+        if not target or entry is None:
             return ""
-        try:
-            data = dict(known)
+
+        wrong = str(entry.get("tool") or "")
+        rejected = [str(name) for name in (entry.get("rejected") or ()) if name]
+        if wrong and wrong not in rejected:
+            rejected.append(wrong)
+
+        data = dict(known)
+        if rejected:
+            # Запись остаётся, но уже как «эти слова — не про это».
+            data[target] = {"rejected": rejected}
+        else:
             data.pop(target, None)
+
+        try:
             await self._store.write(self._section, data)
         except Exception as exc:  # noqa: BLE001 — забыть не вышло, но это не сбой команды
             logger.warning("Не смог забыть формулировку %r: %s", target, exc)
             return ""
-        known.pop(target, None)
+
+        self._known = {
+            name: dict(value) for name, value in data.items() if isinstance(value, Mapping)
+        }
         if target == self._last:
             self._last = ""
-        logger.info("Забыл формулировку %r", target)
+        logger.info(
+            "Забыл формулировку %r%s",
+            target,
+            f" и больше не предложу {wrong}" if wrong else "",
+        )
         return target
