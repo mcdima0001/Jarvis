@@ -372,6 +372,31 @@ async function jarvisRunPlan(plan) {
     return sounding();
   };
 
+  /** Подписи, которыми называют остановку. Кнопка с такой — уже играет. */
+  const PAUSE_WORDS = ["пауза", "приостановить", "остановить", "pause", "stop"];
+
+  /**
+   * Кнопка воспроизведения превратилась в кнопку паузы.
+   *
+   * Это ответ самого сайта: «принял, играю». Ждать тут больше нечего, даже если
+   * звука ещё нет — трек может грузиться. Без этого признака оставался зазор:
+   * Яндекс Музыка сперва идёт за ссылкой на файл, и `paused` переключается не
+   * сразу. Не дождавшись, Jarvis шёл нажимать всё подряд — а трек уже играл.
+   */
+  const saysPlaying = (button) =>
+    Boolean(button) && PAUSE_WORDS.some((word) => hits(spaced(caption(button)), word));
+
+  /** Дождаться, что трек пошёл: либо слышно, либо кнопка стала паузой. */
+  const awaitStart = async (button, limit) => {
+    for (let waited = 0; waited < limit; waited += 100) {
+      if (sounding() || saysPlaying(button)) {
+        return true;
+      }
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    return sounding() || saysPlaying(button);
+  };
+
   /**
    * Что было рядом: подписи и признаки. Это данные для лога, по которым потом
    * пишется рецепт сайта.
@@ -458,6 +483,7 @@ async function jarvisRunPlan(plan) {
     let node = found;
     let nearby = [];
     let pressed = "";
+    let control = null;
     for (let depth = 0; node && depth < 6; depth += 1) {
       for (const name of ["pointerover", "mouseover", "mouseenter"]) {
         try {
@@ -481,6 +507,12 @@ async function jarvisRunPlan(plan) {
         }
       }
       if (button) {
+        control = button;
+        // Кнопка уже показывает паузу — значит этот трек играет прямо сейчас.
+        // Нажать её означало бы остановить музыку в ответ на «включи».
+        if (step.play && saysPlaying(button)) {
+          return { detail: `${caption(found)} — уже играет`, played: true };
+        }
         button.click();
         pressed = caption(button) || "кнопка без подписи";
         break;
@@ -500,19 +532,20 @@ async function jarvisRunPlan(plan) {
       return { detail, buttons: listOf(nearby) };
     }
 
-    // Пределы ожидания короткие намеренно. `paused` переключается сразу, как
-    // только сайт вызвал play(), то есть ждём не загрузку трека, а обработчик
-    // нажатия. А расширение всё это время держит ответ, и у команды есть свой
-    // предел: с секундными паузами на каждый шаг одна команда занимала 18 с и
-    // упиралась в «расширение не ответило».
-    if (pressed && (await awaitSound(700))) {
+    // Ждём не загрузку трека, а ответ сайта: либо пошёл звук, либо кнопка
+    // превратилась в паузу. Второе не менее надёжно — сайт сам говорит, что
+    // принял нажатие, — и закрывает зазор, в котором Яндекс Музыка ещё идёт за
+    // ссылкой на файл. Пределы короткие: расширение держит ответ, а с
+    // секундными паузами на каждый шаг одна команда занимала 18 с и упиралась
+    // в «расширение не ответило».
+    if (pressed && (await awaitStart(control, 1200))) {
       return { detail, played: true };
     }
 
     // Кнопка не помогла или её не было — нажимаем саму строку. Нажатие могло
     // только выбрать трек, поэтому потом дожимаем плеер руками.
     found.click();
-    if (await awaitSound(700)) {
+    if (await awaitStart(control, 700)) {
       return { detail, played: true };
     }
     const target = mainPlayer();

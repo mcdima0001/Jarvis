@@ -439,6 +439,44 @@ check("уже играет — второй раз не тыкаем", async () 
   assert(audio.played === 0, "плеер дожимать было незачем");
 });
 
+check("кнопка стала паузой — сайт принял нажатие", async () => {
+  // Яндекс Музыка сперва идёт за ссылкой на файл, и звука в первые мгновения
+  // нет. Но кнопка уже переименовалась — значит нажатие принято, и тыкать
+  // дальше незачем. Именно в этом зазоре Jarvis нажимал строку и уезжал на
+  // страницу трека.
+  const play = element({ attributes: { "aria-label": "Воспроизвести" } });
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" }, children: [play] });
+  // Настоящая кнопка меняет подпись сама; подделке нужно сказать об этом.
+  const original = play.click;
+  play.click = () => {
+    original();
+    play.getAttribute = (name) => (name === "aria-label" ? "Пауза" : null);
+  };
+  const api = load(makeDocument({ controls: [row] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["волшебная"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === true, "сайт ответил паузой, а мы этого не заметили");
+  assert(row.clicked === 0, "нажатие принято — по строке тыкать незачем");
+});
+
+check("трек уже играет — кнопку паузы не нажимаем", async () => {
+  // «Включи X», когда X играет: нажать кнопку значило бы остановить музыку.
+  const pause = element({ attributes: { "aria-label": "Пауза", "data-test-id": "PLAY_BUTTON" } });
+  const row = element({ attributes: { "aria-label": "Трек Волшебная" }, children: [pause] });
+  const api = load(makeDocument({ controls: [row] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["волшебная"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === true, "трек играет — это и есть успех");
+  assert(pause.clicked === 0, "нажали паузу в ответ на «включи»");
+  assert(row.clicked === 0, "по строке тыкать тоже незачем");
+});
+
 check("беззвучный предпросмотр за звук не считается", async () => {
   // На YouTube наведение мыши запускает беззвучный ролик, а наведение — как
   // раз то, что делает шаг item.
