@@ -56,7 +56,11 @@ MEDIA_ACTIONS = frozenset(
 )
 
 #: Глаголы шага. Список закрытый: чего тут нет, того странице не отправить.
-STEP_VERBS = ("media", "label", "click")
+STEP_VERBS = ("media", "label", "click", "item")
+
+#: Как называется кнопка воспроизведения внутри строки трека. Нужно шагу
+#: `item`: нажатие по самой строке трек только выбирает, играть начинает она.
+PLAY_HINTS = ("воспроизв", "слушать", "включить", "play", "listen")
 
 #: Сколько вариантов имеет смысл перебирать. Столько же режет и page.js.
 MAX_STEPS = 8
@@ -374,6 +378,13 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
             if not items:
                 continue
             clean = {verb: items}
+            if verb == "item":
+                # Как зовётся кнопка воспроизведения и надо ли дожимать плеер.
+                hint = _strings(step.get("hint", ()), limit=MAX_AVOID)
+                if hint:
+                    clean["hint"] = hint
+                if step.get("play"):
+                    clean["play"] = True
             if verb == "label":
                 # Запретные слова: подпись «не нравится» содержит «нравится»
                 # целиком, и без них лайк оказывается дизлайком.
@@ -704,6 +715,36 @@ class PageSkill(Skill):
     async def dislike(self) -> ToolResult:
         """Поставить дизлайк."""
         return await self._act("dislike")
+
+    @tool(phrases=["включи трек {track}", "включи песню {track}",
+                   "поставь трек {track}", "поставь песню {track}",
+                   "включи {track} на сайте", "поставь {track} на сайте",
+                   "включи {track} в яндекс музыке",
+                   "play the track {track}", "play {track} on the page"])
+    async def play_item(self, track: str, site: str = "") -> ToolResult:
+        """Включить названный трек или ролик из списка на странице.
+
+        Отдельно от «нажми», потому что нажатие по строке трека
+        воспроизведение не запускает: оно её только выбирает. Играть начинает
+        кнопка внутри строки, и обычно она появляется лишь при наведении.
+
+        :param track: название, как оно написано в списке.
+        :param site: на каком сайте; пусто — там, куда смотришь.
+        """
+        names = label_variants(track)
+        if not names:
+            return ToolResult.failure(
+                "не расслышал, что включать",
+                speech={"ru": "Не понял, что включить.", "en": "I didn't catch what to play."},
+            )
+        name = names[0]
+        return await self._act(
+            f"item:{name}",
+            site=site,
+            focused=True,
+            extra=[{"item": names, "hint": list(PLAY_HINTS), "play": True}],
+            speech=(f"Включаю {name}.", f"Playing {name}."),
+        )
 
     @tool(routable=False, phrases=["включи первое видео", "открой первое видео",
                                    "включи первый результат", "открой первую ссылку",

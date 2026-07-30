@@ -17,17 +17,29 @@ const vm = require("vm");
 /** Элемент страницы: столько, сколько нужно page.js. */
 function element(options) {
   const attributes = options.attributes || {};
+  const children = options.children || [];
   const self = {
     tag: options.tag || "button",
     textContent: options.text || "",
     id: options.id || "",
     clicked: 0,
+    hovered: 0,
+    parentElement: null,
     getAttribute: (name) => (name in attributes ? attributes[name] : null),
     getBoundingClientRect: () => ({ width: options.hidden ? 0 : 100, height: options.hidden ? 0 : 20 }),
+    // Внутренности строки: по ним page.js ищет кнопку воспроизведения.
+    querySelectorAll: () => children,
+    dispatchEvent() {
+      self.hovered += 1;
+      return true;
+    },
     click() {
       self.clicked += 1;
     },
   };
+  children.forEach((child) => {
+    child.parentElement = self;
+  });
   return self;
 }
 
@@ -99,6 +111,14 @@ function load(document) {
     document,
     location: { href: "https://example.com/track" },
     getComputedStyle: () => ({ visibility: "visible", display: "block", opacity: "1" }),
+    setTimeout,
+    // Наведение мыши: без него не найти кнопку, которая появляется по hover.
+    MouseEvent: class {
+      constructor(type, init) {
+        this.type = type;
+        Object.assign(this, init || {});
+      }
+    },
   };
   vm.createContext(sandbox);
   vm.runInContext(`${source}\n;globalThis.__api = { jarvisRunPlan, jarvisProbe };`, sandbox);
@@ -244,6 +264,48 @@ check("неизвестный шаг пропускается", async () => {
   const api = load(makeDocument({ players: [video] }));
   const result = await api.jarvisRunPlan([{ eval: "alert(1)" }, { media: "pause" }]);
   assert(result.done === "media", "чужой шаг сломал план");
+});
+
+check("трек включается кнопкой внутри строки", async () => {
+  // Кнопка спрятана до наведения — именно поэтому видимость у неё не
+  // проверяется, а перед поиском страница получает mouseover.
+  const play = element({ attributes: { "aria-label": "Воспроизвести" }, hidden: true });
+  const row = element({
+    attributes: { "aria-label": "Трек Midnight City", role: "row" },
+    children: [play],
+  });
+  const api = load(makeDocument({ controls: [row] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["midnight city"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.done === "item", `ожидалось item, пришло ${result.done}`);
+  assert(row.hovered > 0, "на строку не наводились");
+  assert(play.clicked === 1, "кнопка воспроизведения не нажата");
+  assert(row.clicked === 0, "по самой строке нажимать не нужно");
+});
+
+check("без кнопки нажимается строка и дожимается плеер", async () => {
+  const row = element({ attributes: { "aria-label": "Трек Midnight City" } });
+  const audio = player({ tag: "audio", paused: true });
+  const api = load(makeDocument({ controls: [row], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["midnight city"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.done === "item", "строка не нажата");
+  assert(row.clicked === 1, "строку нажать всё же нужно");
+  assert(audio.played === 1, "плеер не дожали, а нажатие могло только выбрать трек");
+});
+
+check("чужое название не включается", async () => {
+  const row = element({ attributes: { "aria-label": "Трек Something Else" } });
+  const api = load(makeDocument({ controls: [row] }));
+  const result = await api.jarvisRunPlan([{ item: ["midnight city"], hint: [] }]);
+  assert(result.done === null, "нажалось не то");
+  assert(row.clicked === 0, "нажалось не то");
 });
 
 check("список кнопок собирается с селекторами", async () => {

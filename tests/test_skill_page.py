@@ -140,6 +140,47 @@ def test_like_never_means_dislike() -> None:
     assert "убрать" in avoid
 
 
+def test_item_step_carries_the_play_hint() -> None:
+    """У шага «включить названное» есть подсказка и признак «дожать плеер».
+
+    Нажатие по строке трека воспроизведение не запускает — оно её выбирает.
+    Играть начинает кнопка внутри строки, а её имя надо знать.
+    """
+    plan = page.validate_plan(
+        [{"item": ["midnight city"], "hint": ["воспроизв", "play"], "play": True}]
+    )
+
+    assert plan == [
+        {"item": ["midnight city"], "hint": ["воспроизв", "play"], "play": True}
+    ]
+    # Без подсказки шаг остаётся рабочим: нажмёт строку и дожмёт плеер.
+    assert page.validate_plan([{"item": ["трек"]}]) == [{"item": ["трек"]}]
+
+
+async def test_named_track_is_played_not_just_clicked(loaded) -> None:
+    """«Включи Midnight City» — отдельная команда, а не «нажми».
+
+    Живой случай: «нажми Midnight City» строку нажимало, но музыка не играла, а
+    «включи Midnight City» уходило в модель и та включала воспроизведение… на
+    ютубе, в соседней вкладке.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "item", "detail": "Трек Midnight City — Воспроизвести"}]
+
+    result = await registry.invoke("page.play_item", {"track": "Midnight City"})
+
+    assert result.ok
+    step = fake.CALLS[1][1][0]
+    assert step["item"][0] == "midnight city"
+    assert step["play"] is True and step["hint"], "нужна и подсказка, и дожим плеера"
+    # Смотрят в одну вкладку, а играть может другая — берём ту, куда смотрят.
+    assert fake.CALLS[0] == ("target", "", True)
+    await manager.stop()
+
+
 def test_rejected_button_leaves_the_plan() -> None:
     """Что уже пробовали и что оказалось не тем, из плана вычитается.
 

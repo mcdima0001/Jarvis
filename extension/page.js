@@ -165,6 +165,84 @@ async function jarvisRunPlan(plan) {
     return null;
   };
 
+  /**
+   * Включить названное: трек в списке, ролик в подборке.
+   *
+   * Нажатие по строке трека воспроизведение не запускает — оно её только
+   * выбирает или уводит на страницу трека. Играть начинает отдельная кнопка,
+   * и она обычно появляется лишь при наведении мыши. Поэтому: находим строку
+   * по названию, наводимся на неё, ищем внутри кнопку воспроизведения, а если
+   * её нет — нажимаем саму строку и дожимаем плеер.
+   */
+  const playItem = async (step) => {
+    const ITEMS =
+      'a[href], button, [role="button"], [role="row"], [role="listitem"], li, tr';
+    const wanted = (step.item || []).map((word) => spaced(word).trim()).filter(Boolean);
+    const hints = (step.hint || []).map((word) => spaced(word).trim()).filter(Boolean);
+    if (!wanted.length) {
+      return null;
+    }
+
+    let found = null;
+    for (const element of document.querySelectorAll(ITEMS)) {
+      if (!seen(element)) {
+        continue;
+      }
+      const label = spaced(caption(element));
+      // Строка длиннее этого — уже кусок страницы, а не название.
+      if (!label.trim() || label.length > 200) {
+        continue;
+      }
+      if (wanted.some((word) => hits(label, word))) {
+        found = element;
+        break;
+      }
+    }
+    if (!found) {
+      return null;
+    }
+
+    // Кнопка воспроизведения прячется до наведения, поэтому видимость у неё
+    // не проверяем — иначе её не найти никогда.
+    let node = found;
+    for (let depth = 0; node && depth < 5; depth += 1) {
+      for (const name of ["pointerover", "mouseover", "mouseenter"]) {
+        try {
+          node.dispatchEvent(new MouseEvent(name, { bubbles: true }));
+        } catch (error) {
+          // Событие не прошло — не страшно, кнопка может быть и так видна.
+        }
+      }
+      const button = Array.from(node.querySelectorAll(CLICKABLE)).find((item) =>
+        hints.some((word) => hits(spaced(caption(item)), word)),
+      );
+      if (button) {
+        button.click();
+        return `${caption(found)} — ${caption(button)}`;
+      }
+      node = node.parentElement;
+    }
+
+    found.click();
+    if (step.play) {
+      // Нажатие могло только выбрать трек. Даём странице мгновение и, если
+      // тишина, включаем плеер сами.
+      await new Promise((done) => setTimeout(done, 400));
+      const playing = players().some((item) => !item.paused && !item.ended);
+      if (!playing) {
+        const target = mainPlayer();
+        if (target) {
+          try {
+            await target.play();
+          } catch (error) {
+            // Автозапуск запрещён — но строку мы всё-таки нажали.
+          }
+        }
+      }
+    }
+    return caption(found);
+  };
+
   /** Первый видимый элемент по списку селекторов — вместе с самим селектором. */
   const bySelector = (selectors) => {
     for (const selector of selectors) {
@@ -200,6 +278,11 @@ async function jarvisRunPlan(plan) {
         const detail = await media(step.media, step);
         if (detail) {
           return answer("media", detail);
+        }
+      } else if (Array.isArray(step.item)) {
+        const detail = await playItem(step);
+        if (detail) {
+          return answer("item", detail);
         }
       } else if (Array.isArray(step.label)) {
         const element = byLabel(step);
