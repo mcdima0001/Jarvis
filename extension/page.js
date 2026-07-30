@@ -167,9 +167,7 @@ async function jarvisRunPlan(plan) {
 
   /** Лучшее совпадение подписи с просьбой среди элементов страницы. */
   const bestMatch = (selector, wanted, forbidden, tighter) => {
-    let best = null;
-    let rank = 0;
-    let tightest = Infinity;
+    const found = [];
     for (const element of document.querySelectorAll(selector)) {
       if (!seen(element)) {
         continue;
@@ -185,17 +183,43 @@ async function jarvisRunPlan(plan) {
       if (forbidden.some((word) => hits(label, word))) {
         continue;
       }
-      const value = Math.max(...wanted.map((word) => score(label, word)));
-      // При равном совпадении порядок решает вызывающий: у кнопок побеждает
-      // первая на странице (у видео это лайк ролика, а не лайк комментария),
-      // у строк списка — самая короткая подпись, иначе выбирается весь список.
-      if (value > rank || (value === rank && value > 0 && tighter && label.length < tightest)) {
-        rank = value;
-        tightest = label.length;
-        best = element;
+      const rank = Math.max(...wanted.map((word) => score(label, word)));
+      if (rank > 0) {
+        found.push({ element, rank, size: label.length });
       }
     }
-    return best;
+    if (!found.length) {
+      return null;
+    }
+
+    // Обёртка списка склеивает подписи всех строк подряд и поэтому отвечает
+    // просьбе **лучше** любой отдельной строки: слов в ней больше. Живой
+    // случай на Яндекс Музыке — «включи трек Dua Lipa Break My Heart» выбрало
+    // «new rulesdua lipa03:29let you break my heart againmorlix…», то есть всю
+    // выдачу целиком. Одной длины тут мало: у обёртки и совпадение выше.
+    // Поэтому элемент, внутри которого лежит другой подходящий, отбрасывается —
+    // побеждает самый внутренний.
+    const inner = found.filter(
+      (one) =>
+        !found.some(
+          (other) =>
+            other !== one &&
+            typeof one.element.contains === "function" &&
+            one.element.contains(other.element),
+        ),
+    );
+    const pool = inner.length ? inner : found;
+
+    // При равном совпадении порядок решает вызывающий: у кнопок побеждает
+    // первая на странице (у видео это лайк ролика, а не лайк комментария),
+    // у строк списка — самая короткая подпись.
+    let best = pool[0];
+    for (const item of pool.slice(1)) {
+      if (item.rank > best.rank || (tighter && item.rank === best.rank && item.size < best.size)) {
+        best = item;
+      }
+    }
+    return best.element;
   };
 
   /** Кнопка, чья подпись отвечает просьбе и не содержит запретного. */

@@ -694,6 +694,11 @@ class BrowserSkill(Skill):
                    "открой вкладку {site}", "открою вкладку {site}",
                    "переключись на {site}", "переключи на {site}",
                    "покажи вкладку {site}",
+                   # «Вкладка это вкладка»: без этих шаблонов слово уезжало в
+                   # название сайта, и ассистент отвечал «не знаю такого сайта:
+                   # вкладку Cloud CLI».
+                   "переключись на вкладку {site}", "переключи на вкладку {site}",
+                   "перейди на вкладку {site}", "перейди во вкладку {site}",
                    "open the browser", "open site {site}", "go to {site}",
                    "open {site} in the browser", "open the {site} tab",
                    "switch to {site}"])
@@ -769,10 +774,19 @@ class BrowserSkill(Skill):
                 "пустой поисковый запрос",
                 speech={"ru": "Не расслышал, что искать.", "en": "I didn't catch what to search for."},
             )
-        # Каждый поиск — новый запрос, поэтому вкладку не переиспользуем.
-        through_tab = await self._open_tab(url, query, reuse=False)
-        if through_tab is None and not await self._open(url):
-            return self._no_browser()
+        # Вкладка того же сайта уже открыта — ведём её, а не плодим вторую.
+        #
+        # Раньше поиск всегда открывался новой вкладкой: «каждый запрос новый,
+        # переиспользовать нечего». Для чужого сайта это верно — терять статью,
+        # которую читают, из-за «загугли» нельзя. Но «открой видео X» на уже
+        # открытом YouTube давало вторую вкладку YouTube, и владелец справедливо
+        # назвал это поломкой. Поэтому условие — **тот же сайт**: выдача сменяет
+        # выдачу, а посторонняя страница остаётся на месте.
+        moved = await self._go(url)
+        if moved is None:
+            through_tab = await self._open_tab(url, query, reuse=False)
+            if through_tab is None and not await self._open(url):
+                return self._no_browser()
 
         # Поисковик называем так, как назвал его владелец: своё «в гугле»
         # звучит лучше, чем внутреннее имя google, которое голос прочтёт
@@ -878,6 +892,19 @@ class BrowserSkill(Skill):
                 "en": (f"Switching to {name}.", f"Here's {name}.", f"Over to {name}."),
             },
         )
+
+    async def _go(self, url: str) -> dict | None:
+        """Увести открытую вкладку этого сайта по новому адресу.
+
+        :return: ответ расширения, либо ``None``, если такой вкладки нет или
+            расширение не подключено — тогда открываем новую, как раньше.
+        """
+        if self._extension is None or not self._extension.connected:
+            return None
+        moved = await self._extension.call("go", url=url, focus=True)
+        if moved is not None:
+            self.log.info("Веду открытую вкладку: %s", url)
+        return moved
 
     async def _open_tab(self, url: str, name: str, *, reuse: bool) -> ToolResult | None:
         """Открыть адрес вкладкой через расширение.
@@ -991,7 +1018,7 @@ class BrowserSkill(Skill):
         return await self._page_call("page", {"plan": list(plan)}, site=site, tab=tab)
 
     @tool(routable=False)
-    async def page_go(self, url: str, tab: int = 0) -> ToolResult:
+    async def page_go(self, url: str, tab: int = 0, focus: bool = False) -> ToolResult:
         """Увести вкладку по другому адресу и дождаться загрузки.
 
         Нужно скиллу `page`, чтобы открыть поиск **самого сайта**: нового окна
@@ -1002,12 +1029,16 @@ class BrowserSkill(Skill):
         услышанное `steam://` запустило бы обработчик протокола.
 
         :param url: полный адрес.
-        :param tab: номер вкладки; пусто — та, куда смотрят.
+        :param tab: номер вкладки; пусто — вкладка того же сайта.
+        :param focus: показать вкладку. Для поиска внутри страницы не нужно —
+            там и так смотрят куда надо, а дёргать окно ассистент не должен.
         """
         address = safe_url(url)
         if address is None:
             return ToolResult.failure(f"недопустимый адрес: {url!r}")
-        return await self._page_call("go", {"url": address, "active": True}, site="", tab=tab)
+        return await self._page_call(
+            "go", {"url": address, "active": True, "focus": bool(focus)}, site="", tab=tab
+        )
 
     @tool(routable=False)
     async def page_probe(self, site: str = "", tab: int = 0, limit: int = 40) -> ToolResult:

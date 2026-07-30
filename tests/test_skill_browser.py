@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -386,6 +387,51 @@ async def test_reply_is_matched_by_id() -> None:
     assert result == {"tabId": 7, "reused": True}
     assert server.sent[0]["action"] == "open"
     assert server.sent[0]["params"] == {"url": "https://ya.ru", "reuse": True}
+
+
+def _with_extension(bridge):
+    """Скилл ровно в том объёме, который нужен `_go`: мост и логгер.
+
+    Настоящий `BrowserSkill` для этого пришлось бы поднимать целиком, вместе с
+    контекстом и сокетом, — а метод трогает только эти две вещи.
+    """
+
+    class _Stub:
+        log = logging.getLogger("test-browser")
+        _go = browser.BrowserSkill._go
+
+        def __init__(self, extension):
+            self._extension = extension
+
+    return _Stub(bridge)
+
+
+async def test_search_leads_an_open_tab_of_the_same_site() -> None:
+    """Выдача сменяет выдачу, а не открывается второй вкладкой.
+
+    Живой случай: владелец переключился на YouTube, сказал «открой видео …» — и
+    получил вторую вкладку YouTube. «Тот же сайт» тут условие: терять статью,
+    которую читают, из-за «загугли» нельзя, а выдачу YouTube — можно и нужно.
+    """
+    bridge, server = _bridge()
+    server.answer = {"ok": True, "result": {"tabId": 4, "url": "https://www.youtube.com/results"}}
+    skill = _with_extension(bridge)
+
+    moved = await skill._go("https://www.youtube.com/results?search_query=x")
+
+    assert moved == {"tabId": 4, "url": "https://www.youtube.com/results"}
+    assert server.sent[0]["action"] == "go"
+    # Показать вкладку тут нужно: поиск затевали, чтобы на него смотреть.
+    assert server.sent[0]["params"]["focus"] is True
+
+
+async def test_search_opens_a_new_tab_when_the_site_is_closed() -> None:
+    """Такой вкладки нет — расширение отказывает, и открывается новая."""
+    bridge, server = _bridge()
+    server.answer = {"ok": False, "error": "нет подходящей вкладки"}
+    skill = _with_extension(bridge)
+
+    assert await skill._go("https://www.google.com/search?q=x") is None
 
 
 async def test_error_from_extension_is_not_a_result() -> None:

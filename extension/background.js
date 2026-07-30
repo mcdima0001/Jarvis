@@ -352,9 +352,12 @@ async function run(action, params) {
   }
 
   if (action === "go") {
-    // Увести уже выбранную вкладку по другому адресу — так открывается поиск
-    // сайта. Именно в той же вкладке: новая была бы лишней, а работа идёт
-    // ровно там, куда смотрит пользователь.
+    // Увести вкладку по другому адресу вместо открытия новой.
+    //
+    // Какую вкладку — решает `pickTab`, и для этой команды у него есть готовое
+    // правило: адрес назван, значит берётся вкладка **того же сайта**. Отсюда
+    // и «открой видео X» на уже открытом YouTube ведёт эту вкладку в выдачу, а
+    // не плодит вторую. Такой вкладки нет — отказ, и звавший откроет новую.
     if (!isWebUrl(params.url)) {
       throw new Error("недопустимый адрес");
     }
@@ -362,7 +365,15 @@ async function run(action, params) {
     if (!tab) {
       throw new Error("нет подходящей вкладки");
     }
-    const moved = await chrome.tabs.update(tab.id, { url: params.url });
+    const moved = await chrome.tabs.update(tab.id, {
+      url: params.url,
+      // Показывать вкладку нужно не всегда: поиск сайта внутри «включи трек»
+      // идёт там, куда и так смотрят, и дёргать окно незачем.
+      ...(params.focus ? { active: true } : {}),
+    });
+    if (params.focus) {
+      await chrome.windows.update(moved.windowId, { focused: true });
+    }
     const ready = await loaded({ ...moved, status: "loading" });
     return { tabId: ready.id, windowId: ready.windowId, title: ready.title, url: ready.url };
   }

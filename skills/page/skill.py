@@ -1193,7 +1193,7 @@ class PageSkill(Skill):
         if result is not None:
             self._note_attempt(host, action, result, learned=False)
             if silent(result):
-                return self._not_playing(result)
+                return self._not_playing(action, result)
             return self._done(action, result, speech)
 
         learned = await self._learn_action(
@@ -1532,22 +1532,34 @@ class PageSkill(Skill):
         self._log_nearby(result)
         return ToolResult.success(dict(result), speech={key: tuple(items) for key, items in lines.items()})
 
-    def _not_playing(self, result: Mapping[str, Any]) -> ToolResult:
+    def _not_playing(self, action: str, result: Mapping[str, Any]) -> ToolResult:
         """Строку нашли и нажали, а звука нет.
 
         Отчитаться «включаю» в тишину нельзя — это ровно та ложь, за которую
         поправлен свободный разговор. Живой случай: на Яндекс Музыке трек
         нашёлся, кнопка «Воспроизведение» нажалась, ассистент сказал «включаю»,
         и ничего не заиграло.
+
+        Вслух называется **то, что просили**, а не подпись найденного. Подпись
+        бывает какой угодно: однажды в неё уехала склеенная выдача целиком, и
+        ассистент честно прочитал вслух «new rulesdua lipa03:29let you break my
+        heart againmorlix…». В логе подпись остаётся — там она и нужна.
         """
         detail = str(result.get("detail", "")).strip()
+        asked = action.split(":", 1)[1] if ":" in action else action
         self.log.info("Нажал %r, но звука так и нет: %s", detail, result.get("url", ""))
         self._log_nearby(result)
         return ToolResult.failure(
             f"нашёл {detail!r}, но воспроизведение не началось",
             speech={
-                "ru": f"Нашёл {detail}, но включить не получилось.",
-                "en": f"I found {detail}, but it wouldn't start playing.",
+                "ru": (
+                    f"Нашёл {asked}, но включить не получилось.",
+                    f"{asked} нашёл, а включить не смог.",
+                ),
+                "en": (
+                    f"I found {asked}, but it wouldn't start playing.",
+                    f"Found {asked}, couldn't start it.",
+                ),
             },
         )
 

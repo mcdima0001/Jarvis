@@ -44,6 +44,18 @@ function element(options) {
       }
       return null;
     },
+    // Вложенность: по ней page.js отличает строку списка от обёртки, которая
+    // склеила подписи всех строк.
+    contains: (other) => {
+      let node = other;
+      while (node) {
+        if (node === self) {
+          return true;
+        }
+        node = node.parentElement;
+      }
+      return false;
+    },
     dispatchEvent() {
       self.hovered += 1;
       return true;
@@ -582,6 +594,30 @@ check("запрет сильнее совпадения по словам", asyn
 
   assert(result.done === null, "запрет не сработал");
   assert(wrong.clicked === 0, "нажат дизлайк вместо лайка");
+});
+
+check("обёртка списка не побеждает строку", async () => {
+  // Живой случай на Яндекс Музыке: «включи трек Dua Lipa Break My Heart»
+  // выбрало «new rulesdua lipa03:29let you break my heart againmorlix…» — всю
+  // выдачу целиком. Слов просьбы в ней больше, чем в любой отдельной строке,
+  // поэтому одной длины для выбора мало.
+  const play = element({ attributes: { "aria-label": "Воспроизведение" } });
+  const row = element({
+    attributes: { "aria-label": "Break My Heart Dua Lipa" },
+    children: [play],
+  });
+  const wrapper = element({
+    attributes: { "aria-label": "New RulesDua Lipa03:29Break My Heart Dua Lipa" },
+    children: [row],
+  });
+  const api = load(makeDocument({ controls: [wrapper, row, play] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["dua lipa break my heart"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(wrapper.clicked === 0, "нажалась вся выдача целиком");
+  assert(play.clicked === 1, `кнопка внутри строки не нажата (${result.detail})`);
 });
 
 check("кнопка без подписи находится по атрибутам", async () => {
