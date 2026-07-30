@@ -339,7 +339,7 @@ def _build_resolvers(
     factories = {
         "phrase": lambda: PhraseResolver(registry),
         "alias": lambda: AliasResolver(registry, config.router.aliases),
-        "llm": lambda: LLMResolver(registry, llm),
+        "llm": lambda: LLMResolver(registry, llm, tasks=_intent_tasks(llm, config)),
         "fallback": lambda: FallbackResolver(),
     }
 
@@ -359,3 +359,33 @@ def _build_resolvers(
         logger.warning("Цепочка резолверов пуста — использую phrase + fallback")
         resolvers = [PhraseResolver(registry), FallbackResolver()]
     return resolvers
+
+
+def _intent_tasks(llm: LLMService, config: JarvisConfig) -> tuple[str, ...]:
+    """Проверить задачи разбора команд и вернуть только настроенные.
+
+    Опечатка в названии задачи иначе обошлась бы дорого: попытка молча
+    провалилась бы в рантайме, а выглядело бы это как «модель не поняла». Те же
+    грабли уже были с `router.aliases`, где синоним вёл на несуществующий
+    инструмент.
+    """
+    known = llm.models()
+    tasks = tuple(task for task in config.router.intent_tasks if task in known)
+    for task in config.router.intent_tasks:
+        if task not in known:
+            logger.warning(
+                "Задача %r из router.intent_tasks не описана в llm.profiles — пропускаю. "
+                "Есть: %s",
+                task,
+                ", ".join(sorted(known)),
+            )
+    if not tasks:
+        logger.warning("Ни одной задачи для разбора команд — беру intent")
+        return ("intent",)
+    if len(tasks) > 1:
+        logger.info(
+            "Разбор команд: %s, при отказе — %s",
+            known[tasks[0]],
+            ", ".join(known[task] for task in tasks[1:]),
+        )
+    return tasks

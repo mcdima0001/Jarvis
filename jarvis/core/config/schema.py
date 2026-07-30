@@ -64,6 +64,10 @@ class RouterConfig:
     confidence_threshold: float = 0.6
     resolvers: tuple[str, ...] = ("phrase", "alias", "llm", "fallback")
     aliases: Mapping[str, str] = field(default_factory=dict)
+    #: Профили задач, которыми резолвер `llm` разбирает команду, по порядку.
+    #: Первая — самая дешёвая; следующая спрашивается, только если предыдущая
+    #: инструмента не выбрала. Одна задача в списке — переспрашивать не будем.
+    intent_tasks: tuple[str, ...] = ("intent",)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

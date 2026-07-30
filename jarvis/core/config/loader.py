@@ -249,6 +249,9 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             confidence_threshold=float(router.get("confidence_threshold", 0.6)),
             resolvers=tuple(str(r) for r in router.get("resolvers", ())),
             aliases={str(k).lower(): str(v) for k, v in (router.get("aliases") or {}).items()},
+            intent_tasks=tuple(
+                str(task) for task in (router.get("intent_tasks") or ("intent",))
+            ),
         ),
         llm=_build_llm(_section(data, "llm")),
         stt=STTConfig(

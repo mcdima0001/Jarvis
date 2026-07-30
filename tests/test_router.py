@@ -231,3 +231,101 @@ async def test_broad_template_still_matches_its_own_phrase(events) -> None:
 
     assert intent is not None
     assert intent.tool == "rivals.broad"
+
+
+class _Refusing:
+    """Провайдер, который отказывается выбирать инструмент.
+
+    Ровно то, чем грешит дешёвая модель: каталог она видит, но отвечает текстом.
+    """
+
+    def __init__(self, *, answer_at: int = 0) -> None:
+        self.asked: list[str] = []
+        #: На каком по счёту вопросе всё-таки выбрать инструмент; 0 — никогда.
+        self._answer_at = answer_at
+
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    async def complete(self, request):
+        from jarvis.core.llm.protocol import LLMResponse, ToolCall
+
+        self.asked.append(request.model)
+        if self._answer_at and len(self.asked) >= self._answer_at:
+            return LLMResponse(
+                model=request.model,
+                tool_calls=(ToolCall(name="lights__on", arguments={}),),
+            )
+        return LLMResponse(text="Не знаю, о чём речь.", model=request.model)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _llm_service(provider) -> object:
+    """Сервис LLM с двумя задачами: дешёвой и той, что умнее."""
+    from jarvis.core.config import TaskProfile
+    from jarvis.core.llm import LLMService, ProfileRegistry
+
+    return LLMService(
+        providers={"fake": provider},
+        profiles=ProfileRegistry(
+            {
+                "intent": TaskProfile(task="intent", provider="fake", model="cheap"),
+                "intent_strong": TaskProfile(task="intent_strong", provider="fake", model="smart"),
+            },
+            default_task="intent",
+        ),
+    )
+
+
+async def test_refusal_is_retried_by_a_stronger_model(lights_registry: ToolRegistry) -> None:
+    """Дешёвая модель не выбрала инструмент — спрашиваем ту, что умнее.
+
+    Отказ дешёвой модели раньше означал худший из исходов: реплика уходила в
+    свободный разговор, то есть деньги всё равно тратились, а команда не
+    выполнялась.
+    """
+    from jarvis.core.router import LLMResolver
+
+    provider = _Refusing(answer_at=2)
+    resolver = LLMResolver(
+        lights_registry, _llm_service(provider), tasks=("intent", "intent_strong")
+    )
+
+    intent = await resolver.resolve(Utterance(text="а ну давай свет"))
+
+    assert intent is not None
+    assert intent.tool == "lights.on"
+    assert provider.asked == ["cheap", "smart"], "порядок: сначала дешёвая"
+
+
+async def test_single_task_means_no_second_question(lights_registry: ToolRegistry) -> None:
+    """Одна задача в конфиге — переспрашивать не будем: это чужие деньги."""
+    from jarvis.core.router import LLMResolver
+
+    provider = _Refusing()
+    resolver = LLMResolver(lights_registry, _llm_service(provider), tasks=("intent",))
+
+    assert await resolver.resolve(Utterance(text="а ну давай свет")) is None
+    assert provider.asked == ["cheap"]
+
+
+async def test_cheap_answer_costs_nothing_extra(lights_registry: ToolRegistry) -> None:
+    """Справилась дешёвая — вторую не зовём."""
+    from jarvis.core.router import LLMResolver
+
+    provider = _Refusing(answer_at=1)
+    resolver = LLMResolver(
+        lights_registry, _llm_service(provider), tasks=("intent", "intent_strong")
+    )
+
+    intent = await resolver.resolve(Utterance(text="а ну давай свет"))
+
+    assert intent is not None
+    assert provider.asked == ["cheap"]

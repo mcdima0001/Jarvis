@@ -7,6 +7,14 @@
 
 Модель видит каталог инструментов (function-calling) и не знает ничего о
 внутреннем устройстве скиллов.
+
+**Попыток может быть несколько, разными моделями.** На разборе команд стоит
+самая дешёвая модель — она срабатывает на каждой неузнанной фразе, и каталог
+инструментов уезжает в неё целиком. Но дешёвая ошибается в одну сторону:
+отказывается выбирать. Тогда реплика уходит в свободный разговор, то есть
+платить приходится всё равно, а команда не выполняется — худший из возможных
+исходов. Поэтому при отказе есть смысл переспросить у модели посильнее: платим
+только за неудачные разборы, а их немного, и каждый из них и так стоил денег.
 """
 
 from __future__ import annotations
@@ -28,11 +36,12 @@ class LLMResolver:
         registry: ToolRegistry,
         llm: LLMService,
         *,
-        task: str = "intent",
+        tasks: tuple[str, ...] = ("intent",),
     ) -> None:
         self._registry = registry
         self._llm = llm
-        self._task = task
+        #: Задачи по порядку: сначала дешёвая, потом та, что умнее.
+        self._tasks = tuple(tasks) or ("intent",)
 
     @property
     def name(self) -> str:
@@ -49,8 +58,24 @@ class LLMResolver:
         if not catalog.specs:
             return None
 
-        call = await self._llm.extract_intent(utterance.text, catalog, task=self._task)
+        call = None
+        for attempt, task in enumerate(self._tasks):
+            if attempt:
+                logger.info(
+                    "Дешёвая модель инструмента не выбрала — переспрашиваю у %s (%r)",
+                    task,
+                    utterance.text,
+                )
+            call = await self._llm.extract_intent(utterance.text, catalog, task=task)
+            if call is not None:
+                break
+
         if call is None:
+            # Иначе непонятно, почему реплика оказалась в свободном разговоре:
+            # в логе видно только результат, а решение принималось здесь.
+            logger.info(
+                "Модель не нашла инструмента для %r — отдаю в разговор", utterance.text
+            )
             return None
 
         tool_name = self._registry.resolve_function_name(call.name)
