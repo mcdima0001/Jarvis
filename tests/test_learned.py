@@ -1,0 +1,298 @@
+"""Выученные формулировки: запоминание удачных разборов и отмена по команде.
+
+Проверяется то, ради чего это сделано: со второго раза та же фраза не доходит
+до модели, ошибочный разбор в память не попадает, а «не сохраняй в память»
+отменяет последнюю запись.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from jarvis.core.config import MemoryConfig
+from jarvis.core.contracts import Intent, ToolResult, Utterance
+from jarvis.core.memory import build_memory
+from jarvis.core.router import Dispatcher, LearnedResolver, PhraseResolver, Router
+from jarvis.core.router.resolvers.learned import generalize, normalize
+from jarvis.core.tools import ToolRegistry, collect_tools, tool
+
+
+class Studio:
+    """Скилл-заглушка: одна фраза объявлена, остальное разбирает модель."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    @tool(phrases=["включи свет"])
+    async def light(self) -> ToolResult:
+        """Включить свет."""
+        return ToolResult.success(True, speech="Свет включён.")
+
+    @tool()
+    async def press(self, control: str = "") -> ToolResult:
+        """Нажать кнопку.
+
+        :param control: что нажать.
+        """
+        self.calls.append({"control": control})
+        return ToolResult.success(control, speech="Нажал.")
+
+    @tool()
+    async def broken(self) -> ToolResult:
+        """Инструмент, который всегда отказывает."""
+        return ToolResult.failure("не вышло")
+
+
+class OneShotLLM:
+    """Резолвер, который разбирает первую фразу и больше не нужен."""
+
+    def __init__(self, intent: Intent) -> None:
+        self._intent = intent
+        self.calls = 0
+
+    @property
+    def name(self) -> str:
+        return "llm"
+
+    async def resolve(self, utterance: Utterance) -> Intent | None:
+        self.calls += 1
+        return Intent(
+            tool=self._intent.tool,
+            arguments=self._intent.arguments,
+            confidence=0.85,
+            resolver="llm",
+            utterance=utterance.text,
+        )
+
+
+@pytest.fixture
+def store(tmp_path: Path):
+    """Память с разделом выученных формулировок."""
+    return build_memory(
+        MemoryConfig(
+            dir=tmp_path / "memory",
+            documents=("commands",),
+            journals=("today",),
+            context_budget_tokens=200,
+        )
+    ).documents
+
+
+@pytest.fixture
+def studio(registry: ToolRegistry) -> Studio:
+    """Реестр с зарегистрированным скиллом студии."""
+    skill = Studio()
+    for item in collect_tools(skill, namespace="studio"):
+        registry.register(item)
+    return skill
+
+
+# --- нормализация и обобщение ----------------------------------------------
+
+
+def test_normalize_ignores_noise() -> None:
+    """Регистр, лишние пробелы и знаки на краях ничего не значат."""
+    assert normalize("  Включи   ТРЕТЬЕ видео! ") == "включи третье видео"
+    assert normalize("«Заблокируй ноутбук».") == "заблокируй ноутбук"
+
+
+def test_short_argument_stays_in_the_phrase() -> None:
+    """Одно своё слово — слишком широкий шаблон, чтобы его выводить.
+
+    «Включи {control}» поймало бы и «включи свет», и «включи кондиционер».
+    Такую фразу запоминаем целиком, как услышали.
+    """
+    key, arguments = generalize("включи третье видео", {"control": "третье видео"})
+
+    assert key == "включи третье видео"
+    assert arguments == {"control": "третье видео"}
+
+
+def test_long_enough_phrase_becomes_a_template() -> None:
+    """Своих слов хватает — выучиваем сразу целое семейство фраз."""
+    key, arguments = generalize(
+        "поставь на паузу ютуб на большом экране", {"site": "ютуб на большом экране"}
+    )
+
+    assert key == "поставь на паузу {site}"
+    assert arguments == {"site": "{site}"}
+
+
+def test_argument_not_heard_in_the_phrase() -> None:
+    """Значения не было в речи — обобщать нечего."""
+    key, arguments = generalize("сделай там паузу", {"action": "pause"})
+
+    assert key == "сделай там паузу"
+    assert arguments == {"action": "pause"}
+
+
+# --- обучение через диспетчер ----------------------------------------------
+
+
+def _dispatcher(registry: ToolRegistry, learner: LearnedResolver, llm) -> Dispatcher:
+    """Цепочка «фразы → выученное → модель» с обучением после успеха."""
+    router = Router([PhraseResolver(registry), learner, llm], threshold=0.6)
+    return Dispatcher(router=router, registry=registry, learner=learner)
+
+
+async def test_successful_guess_is_learned(registry: ToolRegistry, studio: Studio, store) -> None:
+    """Разобралось моделью и сработало — со второго раза модель не нужна."""
+    learner = LearnedResolver(store)
+    llm = OneShotLLM(Intent(tool="studio.press", arguments={"control": "третье видео"}))
+    dispatcher = _dispatcher(registry, learner, llm)
+
+    first = await dispatcher.handle_text("включи третье видео")
+    assert first.ok
+    assert llm.calls == 1
+
+    second = await dispatcher.handle_text("Включи третье видео")
+    assert second.ok
+    assert llm.calls == 1, "второй раз до модели доходить не должно"
+    assert studio.calls == [{"control": "третье видео"}, {"control": "третье видео"}]
+
+    saved = await store.read("commands")
+    assert saved["включи третье видео"]["tool"] == "studio.press"
+
+
+async def test_failure_is_not_learned(registry: ToolRegistry, studio: Studio, store) -> None:
+    """Промах в память не попадает: закрепить ошибку хуже, чем не выучить."""
+    learner = LearnedResolver(store)
+    llm = OneShotLLM(Intent(tool="studio.broken"))
+    dispatcher = _dispatcher(registry, learner, llm)
+
+    result = await dispatcher.handle_text("сделай что-то невозможное")
+
+    assert not result.ok
+    assert await store.read("commands") == {}
+
+
+async def test_declared_phrase_wins_over_learned(
+    registry: ToolRegistry, studio: Studio, store
+) -> None:
+    """Написанное в скилле руками главнее выученного."""
+    learner = LearnedResolver(store)
+    await learner.remember("включи свет", Intent(tool="studio.press", arguments={}))
+    llm = OneShotLLM(Intent(tool="studio.broken"))
+    dispatcher = _dispatcher(registry, learner, llm)
+
+    result = await dispatcher.handle_text("включи свет")
+
+    assert result.tool == "studio.light"
+
+
+async def test_template_matches_a_family(registry: ToolRegistry, studio: Studio, store) -> None:
+    """Выученный шаблон срабатывает на новых словах в том же месте."""
+    learner = LearnedResolver(store)
+    llm = OneShotLLM(
+        Intent(tool="studio.press", arguments={"control": "кнопку подписаться"})
+    )
+    dispatcher = _dispatcher(registry, learner, llm)
+
+    await dispatcher.handle_text("нажми пожалуйста кнопку подписаться")
+    assert llm.calls == 1
+
+    await dispatcher.handle_text("нажми пожалуйста кнопку поделиться")
+
+    assert llm.calls == 1, "шаблон должен покрыть и другую кнопку"
+    assert studio.calls[-1] == {"control": "кнопку поделиться"}
+
+
+async def test_forget_removes_the_last_lesson(store) -> None:
+    """«Не сохраняй в память» отменяет именно последнюю запись."""
+    learner = LearnedResolver(store)
+    await learner.remember("включи третье видео", Intent(tool="studio.press", arguments={}))
+    await learner.remember("заблокируй ноутбук", Intent(tool="studio.light", arguments={}))
+
+    forgotten = await learner.forget()
+
+    assert forgotten == "заблокируй ноутбук"
+    saved = await store.read("commands")
+    assert "включи третье видео" in saved
+    assert "заблокируй ноутбук" not in saved
+
+    # Второй раз забывать уже нечего — молча, без выдумок.
+    assert await learner.forget() == ""
+
+
+async def test_forget_last_tool_covers_skills(registry: ToolRegistry, store) -> None:
+    """Общая команда отмены доходит и до скиллов, которые учатся сами.
+
+    Договорённость об имени `forget_last` нужна ровно за этим: скилл `page`
+    запоминает кнопки сайтов, и «не сохраняй в память» должно отменять и это.
+    """
+    from jarvis.core.builtin import CoreTools
+
+    class Learning:
+        """Скилл, который умеет забывать последнее выученное."""
+
+        def __init__(self) -> None:
+            self.asked = 0
+
+        @tool(routable=False)
+        async def forget_last(self) -> ToolResult:
+            """Забыть последнее."""
+            self.asked += 1
+            return ToolResult.success("кнопку лайка на music.yandex.ru")
+
+    skill = Learning()
+    for item in collect_tools(skill, namespace="page"):
+        registry.register(item)
+
+    learner = LearnedResolver(store)
+    await learner.remember("включи третье видео", Intent(tool="studio.press", arguments={}))
+
+    core = CoreTools(
+        llm=None,  # type: ignore[arg-type]
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+        learner=learner,
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    result = await registry.invoke("core.forget_last")
+
+    assert result.ok
+    assert skill.asked == 1
+    assert "включи третье видео" in result.value
+    assert "кнопку лайка на music.yandex.ru" in result.value
+
+
+async def test_nothing_to_forget_is_honest(registry: ToolRegistry, store) -> None:
+    """Нечего забывать — так и говорим, а не делаем вид."""
+    from jarvis.core.builtin import CoreTools
+
+    core = CoreTools(
+        llm=None,  # type: ignore[arg-type]
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+        learner=LearnedResolver(store),
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    result = await registry.invoke("core.forget_last")
+
+    assert result.ok
+    assert result.value == []
+    assert result.speech_for("ru") == "Мне нечего забывать."
+
+
+async def test_missing_memory_section_only_warns(tmp_path: Path) -> None:
+    """Нет раздела в конфиге — обучение молча выключается, а не роняет команду."""
+    documents = build_memory(
+        MemoryConfig(
+            dir=tmp_path / "memory",
+            documents=("profile",),
+            journals=("today",),
+            context_budget_tokens=200,
+        )
+    ).documents
+    learner = LearnedResolver(documents)
+
+    assert await learner.resolve(Utterance(text="включи третье видео")) is None
+    assert await learner.remember("включи третье видео", Intent(tool="studio.press")) == ""

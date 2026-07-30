@@ -252,6 +252,8 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             intent_tasks=tuple(
                 str(task) for task in (router.get("intent_tasks") or ("intent",))
             ),
+            learn_commands=bool(router.get("learn_commands", True)),
+            learned_section=str(router.get("learned_section", "commands")),
         ),
         llm=_build_llm(_section(data, "llm")),
         stt=STTConfig(

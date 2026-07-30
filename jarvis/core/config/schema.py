@@ -62,8 +62,13 @@ class RouterConfig:
     """Цепочка резолверов и порог уверенности."""
 
     confidence_threshold: float = 0.6
-    resolvers: tuple[str, ...] = ("phrase", "alias", "llm", "fallback")
+    resolvers: tuple[str, ...] = ("phrase", "alias", "learned", "llm", "fallback")
     aliases: Mapping[str, str] = field(default_factory=dict)
+    #: Запоминать формулировки, которые модель разобрала удачно. Со второго
+    #: раза такая фраза обходится без модели, то есть бесплатно.
+    learn_commands: bool = True
+    #: Раздел памяти для выученных формулировок.
+    learned_section: str = "commands"
     #: Профили задач, которыми резолвер `llm` разбирает команду, по порядку.
     #: Первая — самая дешёвая; следующая спрашивается, только если предыдущая
     #: инструмента не выбрала. Одна задача в списке — переспрашивать не будем.
@@ -286,7 +291,7 @@ class MemoryConfig:
     """Разделы памяти и бюджет контекста."""
 
     dir: Path = Path("memory")
-    documents: tuple[str, ...] = ("profile", "preferences", "studio", "sites")
+    documents: tuple[str, ...] = ("profile", "preferences", "studio", "sites", "commands")
     journals: tuple[str, ...] = ("today", "history")
     context_budget_tokens: int = 2000
 

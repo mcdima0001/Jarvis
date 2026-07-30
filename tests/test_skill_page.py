@@ -389,6 +389,32 @@ async def test_learned_once_and_remembered(loaded, provider: _Answer) -> None:
     await manager.stop()
 
 
+async def test_learned_recipe_can_be_forgotten(loaded, provider: _Answer) -> None:
+    """«Не сохраняй в память» отменяет и выученную кнопку.
+
+    Именно этот случай и просили: сработать могло, а нажаться — не то, что
+    нужно. Ядро находит этот скилл по имени инструмента `forget_last`.
+    """
+    manager, registry, memory = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.CONTROLS[:] = [{"name": "Пауза", "sel": "#pause"}, {"name": "Нравится", "sel": "#like"}]
+    fake.REPLIES[:] = [{"done": None}, {"done": "click", "detail": "Нравится"}]
+
+    await registry.invoke("page.like")
+    assert (await memory.documents.get("sites", "music.yandex.ru"))["actions"]
+
+    forgotten = await registry.invoke("page.forget_last")
+
+    assert forgotten.ok
+    assert forgotten.value == "like на music.yandex.ru"
+    assert (await memory.documents.get("sites", "music.yandex.ru"))["actions"] == {}
+    # Забывать второй раз нечего.
+    assert (await registry.invoke("page.forget_last")).value == ""
+    await manager.stop()
+
+
 async def test_nothing_worked_is_an_honest_refusal(loaded) -> None:
     """Ни один способ не подошёл и модель не помогла — честный отказ."""
     manager, registry, _ = loaded

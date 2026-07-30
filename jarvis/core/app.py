@@ -34,6 +34,7 @@ from jarvis.core.router import (
     AliasResolver,
     Dispatcher,
     FallbackResolver,
+    LearnedResolver,
     LLMResolver,
     PhraseResolver,
     Resolver,
@@ -140,16 +141,40 @@ class JarvisApp:
             root=config.root,
         )
 
+        # Кеш удачных разборов моделью: один объект и подсказывает роутеру, и
+        # запоминает после успеха, и забывает по команде.
+        learner = LearnedResolver(
+            memory.documents,
+            section=config.router.learned_section,
+            enabled=config.router.learn_commands,
+        )
+
         router = Router(
-            _build_resolvers(config.router.resolvers, registry=registry, llm=llm, config=config),
+            _build_resolvers(
+                config.router.resolvers,
+                registry=registry,
+                llm=llm,
+                config=config,
+                learner=learner,
+            ),
             threshold=config.router.confidence_threshold,
             events=events,
         )
-        dispatcher = Dispatcher(router=router, registry=registry, events=events)
+        dispatcher = Dispatcher(
+            router=router,
+            registry=registry,
+            events=events,
+            learner=learner if config.router.learn_commands else None,
+        )
 
         # Встроенные инструменты ядра: диалог, справка, перезагрузка, модели.
         core_tools = CoreTools(
-            llm=llm, memory=memory, registry=registry, skills=skills, persona=persona
+            llm=llm,
+            memory=memory,
+            registry=registry,
+            skills=skills,
+            persona=persona,
+            learner=learner,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
@@ -330,15 +355,19 @@ def _build_resolvers(
     registry: ToolRegistry,
     llm: LLMService,
     config: JarvisConfig,
+    learner: LearnedResolver | None = None,
 ) -> list[Resolver]:
     """Собрать цепочку резолверов в порядке, заданном конфигом.
 
     Порядок — это и есть политика экономии: дешёвые детерминированные звенья
-    идут первыми, LLM вызывается только если они не справились.
+    идут первыми, LLM вызывается только если они не справились. Выученное
+    стоит между синонимами и моделью: написанное человеком главнее, а модель
+    дороже всего.
     """
     factories = {
         "phrase": lambda: PhraseResolver(registry),
         "alias": lambda: AliasResolver(registry, config.router.aliases),
+        "learned": lambda: learner,
         "llm": lambda: LLMResolver(registry, llm, tasks=_intent_tasks(llm, config)),
         "fallback": lambda: FallbackResolver(),
     }
@@ -353,7 +382,11 @@ def _build_resolvers(
                 ", ".join(sorted(factories)),
             )
             continue
-        resolvers.append(factory())
+        resolver = factory()
+        if resolver is None:
+            logger.debug("Резолвер %r собрать нечем — пропускаю", name)
+            continue
+        resolvers.append(resolver)
 
     if not resolvers:
         logger.warning("Цепочка резолверов пуста — использую phrase + fallback")

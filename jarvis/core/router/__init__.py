@@ -6,6 +6,7 @@ from .resolvers import (
     CHAT_TOOL,
     AliasResolver,
     FallbackResolver,
+    LearnedResolver,
     LLMResolver,
     PhraseResolver,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "Dispatcher",
     "FallbackResolver",
     "LLMResolver",
+    "LearnedResolver",
     "PhraseResolver",
     "Resolver",
     "Router",

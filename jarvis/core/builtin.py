@@ -21,7 +21,14 @@ from jarvis.core.persona import Persona
 from jarvis.core.tools import ToolRegistry, tool
 
 if TYPE_CHECKING:
+    from jarvis.core.router import LearnedResolver
     from jarvis.core.skills import SkillManager
+
+#: Договорённость об отмене обучения: любой скилл, который что-то запоминает
+#: сам, объявляет инструмент с таким именем — и попадает под общую команду
+#: «не сохраняй в память». Так это работает у скилла `page`, который запоминает
+#: кнопки сайтов.
+FORGET_TOOL = "forget_last"
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +102,14 @@ class CoreTools:
         registry: ToolRegistry,
         skills: "SkillManager",
         persona: Persona | None = None,
+        learner: "LearnedResolver | None" = None,
     ) -> None:
         self._llm = llm
         self._memory = memory
         self._registry = registry
         self._skills = skills
         self._persona = persona or Persona()
+        self._learner = learner
 
     @tool(name="chat")
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
@@ -244,6 +253,57 @@ class CoreTools:
                       f"{len(self._registry)} commands.{cost}",
             }
         return ToolResult.success(payload, speech=speech)
+
+    @tool(
+        name="forget_last",
+        phrases=["не сохраняй в память", "не запоминай", "не запоминай это",
+                 "забудь это", "забудь последнюю команду", "не надо это запоминать",
+                 "don't remember that", "forget that", "forget the last command"],
+    )
+    async def forget_last(self) -> ToolResult:
+        """Отменить последнее, что ассистент запомнил сам.
+
+        Обучение идёт молча и по факту успеха, но «сработало» и «сработало так,
+        как я хотел» — разные вещи: модель могла выбрать похожую команду или
+        соседнюю кнопку. Эта команда отменяет и выученную формулировку, и
+        выученный способ нажать что-то на странице — всё, что ассистент
+        записал последним.
+        """
+        forgotten: list[str] = []
+
+        if self._learner is not None:
+            phrase = await self._learner.forget()
+            if phrase:
+                forgotten.append(phrase)
+
+        # Скиллы, которые учатся сами, отменяют это своим инструментом. Имя —
+        # договорённость (`FORGET_TOOL`), поэтому новый такой скилл попадает
+        # под эту команду без правки ядра.
+        for spec in self._registry.specs():
+            if spec.name == f"{NAMESPACE}.{FORGET_TOOL}":
+                continue
+            if not spec.name.endswith(f".{FORGET_TOOL}"):
+                continue
+            result = await self._registry.invoke(spec.name, {})
+            if result.ok and result.value:
+                forgotten.append(str(result.value))
+
+        if not forgotten:
+            return ToolResult.success(
+                [],
+                speech={
+                    "ru": "Мне нечего забывать.",
+                    "en": "There's nothing for me to forget.",
+                },
+            )
+        listed = "; ".join(forgotten)
+        return ToolResult.success(
+            forgotten,
+            speech={
+                "ru": f"Забыл: {listed}.",
+                "en": f"Forgotten: {listed}.",
+            },
+        )
 
     @tool(name="spending", phrases=["сколько потрачено", "расход токенов",
                                     "how much have you spent", "token usage"])

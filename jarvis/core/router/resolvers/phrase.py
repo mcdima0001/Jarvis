@@ -19,38 +19,10 @@ from typing import Mapping
 from jarvis.core.contracts import Intent, Utterance
 from jarvis.core.tools import ToolRegistry
 
+from ..templates import compile_template as _compile
+from ..templates import specificity as _specificity
+
 logger = logging.getLogger(__name__)
-
-_PLACEHOLDER = re.compile(r"\{(\w+)\}")
-
-
-def _compile(phrase: str) -> re.Pattern[str] | None:
-    """Собрать регулярку из шаблона вида ``включи {mode} режим``.
-
-    Литеральные куски экранируются, плейсхолдеры превращаются в именованные
-    группы. Экранировать фразу целиком нельзя: `re.escape` съест фигурные скобки.
-    """
-    if not _PLACEHOLDER.search(phrase):
-        return None
-
-    parts: list[str] = []
-    cursor = 0
-    for match in _PLACEHOLDER.finditer(phrase):
-        parts.append(re.escape(phrase[cursor : match.start()]))
-        parts.append(f"(?P<{match.group(1)}>.+?)")
-        cursor = match.end()
-    parts.append(re.escape(phrase[cursor:]))
-
-    try:
-        return re.compile(rf"^{''.join(parts)}$", re.IGNORECASE)
-    except re.error:
-        logger.warning("Некорректный шаблон фразы: %r", phrase)
-        return None
-
-
-def _specificity(phrase: str) -> int:
-    """Сколько в шаблоне собственных букв, не считая подстановок."""
-    return len(_PLACEHOLDER.sub("", phrase).replace(" ", ""))
 
 
 class PhraseResolver:

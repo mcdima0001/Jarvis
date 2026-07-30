@@ -13,6 +13,7 @@ from jarvis.core.contracts import AssistantReplied, ToolResult, Utterance
 from jarvis.core.errors import ToolNotFound
 from jarvis.core.tools import ToolRegistry
 
+from .resolvers import LearnedResolver
 from .router import Router
 
 logger = logging.getLogger(__name__)
@@ -32,10 +33,13 @@ class Dispatcher:
         router: Router,
         registry: ToolRegistry,
         events: EventBus | None = None,
+        learner: LearnedResolver | None = None,
     ) -> None:
         self._router = router
         self._registry = registry
         self._events = events
+        #: Кому отдавать удачные разборы моделью на запоминание.
+        self._learner = learner
 
     async def handle(self, utterance: Utterance) -> ToolResult:
         """Обработать реплику целиком и вернуть результат."""
@@ -52,6 +56,12 @@ class Dispatcher:
         except ToolNotFound as exc:
             logger.error("Роутер выбрал несуществующий инструмент: %s", exc)
             return ToolResult.failure(str(exc), tool=intent.tool, speech=_NOT_UNDERSTOOD)
+
+        # Модель разобрала фразу, инструмент отработал — связка проверена
+        # делом, и со второго раза она обойдётся без модели. Записывается
+        # только успех: закрепить промах хуже, чем не выучить ничего.
+        if self._learner is not None and result.ok and intent.resolver == "llm":
+            await self._learner.remember(utterance.text, intent)
 
         spoken = result.speech_for(utterance.language)
         if self._events is not None and spoken:

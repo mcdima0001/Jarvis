@@ -436,6 +436,8 @@ class PageSkill(Skill):
         self._section = str(self.context.setting("memory_section", "sites"))
         #: Выученное читается из памяти один раз и обновляется при записи.
         self._known: dict[str, Any] | None = None
+        #: Что выучили последним — это и отменяет «не сохраняй в память».
+        self._last: tuple[str, str] = ("", "")
 
         self._own: dict[str, dict[str, list[dict]]] = {}
         for site, actions in dict(self.context.setting("sites", {})).items():
@@ -783,6 +785,36 @@ class PageSkill(Skill):
         cache = dict(self._known or {})
         cache[host] = known
         self._known = cache
+        self._last = (host, action)
+
+    @tool(routable=False)
+    async def forget_last(self) -> ToolResult:
+        """Забыть последний выученный способ нажать что-то на странице.
+
+        Имя не случайное: по нему ядро находит все скиллы, которые учатся сами,
+        и общая команда «не сохраняй в память» отменяет и их работу тоже.
+        """
+        host, action = self._last
+        if not host:
+            return ToolResult.success("")
+
+        known = dict((self._known or {}).get(host, {}))
+        actions = dict(known.get("actions", {}))
+        if actions.pop(action, None) is None:
+            return ToolResult.success("")
+        known["actions"] = actions
+        try:
+            await self.context.memory.documents.set(self._section, host, known)
+        except Exception as exc:  # noqa: BLE001 — не забылось, но команда не сбойная
+            self.log.warning("Не смог забыть способ %s на %s: %s", action, host, exc)
+            return ToolResult.success("")
+
+        cache = dict(self._known or {})
+        cache[host] = known
+        self._known = cache
+        self._last = ("", "")
+        self.log.info("Забыл способ %s на %s", action, host)
+        return ToolResult.success(f"{action} на {host}")
 
     async def on_start(self) -> None:
         """Поднять из памяти то, что уже выучено."""
