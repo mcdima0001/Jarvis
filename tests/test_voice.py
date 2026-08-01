@@ -938,3 +938,41 @@ def test_silero_drops_the_tail_between_phrases(monkeypatch, tmp_path) -> None:
     vad.reset()
 
     assert not vad._context.any(), "хвост прошлой фразы не переживает reset"
+
+
+async def test_assistant_says_it_is_about_to_speak(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """О начале речи сообщается **до** первого слова, а не после.
+
+    Иначе музыку не успевают приглушить, и ассистента не слышно — особенно
+    там, где реплики никто не заказывал: приветствие при запуске и прощание
+    при выходе. `AssistantReplied` для этого не годится: он приходит, когда
+    сказанное уже отзвучало.
+    """
+    order: list[str] = []
+
+    async def note(event: object) -> None:
+        order.append(type(event).__name__)
+
+    events.subscribe("assistant.speaking", note)
+    events.subscribe("assistant.replied", note)
+    said: list[str] = []
+
+    class Slow(NullTTS):
+        """Синтез, который успевает заметить, что о нём предупредили.
+
+        Настоящий синтез тоже не мгновенный — он уступает управление петле,
+        и ровно в этот момент подписчики и узнают о начале речи.
+        """
+
+        async def say(self, text: str, *, language: str | None = None) -> None:
+            await asyncio.sleep(0.01)
+            said.append(order[-1] if order else "тишина")
+
+    pipe = _pipeline(registry, events, tts=Slow())
+    await pipe._say("Доброе утро, сэр.")
+    await asyncio.sleep(0.05)
+
+    assert said == ["AssistantSpeaking"], "предупредить надо до синтеза"
+    assert order == ["AssistantSpeaking", "AssistantReplied"]

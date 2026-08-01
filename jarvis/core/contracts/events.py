@@ -100,6 +100,22 @@ class VoiceCommandRecognized(Event):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AssistantSpeaking(Event):
+    """Ассистент **начинает говорить** вслух.
+
+    Отдельное событие от `AssistantReplied` не для симметрии: то приходит,
+    когда реплика уже отзвучала, а знать бывает нужно заранее. Так, музыку надо
+    приглушить **до** первого слова, иначе ассистента не слышно — и не только
+    после обращения по имени: он здоровается при запуске и прощается при
+    выходе, а этих реплик никто не заказывал.
+    """
+
+    NAME: ClassVar[str] = "assistant.speaking"
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AssistantReplied(Event):
     """Ассистент сформировал ответ пользователю."""
 

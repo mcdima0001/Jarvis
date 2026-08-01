@@ -33,6 +33,7 @@ from typing import Any, Container, Mapping, Sequence
 
 from jarvis.core.contracts import (
     AssistantReplied,
+    AssistantSpeaking,
     Event,
     ToolResult,
     VoiceCommandRecognized,
@@ -836,15 +837,31 @@ class WindowsSkill(Skill):
         if not bool(ducking.get("enabled", True)):
             self.log.debug("Приглушение звука выключено в конфиге")
             return
+        self.context.scope.subscribe(AssistantSpeaking.NAME, self._on_speaking)
         self.context.scope.subscribe(WakeWordDetected.NAME, self._on_wake_word)
         self.context.scope.subscribe(VoiceCommandRecognized.NAME, self._on_command)
         self.context.scope.subscribe(AssistantReplied.NAME, self._on_replied)
 
     async def on_stop(self) -> None:
-        """Вернуть громкость: приглушённая навсегда музыка — худший исход."""
-        await self._restore()
+        """Вернуть громкость: приглушённая навсегда музыка — худший исход.
+
+        Без плавности намеренно. При выходе ассистент прощается, то есть музыка
+        приглушена, и плавный подъём легко не успеет: задачи скилла отменяются
+        вместе со scope, а брошенный на середине переезд оставил бы музыку тихой
+        до следующего запуска. Слушать эту плавность в момент выхода всё равно
+        некому.
+        """
+        await self._restore(fade=False)
 
     # --- приглушение -------------------------------------------------------
+
+    async def _on_speaking(self, event: Event) -> None:
+        """Ассистент начинает говорить — убавить всё чужое, чтобы его было слышно.
+
+        Приглушение по имени этого не покрывает: здоровается и прощается он сам,
+        никто его об этом не просил, и ровно эти реплики тонули в музыке.
+        """
+        await self._duck()
 
     async def _on_wake_word(self, event: Event) -> None:
         """Позвали по имени — убавить всё чужое и ждать команду."""
@@ -910,7 +927,11 @@ class WindowsSkill(Skill):
                 for session, described in sessions
                 if described.pid in self._ducked
             ],
-            target=lambda described: quieter_by(described.volume, cut_db),
+            # Считаем от **сохранённой** громкости, а не от текущей. Иначе
+            # второе приглушение подряд режет уже приглушённое: позвали по
+            # имени, потом ассистент заговорил — и музыка ушла бы вдвое глубже,
+            # а вернулась бы всё равно к исходной.
+            target=lambda described: quieter_by(self._ducked[described.pid], cut_db),
             seconds=self._fade_out,
         )
         self.log.info(
@@ -996,8 +1017,13 @@ class WindowsSkill(Skill):
         self.log.debug("Ответа не дождался — возвращаю громкость")
         await self._restore()
 
-    async def _restore(self) -> None:
-        """Вернуть громкость тем, кого приглушали."""
+    async def _restore(self, *, fade: bool = True) -> None:
+        """Вернуть громкость тем, кого приглушали.
+
+        :param fade: вести плавно. ``False`` — поставить сразу: при остановке
+            приложения плавность некому слушать, а недоведённый переезд оставил
+            бы музыку тихой.
+        """
         if self._duck_timer is not None:
             self._duck_timer.cancel()
             self._duck_timer = None
@@ -1019,7 +1045,7 @@ class WindowsSkill(Skill):
         if await self._slide(
             [(session, described) for session, described in sessions if described.pid in saved],
             target=lambda described: saved[described.pid],
-            seconds=self._fade_in,
+            seconds=self._fade_in if fade else 0.0,
         ):
             self._ducked = {}
             self.log.debug("Громкость вернул: %d приложений", len(saved))

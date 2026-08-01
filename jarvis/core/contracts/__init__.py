@@ -7,6 +7,7 @@
 
 from .events import (
     AssistantReplied,
+    AssistantSpeaking,
     Event,
     IntentResolved,
     IntentUnresolved,
@@ -27,6 +28,7 @@ from .results import ToolResult
 
 __all__ = [
     "AssistantReplied",
+    "AssistantSpeaking",
     "Event",
     "Intent",
     "IntentResolved",

@@ -37,6 +37,7 @@ from jarvis.core.bus import EventBus
 from jarvis.core.config import AudioConfig
 from jarvis.core.contracts import (
     AssistantReplied,
+    AssistantSpeaking,
     ToolResult,
     Utterance,
     VoiceCommandRecognized,
@@ -219,6 +220,9 @@ class VoicePipeline:
             return
         self._speaking = True
         spoken = True
+        # Сообщаем **до** первого слова: музыку надо успеть приглушить, иначе
+        # ответа не слышно. Синтез занимает доли секунды — их и хватает.
+        self._events.emit(AssistantSpeaking(source="voice", text=text))
         try:
             await self._tts.say(text, language=language)
         except Exception as exc:  # noqa: BLE001 — немой ответ лучше упавшего цикла

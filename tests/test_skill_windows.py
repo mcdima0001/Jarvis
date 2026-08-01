@@ -900,3 +900,19 @@ def test_cut_is_relative_to_what_the_app_had() -> None:
     assert windows.quieter_by(1.0, 20) == pytest.approx(0.1)
     assert windows.quieter_by(0.5, 20) == pytest.approx(0.05)
     assert windows.quieter_by(1.0, 0) == 1.0
+
+
+def test_second_duck_does_not_cut_twice() -> None:
+    """Второе приглушение подряд считается от исходной громкости.
+
+    Приглушений на одну команду бывает два: позвали по имени, а потом ассистент
+    заговорил. Если второе считать от уже приглушённой, музыка уйдёт вдвое
+    глубже — а вернётся всё равно к исходной, то есть скачком.
+    """
+    saved = 1.0
+    once = windows.quieter_by(saved, 20)
+    twice = windows.quieter_by(saved, 20)
+
+    assert once == twice == pytest.approx(0.1)
+    # А вот так было бы, если считать от текущей: −40 дБ вместо −20.
+    assert windows.quieter_by(once, 20) == pytest.approx(0.01)
