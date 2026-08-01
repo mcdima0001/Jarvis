@@ -269,3 +269,49 @@ def test_pcm_survives_the_round_trip() -> None:
     wave = _speech(BLOCK)
 
     assert numpy.allclose(to_float(to_pcm(wave)), wave, atol=1.0 / 32767)
+
+
+def test_muted_microphone_does_not_unlearn_the_filter() -> None:
+    """Выключенный кнопкой микрофон не должен стирать подобранный тракт.
+
+    Он отдаёт **цифровую тишину** — ровные нули, а не тихий шум комнаты. Учиться
+    на таком блоке нельзя: наилучшее приближение к нулю есть нулевой фильтр, то
+    есть за минуту с выключенным микрофоном тракт разучивается начисто, а после
+    включения его приходится собирать заново. Владелец глушит микрофон
+    регулярно, так что случай рядовой, а не экзотика.
+    """
+    canceller = EchoCanceller(sample_rate=RATE, tail_ms=200, residual=False)
+    music = _music(RATE * 2)
+    room = numpy.array([0.0] * 32 + [0.7, -0.3, 0.1])
+    echo = numpy.convolve(music, room)[: len(music)]
+    for at in range(0, len(music) - BLOCK, BLOCK):
+        canceller.process(echo[at : at + BLOCK], music[at : at + BLOCK])
+
+    learned = float(numpy.abs(canceller._weights).sum())
+    assert learned > 0
+
+    silence = numpy.zeros(BLOCK)
+    for at in range(0, len(music) - BLOCK, BLOCK):
+        canceller.process(silence, music[at : at + BLOCK])
+
+    assert float(numpy.abs(canceller._weights).sum()) == pytest.approx(learned, rel=1e-9)
+    assert canceller.stats().muted > 0.4, "доля молчания обязана попасть в отчёт"
+
+
+def test_quiet_room_is_not_mistaken_for_a_muted_microphone() -> None:
+    """Тихая комната — не выключенный микрофон, и учиться там как раз полезнее.
+
+    Порог берётся ниже младшего бита 16-битной записи, поэтому настоящий, пусть
+    и очень тихий, звук под него не попадает.
+    """
+    canceller = EchoCanceller(sample_rate=RATE, tail_ms=200, residual=False)
+    music = _music(RATE)
+    # Настоящий микрофон тише собственного шума не бывает: у 16-битной записи
+    # младший бит это 3e-5, и он всегда шевелится. Ровные нули приходят только
+    # от выключенного микрофона — на этом различие и держится.
+    quiet = _speech(RATE) * 0.02 + _rng().normal(0, 1e-4, RATE)
+    for at in range(0, len(music) - BLOCK, BLOCK):
+        canceller.process(quiet[at : at + BLOCK], music[at : at + BLOCK])
+
+    assert canceller.stats().muted == 0.0
+    assert float(numpy.abs(canceller._weights).sum()) > 0, "в тихой комнате учимся"

@@ -1053,9 +1053,13 @@ class PageSkill(Skill):
         """
         return await self._act("play", site=site, soft=True)
 
+    # «Дальше» и «следующий» без существительного — то, как это говорят на
+    # самом деле. Одинокое слово тут не опасно: до роутера доходит только то,
+    # что сказано после имени или в окне ответа.
     @tool(routable=False, phrases=["следующий трек", "следующее видео", "следующая песня",
                                    "переключи трек", "переключи песню", "дальше трек",
-                                   "next track", "next video"])
+                                   "дальше", "давай дальше", "следующий", "следующую",
+                                   "next track", "next video", "next one"])
     async def next_track(self) -> ToolResult:
         """Включить следующий трек или видео."""
         return await self._act("next")

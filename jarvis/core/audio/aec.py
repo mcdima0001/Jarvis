@@ -69,6 +69,12 @@ _WATCH_BLOCKS = 32
 #: а не неудачной секундой.
 _DIVERGED = 1.4
 
+#: Ниже этого в блоке микрофона — цифровая тишина, то есть микрофон выключен
+#: кнопкой. Младший бит 16-битной записи это 3e-5, поэтому порог заведомо ниже
+#: любого настоящего звука, и тихая комната под него не попадает: там учиться
+#: как раз полезнее всего.
+_MUTED = 1e-5
+
 #: Пределы поправки усиления при пересборке. Шире — и одна случайная секунда
 #: двойного разговора уводила бы фильтр куда угодно.
 _RESCALE = (0.05, 2.0)
@@ -183,6 +189,9 @@ class EchoStats:
     active: float
     #: Сколько раз фильтр пришлось пересобирать по усилению.
     rescales: int = 0
+    #: Доля блоков, на которых микрофон отдавал цифровую тишину — то есть был
+    #: выключен кнопкой. Без этой цифры «убрано 0 дБ» неотличимо от поломки.
+    muted: float = 0.0
 
 
 class EchoCanceller:
@@ -238,6 +247,7 @@ class EchoCanceller:
         self._rescales = 0
         self._bad = 0
         self._rescued = 0
+        self._muted = 0
 
     @property
     def block(self) -> int:
@@ -281,6 +291,18 @@ class EchoCanceller:
         echo_spectrum = numpy.sum(self._weights * self._history, axis=0)
         echo = numpy.fft.irfft(echo_spectrum, self._size)[self._block :]
         error = mic - echo
+
+        # Микрофон, выключенный кнопкой, отдаёт **цифровую тишину** — ровные
+        # нули, а не тихий шум комнаты. Учиться на таком блоке нельзя, и это не
+        # мелочь: наилучшее приближение к нулю — нулевой фильтр, то есть за
+        # минуту с выключенным микрофоном тракт разучивается начисто, а после
+        # включения его приходится собирать заново. Владелец микрофон глушит
+        # регулярно (01.08.2026), так что случай рядовой.
+        muted = float(numpy.max(numpy.abs(mic))) < _MUTED if mic.size else True
+        if muted:
+            self._muted += 1
+            self._blocks += 1
+            return error if self._residual is None else self._residual.process(error, echo)
 
         loud = float(numpy.mean(numpy.abs(spectrum) ** 2))
         if loud > _QUIET_REFERENCE:
@@ -403,6 +425,7 @@ class EchoCanceller:
             delay_ms=(peak % self._block + (peak // self._block) * self._block) * 1000.0 / self._rate,
             active=self._active / self._blocks if self._blocks else 0.0,
             rescales=self._rescales,
+            muted=self._muted / self._blocks if self._blocks else 0.0,
         )
 
 

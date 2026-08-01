@@ -34,7 +34,7 @@ from typing import Any, AsyncIterator
 
 import numpy
 
-from .aec import BLOCK, EchoCanceller, HighPass, estimate_delay, to_float, to_pcm
+from .aec import _MUTED, BLOCK, EchoCanceller, HighPass, estimate_delay, to_float, to_pcm
 from .protocol import AudioFrame, AudioSource
 
 logger = logging.getLogger(__name__)
