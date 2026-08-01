@@ -216,6 +216,29 @@ class VADConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AECConfig:
+    """Вычитание собственного звука из микрофона."""
+
+    #: Включено ли. Нет пакета `soundcard` или петлевого устройства — будет одно
+    #: предупреждение при запуске, и ассистент продолжит работать без AEC.
+    enabled: bool = True
+    #: Откуда брать опорный сигнал: ``auto`` — петлевой захват устройства вывода
+    #: по умолчанию, ``off`` — не брать вовсе (останется только срез низа),
+    #: иначе часть имени устройства.
+    reference: str = "auto"
+    #: Длина фильтра: сколько миллисекунд эха он способен описать. Сюда входит и
+    #: дорога до микрофона, и отражения комнаты.
+    tail_ms: float = 400.0
+    #: Давить ли спектром то, что линейный фильтр вычесть не смог. Это про
+    #: искажения колонки на громкости; стоит одного блока задержки, 16 мс.
+    residual: bool = True
+    #: Срез низких частот, Гц. Саб на полу приходит в корпус ноутбука через
+    #: стол, а не по воздуху, — такой путь вычесть нельзя, зато речи там нет.
+    #: Ноль отключает.
+    high_pass_hz: float = 120.0
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class WakeWordConfig:
     """Активационная фраза."""
 
@@ -270,6 +293,7 @@ class AudioConfig:
     pending_limit: int = 2
     vad: VADConfig = field(default_factory=VADConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
+    aec: AECConfig = field(default_factory=AECConfig)
 
     @property
     def frame_bytes(self) -> int:

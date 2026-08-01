@@ -60,6 +60,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="показать звуковые устройства и выйти",
     )
     parser.add_argument(
+        "--check-aec",
+        action="store_true",
+        help="проверить эхоподавление: снять микрофон и то, что играет, и отчитаться",
+    )
+    parser.add_argument(
         "--download-voice",
         metavar="ГОЛОС",
         nargs="?",
@@ -142,6 +147,11 @@ def _run_utility(args: argparse.Namespace, config: JarvisConfig) -> int | None:
     """
     if args.devices:
         print(list_devices())
+        return 0
+    if args.check_aec:
+        from jarvis.core.audio.checkup import check_aec
+
+        print(check_aec(config.audio))
         return 0
     if args.download_voice is not None:
         if not args.download_voice:

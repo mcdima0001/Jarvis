@@ -9,6 +9,7 @@ from jarvis.core.config import AudioConfig
 from jarvis.core.errors import AudioError
 
 from .devices import SoundDeviceSink, SoundDeviceSource, list_devices
+from .echo import EchoCancellingSource
 from .null import AlwaysActiveWakeWord, NullAudioSink, NullAudioSource, PassthroughVAD
 from .sound import load_sound, trim_silence
 from .protocol import VAD, AudioFrame, AudioSink, AudioSource, WakeWord
@@ -153,11 +154,49 @@ def build_audio(config: AudioConfig) -> AudioStack:
         )
 
     return AudioStack(
-        source=SoundDeviceSource(config),
+        source=_with_echo_cancelling(SoundDeviceSource(config), config),
         sink=SoundDeviceSink(config),
         vad=vad,
         wake_word=wake_word,
     )
+
+
+def _with_echo_cancelling(source: AudioSource, config: AudioConfig) -> AudioSource:
+    """Обернуть микрофон вычитанием собственного звука.
+
+    Обёртка ставится **до** VAD и распознавания, потому что чинит она их обоих:
+    музыка не доходит ни до детектора речи, ни до Whisper. Приглушение музыки
+    этого не заменяет — оно случается уже после того, как ассистента позвали, а
+    само слово «Джарвис» произносится в полный фон.
+
+    Ничего не поднялось (нет `soundcard`, нет петлевого устройства) — обёртка
+    остаётся, но опорный сигнал в ней тишина: срез низа работает, вычитать
+    нечего. Так лучше, чем два разных пути на одном коде.
+    """
+    if not config.aec.enabled:
+        return source
+
+    wrapper = EchoCancellingSource(
+        source,
+        sample_rate=config.sample_rate,
+        tail_ms=config.aec.tail_ms,
+        residual=config.aec.residual,
+        high_pass_hz=config.aec.high_pass_hz,
+    )
+    if config.aec.reference in ("", "off", "none"):
+        logger.info("Опорный сигнал отключён (audio.aec.reference) — остаётся только срез низа")
+        return wrapper
+
+    from .loopback import LoopbackSource
+
+    wrapper.attach(
+        LoopbackSource(
+            sample_rate=config.sample_rate,
+            device=None if config.aec.reference == "auto" else config.aec.reference,
+            on_audio=wrapper.push_reference,
+        )
+    )
+    return wrapper
 
 
 __all__ = [
@@ -169,6 +208,7 @@ __all__ = [
     "AudioSink",
     "AudioSource",
     "AudioStack",
+    "EchoCancellingSource",
     "EnergyVAD",
     "NullAudioSink",
     "NullAudioSource",

@@ -1,0 +1,342 @@
+"""Сборка эхоподавления: микрофон плюс опорный сигнал на входе конвейера.
+
+Здесь решается вторая половина задачи. Первая — математика — лежит в `aec.py`
+и проверена на стенде; вторая, ничуть не проще, — **свести два независимых
+потока по времени**. Микрофон и петлевой захват идут своими устройствами, со
+своими буферами и своим ходом часов, и общего времени у них нет.
+
+Как это устроено:
+
+* сэмплы опорного сигнала копятся в `ReferenceTrack` — простой очереди с
+  верхней границей. Переполнилась — самое старое выбрасывается, и это пишется
+  в лог: значит, потоки разъезжаются;
+* микрофонные кадры и опорные сэмплы **берутся по порядку**, пара к паре. Тот
+  сдвиг, что между ними есть физически (дорога от колонки до микрофона плюс
+  буферы), фильтр поглощает собственной длиной — ему подсказки не нужны;
+* но если сдвиг велик, длину фильтра он съедает целиком. Поэтому через
+  несколько секунд после запуска сдвиг **измеряется** (`estimate_delay`) и
+  опорный поток задерживается ровно на столько, сколько нужно. Дальше проверка
+  повторяется изредка: у петлевого захвата молчание отдаётся нулями по часам,
+  а не по счётчику сэмплов, и после долгой тишины поток может уехать.
+
+Отдельно стоит сказать, чего тут **не** делается. Эхоподавление не заменяет
+приглушение музыки, а дополняет его: приглушение убирает два-три десятка
+децибел мгновенно и без нагрузки, но случается **после** того, как ассистента
+позвали. AEC работает всегда, в том числе на самом слове «Джарвис», — то есть
+чинит ровно ту дыру, ради которой затевался акустический wake word.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, AsyncIterator
+
+import numpy
+
+from .aec import BLOCK, EchoCanceller, HighPass, estimate_delay, to_float, to_pcm
+from .protocol import AudioFrame, AudioSource
+
+logger = logging.getLogger(__name__)
+
+#: Сколько секунд копить, прежде чем первый раз измерить сдвиг между потоками.
+#: Меньше — измерение неуверенное, больше — фильтр дольше живёт вслепую.
+_WARMUP_S = 5.0
+
+#: Как часто перепроверять сдвиг после первого раза.
+_RECHECK_S = 60.0
+
+#: Насколько уверенным должно быть измерение, чтобы его применить.
+_SURE_ENOUGH = 0.5
+
+#: Мельче этого сдвиг не правим: фильтр съедает его без потерь.
+_WORTH_FIXING = 2 * BLOCK
+
+#: На сколько задерживается микрофон, прежде чем попасть в фильтр.
+#:
+#: Это не оптимизация, а условие работоспособности, и разбирались с ним долго.
+#: Фильтр умеет смотреть **только назад**: эхо в кадре микрофона он ищет среди
+#: уже полученных кусков опоры. Значит, опорный сигнал обязан быть **свежее**
+#: микрофонного — а он таким и приходит, потому что петлевой захват снимает
+#: звук до того, как тот вышел из колонки. Но запас этот невелик и держится на
+#: расторопности двух потоков; стоит опоре отстать хоть на кадр, и эхо звучит
+#: раньше своей причины, что не описывается фильтром вообще. Со стороны это
+#: выглядит как «AEC не убирает ни децибела» — при том что все части по
+#: отдельности работают правильно.
+#:
+#: Лечится просто: микрофон придерживается на пятую долю секунды. Для голоса
+#: это ничто (конец фразы всё равно ждём 800 мс), а фильтру даёт запас, который
+#: не съест ни заминка потока, ни дорога звука по комнате.
+_MIC_DELAY_MS = 200.0
+
+#: Насколько опора должна опережать микрофон после правки сдвига.
+_KEEP_MS = 150.0
+
+#: Сколько стухшей опоры терпим в очереди. Много копить нельзя: старая опора
+#: означает, что эхо мы ищем раньше, чем оно прозвучало.
+_MAX_LAG_S = 0.064
+
+class ReferenceTrack:
+    """Очередь опорных сэмплов между потоком захвата и конвейером.
+
+    Пишет в неё чужой поток, читает конвейер, поэтому всё общение — через два
+    коротких метода. Внутри обычный список кусков: собирать их в один массив на
+    каждом такте дороже, чем склеить один раз при выдаче.
+    """
+
+    def __init__(self, *, sample_rate: int, max_lag_s: float = _MAX_LAG_S) -> None:
+        self._limit = int(sample_rate * max_lag_s)
+        self._pieces: list[numpy.ndarray] = []
+        self._size = 0
+        self._dropped = 0
+        self._skip = 0
+        self._starved = 0
+
+    @property
+    def waiting(self) -> int:
+        """Сколько сэмплов лежит в очереди."""
+        return self._size
+
+    @property
+    def dropped(self) -> int:
+        """Сколько сэмплов пришлось выбросить из-за расхождения потоков."""
+        return self._dropped
+
+    @property
+    def starved(self) -> int:
+        """Сколько сэмплов пришлось отдать тишиной: опора не поспевала."""
+        return self._starved
+
+    def push(self, wave: numpy.ndarray) -> None:
+        """Принять кусок от захвата."""
+        # Долг по пропуску: опорный поток отстал, и его двигали вперёд дальше,
+        # чем лежало в очереди. Остаток снимается с того, что придёт потом.
+        if self._skip:
+            taken = min(self._skip, len(wave))
+            self._skip -= taken
+            self._dropped += taken
+            wave = wave[taken:]
+            if not len(wave):
+                return
+        self._pieces.append(wave)
+        self._size += len(wave)
+        # Очередь длиннее предела означает, что опорный поток обгоняет
+        # микрофонный. Держать всё — значит копить задержку, а с ней фильтр
+        # промахивается мимо своего же хвоста.
+        while self._size > self._limit and self._pieces:
+            extra = self._pieces.pop(0)
+            self._size -= len(extra)
+            self._dropped += len(extra)
+
+    def take(self, count: int) -> numpy.ndarray:
+        """Выдать ровно `count` сэмплов; не хватило — тишину, **не трогая очередь**.
+
+        Вторая половина фразы и есть самое важное. Первая версия дополняла
+        недостачу нулями в конце — и тем самым **растягивала опорный поток**:
+        реальные сэмплы уходили в дело, а следом за ними в тот же кадр падала
+        тишина, которой в звуке не было. Выравнивание съезжало на каждой такой
+        нехватке и уже не восстанавливалось: на стенде AEC не убирал ничего
+        вовсе, при том что все части по отдельности работали.
+
+        Правильный ответ — отдать тишину и не расходовать накопленное. Тогда
+        опорный сигнал просто копится и становится «старше» микрофонного, а это
+        ровно та сторона, в которую он и должен отставать: эхо в записи звучит
+        позже своей причины. Постоянный сдвиг потом измеряется и снимается.
+        """
+        if self._size < count:
+            self._starved += count
+            return numpy.zeros(count)
+        taken: list[numpy.ndarray] = []
+        need = count
+        while need > 0 and self._pieces:
+            piece = self._pieces[0]
+            if len(piece) <= need:
+                taken.append(piece)
+                need -= len(piece)
+                self._pieces.pop(0)
+            else:
+                taken.append(piece[:need])
+                self._pieces[0] = piece[need:]
+                need = 0
+        self._size -= count - need
+        return numpy.concatenate(taken) if taken else numpy.zeros(count)
+
+    def hold(self, samples: int) -> None:
+        """Задержать опорный поток на столько сэмплов (или подвинуть вперёд).
+
+        Положительное число вставляет тишину в начало — опорный сигнал начинает
+        приходить позже, ближе к тому, когда его слышит микрофон. Отрицательное
+        выбрасывает сэмплы, то есть двигает поток вперёд.
+        """
+        if samples > 0:
+            self._pieces.insert(0, numpy.zeros(samples))
+            self._size += samples
+        elif samples < 0:
+            # Двигать вперёд можно и дальше, чем накоплено: остаток снимется с
+            # того, что придёт следом. Без этого правка молча делается лишь
+            # наполовину — в очереди обычно лежат считаные миллисекунды.
+            ready = min(-samples, self._size)
+            self.take(ready)
+            self._skip += -samples - ready
+
+
+class EchoCancellingSource:
+    """Микрофон, из которого вычтено то, что играют колонки.
+
+    Снаружи — обычный `AudioSource`: конвейер не знает, что перед ним обёртка,
+    и всё остальное — VAD, wake word, распознавание — не меняется ни на строку.
+    """
+
+    def __init__(
+        self,
+        source: AudioSource,
+        *,
+        sample_rate: int,
+        tail_ms: float = 400.0,
+        residual: bool = True,
+        high_pass_hz: float = 0.0,
+    ) -> None:
+        self._source = source
+        self._rate = sample_rate
+        self._aec = EchoCanceller(sample_rate=sample_rate, tail_ms=tail_ms, residual=residual)
+        self._track = ReferenceTrack(sample_rate=sample_rate)
+        self._high_pass = HighPass(high_pass_hz, sample_rate) if high_pass_hz > 0 else None
+        # Начальные нули и есть линия задержки микрофона: кадры уходят в фильтр
+        # ровно на столько позже, на сколько её длина.
+        self._mic: numpy.ndarray = numpy.zeros(int(sample_rate * _MIC_DELAY_MS / 1000))
+        self._ready: numpy.ndarray = numpy.zeros(0)
+        # История для измерения сдвига: держим ровно столько, сколько нужно.
+        self._seen_mic: list[numpy.ndarray] = []
+        self._seen_reference: list[numpy.ndarray] = []
+        self._history = 0
+        self._checked = 0.0
+        self._started = 0.0
+        self._told = False
+        self._reference: Any = None
+        self._keep = int(sample_rate * _KEEP_MS / 1000)
+
+    @property
+    def service_name(self) -> str:
+        """Имя сервиса для логов."""
+        return getattr(self._source, "service_name", "audio-in")
+
+    def push_reference(self, wave: numpy.ndarray) -> None:
+        """Принять кусок опорного сигнала. Зовётся из потока захвата."""
+        self._track.push(wave)
+
+    def attach(self, reference: Any) -> None:
+        """Привязать захват опорного сигнала: он поднимается вместе с микрофоном.
+
+        Объект тут нужен только с `start()` и `stop()` — обёртка не знает, чем
+        именно снимается копия звука, и знать не должна. Без него всё
+        продолжает работать: опорный сигнал остаётся тишиной, фильтр ничего не
+        вычитает, а срез низа делается по-прежнему.
+        """
+        self._reference = reference
+
+    async def start(self) -> None:
+        """Открыть микрофон и захват того, что играет."""
+        await self._source.start()
+        if self._reference is not None:
+            self._reference.start()
+        self._started = time.monotonic()
+
+    async def stop(self) -> None:
+        """Закрыть микрофон и отчитаться, что получилось."""
+        if self._reference is not None:
+            self._reference.stop()
+        await self._source.stop()
+        stats = self._aec.stats()
+        logger.info(
+            "Эхоподавление: убрано %.1f дБ, задержка тракта %.0f мс, "
+            "музыка звучала %.0f%% времени, пересборок %d, потеряно опоры %d сэмплов",
+            stats.erle_db,
+            stats.delay_ms,
+            stats.active * 100,
+            stats.rescales,
+            self._track.dropped,
+        )
+
+    async def frames(self) -> AsyncIterator[AudioFrame]:
+        """Кадры микрофона, очищенные от собственного эха."""
+        async for frame in self._source.frames():
+            wave = to_float(frame.data)
+            if self._high_pass is not None:
+                wave = self._high_pass.process(wave)
+            self._mic = numpy.concatenate((self._mic, wave))
+
+            while len(self._mic) >= BLOCK:
+                block, self._mic = self._mic[:BLOCK], self._mic[BLOCK:]
+                reference = self._track.take(BLOCK)
+                self._remember(block, reference)
+                self._ready = numpy.concatenate((self._ready, self._aec.process(block, reference)))
+
+            self._realign()
+            size = len(wave)
+            while len(self._ready) >= size:
+                piece, self._ready = self._ready[:size], self._ready[size:]
+                yield AudioFrame(data=to_pcm(piece), sample_rate=frame.sample_rate, timestamp=frame.timestamp)
+
+    def _remember(self, mic: numpy.ndarray, reference: numpy.ndarray) -> None:
+        """Сохранить кусок обоих потоков для измерения сдвига."""
+        self._seen_mic.append(mic)
+        self._seen_reference.append(reference)
+        self._history += len(mic)
+        keep = int(self._rate * _WARMUP_S)
+        while self._history - len(self._seen_mic[0]) >= keep:
+            self._history -= len(self._seen_mic.pop(0))
+            self._seen_reference.pop(0)
+
+    def _realign(self) -> None:
+        """Измерить сдвиг между потоками и подвинуть опорный, если стоит.
+
+        Делается редко и только когда музыка звучала: по тишине измерять нечего,
+        а неуверенное измерение хуже, чем никакого — оно сдвинет фильтр туда,
+        где эха нет вовсе.
+        """
+        now = time.monotonic()
+        if now - self._started < _WARMUP_S:
+            return
+        if self._checked and now - self._checked < _RECHECK_S:
+            return
+        if self._history < int(self._rate * _WARMUP_S * 0.8):
+            return
+        self._checked = now
+
+        mic = numpy.concatenate(self._seen_mic)
+        reference = numpy.concatenate(self._seen_reference)
+        if float(numpy.mean(reference**2)) < 1e-7:
+            self._checked = 0.0  # тишина: попробуем в следующий раз, а не через минуту
+            return
+
+        shift, sure = estimate_delay(mic, reference, sample_rate=self._rate)
+        if sure < _SURE_ENOUGH or abs(shift) < _WORTH_FIXING:
+            self._tell_once(shift, sure)
+            return
+        # Оставляем небольшой запас: свести сдвиг в ноль значит лишить поток
+        # права на заминку, после которой опора уходит за микрофон навсегда.
+        self._track.hold(shift - self._keep)
+        # Подобранный тракт был привязан к прежнему выравниванию — теперь он
+        # вычитал бы эхо не оттуда, где оно есть.
+        self._aec.forget()
+        logger.info(
+            "Опорный сигнал сдвинут на %d мс (уверенность %.2f). %s",
+            shift * 1000 // self._rate,
+            sure,
+            (
+                "Столько звук шёл от колонки до микрофона."
+                if shift > 0
+                else "Опорный поток отставал от микрофона — без правки вычитать было нечего."
+            ),
+        )
+
+    def _tell_once(self, shift: int, sure: float) -> None:
+        """Сказать один раз, что сдвиг искать не понадобилось."""
+        if self._told:
+            return
+        self._told = True
+        logger.debug(
+            "Сдвиг между потоками %d мс при уверенности %.2f — правка не нужна",
+            shift * 1000 // self._rate,
+            sure,
+        )

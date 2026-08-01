@@ -31,6 +31,7 @@ from .schema import (
     SkillsConfig,
     TaskProfile,
     TTSConfig,
+    AECConfig,
     VADConfig,
     WakeWordConfig,
 )
@@ -318,6 +319,13 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                 ),
                 similarity=float(_section(audio, "wake_word").get("similarity", 0.7)),
                 follow_up_s=float(_section(audio, "wake_word").get("follow_up_s", 10.0)),
+            ),
+            aec=AECConfig(
+                enabled=bool(_section(audio, "aec").get("enabled", True)),
+                reference=str(_section(audio, "aec").get("reference") or "auto"),
+                tail_ms=float(_section(audio, "aec").get("tail_ms", 400.0)),
+                residual=bool(_section(audio, "aec").get("residual", True)),
+                high_pass_hz=float(_section(audio, "aec").get("high_pass_hz", 120.0)),
             ),
         ),
         persona=PersonaConfig(

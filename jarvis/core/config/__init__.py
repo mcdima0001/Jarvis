@@ -16,6 +16,7 @@ from .schema import (
     STTConfig,
     TaskProfile,
     TTSConfig,
+    AECConfig,
     VADConfig,
     WakeWordConfig,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "SkillsConfig",
     "TTSConfig",
     "TaskProfile",
+    "AECConfig",
     "VADConfig",
     "WakeWordConfig",
     "load_config",
