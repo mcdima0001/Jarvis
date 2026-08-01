@@ -459,3 +459,38 @@ def test_queue_forgets_what_piled_up_before_the_first_frame() -> None:
 
     assert track.dropped == 0
     assert track.waiting == 0
+
+
+@pytest.mark.asyncio
+async def test_clock_drift_between_devices_is_measured(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Уползающий сдвиг обязан попадать в лог числом, а не догадкой.
+
+    Микрофон и петлевой захват — разные устройства с разными кварцами. Для
+    фильтра это хуже разовой ошибки выравнивания: тракт медленно едет, и
+    коэффициенты устаревают быстрее, чем успевают сойтись. Живой лог
+    01.08.2026: 179, 187, 175, 179, 170, 170, 179, 185 мс при уверенности
+    около 0.9 — разброс в 18 мс за четыре минуты.
+    """
+    import jarvis.core.audio.echo as module
+
+    _stream_clock(monkeypatch)
+    # Сдвиг ползёт: каждый следующий замер на сотню сэмплов больше.
+    steps = iter([(2800 + number * 100, 0.9) for number in range(20)])
+    monkeypatch.setattr(module, "estimate_delay", lambda *a, **k: next(steps, (2800, 0.9)))
+    # Сойдясь, конвейер перемеряет раз в минуту — стенду столько не проиграть.
+    monkeypatch.setattr(module, "_SETTLED_RECHECK_S", 8.0)
+
+    samples = 40 * RATE
+    music = _noise(samples, seed=9)
+    source = EchoCancellingSource(
+        FakeMicrophone(music), sample_rate=RATE, residual=False, high_pass_hz=0.0
+    )
+    source._source._before = _feeder(source, music)
+
+    with caplog.at_level("INFO", logger="jarvis.core.audio.echo"):
+        await _drain(source)
+
+    assert "уполз" in caplog.text, "расхождение часов обязано быть названо числом"
+    assert "ppm" in caplog.text

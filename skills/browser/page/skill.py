@@ -1548,9 +1548,49 @@ class PageSkill(Skill):
         if learned is not None:
             self._note_attempt(host, action, learned, learned=True)
             return self._done(action, learned, speech)
+
+        # Не сработало вообще ничего — а запреты на этом сайте есть. Значит,
+        # запрет и мешает: отвергнутая кнопка имеет смысл, только пока есть
+        # чем её заменить. Снимаем и пробуем ещё раз.
+        #
+        # Живой случай 01.08.2026, дважды за два дня. Общая отмена «не сохраняй
+        # в память» записала «Следующая песня» в отвергнутые для `next` на
+        # Яндекс Музыке — а это единственная кнопка, которой там переключают
+        # трек. Дальше команда не работала **никогда**: план её вычитал, модели
+        # её даже не показывали, и голосом это было не исправить. Ошибочный
+        # запрет хуже, чем отсутствие запрета.
+        if await self._forgive(host, action):
+            second = await self._run(self._plan(action, host, seconds=seconds, extra=extra), tab)
+            if second is not None:
+                self._note_attempt(host, action, second, learned=False)
+                if silent(second):
+                    return self._not_playing(action, second)
+                return self._done(action, second, speech)
+
         if otherwise is not None:
             return await otherwise()
         return self._nothing(action, host=host)
+
+    async def _forgive(self, host: str, action: str) -> bool:
+        """Снять запреты для действия, раз без них ничего не осталось.
+
+        Возвращает, было ли что снимать.
+        """
+        if not self._rejected(host, action):
+            return False
+        entry = await self._entry(host)
+        rejected = dict(entry.get("rejected", {}))
+        if not rejected.pop(action, None):
+            return False
+        entry["rejected"] = rejected
+        if not await self._write(host, entry):
+            return False
+        self.log.info(
+            "Для %s на %s не осталось ни одного способа — снимаю прежние запреты и пробую снова",
+            action,
+            host,
+        )
+        return True
 
     def _note_attempt(
         self, host: str, action: str, result: Mapping[str, Any], *, learned: bool
