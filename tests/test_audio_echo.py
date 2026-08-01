@@ -439,3 +439,23 @@ def test_filter_zeroes_itself_when_gain_correction_does_not_help() -> None:
     diverged()
     diverged()  # усиление не помогло — значит дело во времени, а не в громкости
     assert float(numpy.abs(canceller._weights).sum()) == 0.0, "обязан обнулиться"
+
+
+def test_queue_forgets_what_piled_up_before_the_first_frame() -> None:
+    """Накопленное, пока грузились модели, к делу не относится.
+
+    Захват опорного сигнала поднимается раньше, чем конвейер начинает читать
+    микрофон: между ними успевают загрузиться Whisper и голоса, а это полторы
+    минуты. Всё это время очередь переполняется и исправно считает выброшенное —
+    и в логе выходило «потеряно опоры 1 435 136 сэмплов» при сеансе в полминуты.
+    Число пугало, ничего не значило и мешало заметить настоящие потери.
+    """
+    track = ReferenceTrack(sample_rate=RATE)
+    for _ in range(200):
+        track.push(_noise(RATE // 10))
+    assert track.dropped > 0
+
+    track.settle()
+
+    assert track.dropped == 0
+    assert track.waiting == 0

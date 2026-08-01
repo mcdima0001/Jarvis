@@ -317,6 +317,59 @@ def test_quiet_room_is_not_mistaken_for_a_muted_microphone() -> None:
     assert float(numpy.abs(canceller._weights).sum()) > 0, "в тихой комнате учимся"
 
 
+def test_step_is_normalised_by_what_is_in_the_filter(caplog) -> None:
+    """Опора то громкая, то тихая — фильтр обязан это переживать молча.
+
+    Живой запуск 01.08.2026: **184 обнуления за восемнадцать секунд**, лог
+    состоял из одной строки. Причина была в знаменателе шага: он считался как
+    «мощность текущего блока × число разделов», а это верно, только пока
+    громкость опоры ровная. Стоит ей упасть — выключили звук, пропал буфер,
+    пауза между треками, — как в истории остаются громкие куски, а знаменатель
+    берётся по тихому блоку, и шаг вырастает во столько же раз.
+    """
+    canceller = EchoCanceller(sample_rate=RATE, tail_ms=200, residual=False)
+    music = _music(RATE * 8)
+    # Опора моргает: две секунды играет, полсекунды почти нет. Так выглядит и
+    # выключение звука кнопкой, и пропуск в петлевом захвате.
+    reference = music.copy()
+    for start in range(RATE * 2, len(music), RATE * 2):
+        reference[start : start + RATE // 2] *= 1e-3
+    mic = numpy.convolve(reference, _room())[: len(music)] + _speech(len(music)) * 0.1
+
+    with caplog.at_level("WARNING"):
+        out = numpy.concatenate([
+            canceller.process(mic[at : at + BLOCK], reference[at : at + BLOCK])
+            for at in range(0, len(mic) - BLOCK, BLOCK)
+        ])
+
+    assert numpy.isfinite(out).all()
+    assert canceller.stats().blowups == 0, (
+        f"фильтр разлетается на провалах опоры: {canceller.stats().blowups} раз"
+    )
+    # И при этом он всё-таки работает, а не просто не мешает.
+    half = len(out) // 2
+    erle = _erle(mic[half : len(out)], out[half:])
+    assert erle > 10.0, f"убрано всего {erle:.1f} дБ"
+
+
+def test_divergence_is_reported_once_not_every_block(caplog) -> None:
+    """Строка о поломке, повторённая двести раз, о поломке уже не сообщает.
+
+    Владелец выключил Jarvis через полминуты со словами «начался дикий спам» —
+    и был прав: за предупреждениями перестало быть видно всё остальное.
+    """
+    canceller = EchoCanceller(sample_rate=RATE, tail_ms=200, residual=False)
+    music = _music(RATE)
+    canceller._weights.fill(1e6)  # заведомо разлетевшийся фильтр
+
+    with caplog.at_level("WARNING", logger="jarvis.core.audio.aec"):
+        for at in range(0, len(music) - BLOCK, BLOCK):
+            canceller.process(music[at : at + BLOCK] * 0.01, music[at : at + BLOCK])
+
+    told = caplog.text.count("разошёлся")
+    assert told <= 2, f"жалоб за секунду: {told}"
+
+
 def test_quiet_reference_does_not_blow_the_filter_up(caplog) -> None:
     """Тихая опора при громком микрофоне не должна рвать фильтр.
 

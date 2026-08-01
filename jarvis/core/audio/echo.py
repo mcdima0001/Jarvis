@@ -128,6 +128,21 @@ class ReferenceTrack:
         """Сколько сэмплов пришлось выбросить из-за расхождения потоков."""
         return self._dropped
 
+    def settle(self) -> None:
+        """Забыть, что накопилось до первого прочитанного кадра.
+
+        Захват опорного сигнала поднимается раньше, чем конвейер начинает
+        читать микрофон: между ними успевают загрузиться Whisper и голоса, а
+        это полторы минуты. Всё это время очередь переполняется и исправно
+        считает выброшенное — и в итоговой строке лога получалось «потеряно
+        опоры 1 435 136 сэмплов» при сеансе в полминуты. Число пугало и не
+        значило ничего, а мешало заметить настоящие потери.
+        """
+        self._pieces.clear()
+        self._size = 0
+        self._dropped = 0
+        self._starved = 0
+
     @property
     def starved(self) -> int:
         """Сколько сэмплов пришлось отдать тишиной: опора не поспевала."""
@@ -309,7 +324,14 @@ class EchoCancellingSource:
 
     async def frames(self) -> AsyncIterator[AudioFrame]:
         """Кадры микрофона, очищенные от собственного эха."""
+        first = True
         async for frame in self._source.frames():
+            if first:
+                # Всё, что накопилось, пока грузились модели, к делу не
+                # относится: сравнивать его не с чем.
+                self._track.settle()
+                self._started = time.monotonic()
+                first = False
             wave = to_float(frame.data)
             if self._high_pass is not None:
                 wave = self._high_pass.process(wave)
