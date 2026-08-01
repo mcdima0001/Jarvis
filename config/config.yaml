@@ -388,7 +388,7 @@ audio:
   activation_sound: activation.mp3
   vad:
     engine: energy         # energy | null; сюда же встанет silero
-    threshold: 0.0         # 0 = замерить фон комнаты и выставить порог самому
+    threshold: 0.0060      # 0 = замерить фон комнаты и выставить порог самому
     calibrate_seconds: 1.0
   wake_word:
     mode: text             # text — реагировать только на обращение по имени
