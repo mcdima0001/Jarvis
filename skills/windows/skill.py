@@ -155,6 +155,13 @@ DUCK_LEVEL = 0.2
 #: договаривают последний слог, и в комнате остаётся реверберация.
 RESTORE_DELAY_S = 0.5
 
+#: За сколько убавлять и за сколько возвращать. Числа разные намеренно:
+#: убавляем перед командой, и медленное затухание означало бы, что начало фразы
+#: всё равно записано с музыкой, — то есть смысл приглушения теряется. А вот
+#: возвращать резко незачем: по ушам бьёт именно мгновенный скачок вверх.
+FADE_OUT_S = 0.25
+FADE_IN_S = 1.2
+
 #: Через сколько секунд вернуть громкость, если ответа так и не было.
 #: Больше окна ответа (`audio.wake_word.follow_up_s`) плюс запас на
 #: распознавание и саму команду.
@@ -660,6 +667,32 @@ def restores_volume(source: str, *, awaiting_command: bool) -> bool:
     return source == VOICE_SOURCE and not awaiting_command
 
 
+#: Из скольких шагов складывается плавный переход. Сорок миллисекунд — предел,
+#: за которым ступеньки перестают быть слышны, а мельче дробить незачем: каждый
+#: шаг это вызов COM на каждое приложение.
+FADE_STEP_S = 0.04
+
+
+def fade_steps(start: float, end: float, seconds: float) -> list[float]:
+    """Промежуточные громкости для плавного перехода.
+
+    Шаги **равные в децибелах, а не в долях**, то есть громкость умножается на
+    одно и то же число, а не увеличивается на одно и то же. Слух устроен именно
+    так: путь от 0.2 к 0.4 воспринимается как такой же скачок, что от 0.4 к 0.8,
+    хотя во втором случае прибавка вдвое больше. Ровная по долям кривая на слух
+    рвётся в начале и еле ползёт в конце.
+
+    Последним значением всегда стоит ровно ``end``: накопленная погрешность
+    умножений не должна оставлять музыку на 0.98 навсегда.
+    """
+    if seconds <= 0 or start <= 0 or end <= 0 or start == end:
+        return [end]
+    count = max(1, round(seconds / FADE_STEP_S))
+    ratio = (end / start) ** (1 / count)
+    levels = [start * ratio ** step for step in range(1, count)]
+    return [max(0.0, min(1.0, level)) for level in levels] + [end]
+
+
 def sound_sessions() -> list[tuple[Any, SoundSession]]:
     """Звуковые сессии Windows: COM-объект и его описание.
 
@@ -737,6 +770,13 @@ class WindowsSkill(Skill):
         self._duck_level = float(ducking.get("level", DUCK_LEVEL))
         self._duck_timeout = float(ducking.get("restore_after_s", DUCK_TIMEOUT_S))
         self._restore_delay = float(ducking.get("restore_delay_s", RESTORE_DELAY_S))
+        self._fade_out = float(ducking.get("fade_out_s", FADE_OUT_S))
+        self._fade_in = float(ducking.get("fade_in_s", FADE_IN_S))
+        #: Номер текущего перехода громкости. Начатый переход отменяет
+        #: предыдущий: позвали второй раз посреди возврата — возврат бросаем и
+        #: уводим вниз, иначе две плавные кривые тянули бы ползунок в разные
+        #: стороны, ступенька через ступеньку.
+        self._move = 0
         #: Что приглушили: номер процесса -> прежняя громкость.
         self._ducked: dict[int, float] = {}
         #: Ждём команду после имени — значит «Слушаю» громкость не возвращает.
@@ -778,10 +818,6 @@ class WindowsSkill(Skill):
 
     async def _duck(self) -> None:
         """Убавить громкость всем, кроме себя."""
-        if self._ducked:
-            # Позвали второй раз, не дождавшись ответа: прежние громкости
-            # перезаписывать нельзя — вернём приглушённые.
-            return
         try:
             sessions = sound_sessions()
         except Exception as exc:  # noqa: BLE001 — нет pycaw или COM не в духе
@@ -793,23 +829,74 @@ class WindowsSkill(Skill):
             own_pids={os.getpid()},
             level=self._duck_level,
         )
-        if not plan:
+        if not plan and not self._ducked:
             return
 
-        for session, described in sessions:
-            if described.pid not in plan:
-                continue
-            try:
-                session.SimpleAudioVolume.SetMasterVolume(self._duck_level, None)
-            except Exception as exc:  # noqa: BLE001 — сессия могла закрыться
-                self.log.debug("Сессия %s не приглушилась: %s", described.name, exc)
+        # Позвали второй раз, не дождавшись ответа: прежние громкости
+        # перезаписывать нельзя, иначе вернём приглушённые. А вот увести вниз
+        # ещё раз — можно и нужно: возврат мог уже начаться.
+        if not self._ducked:
+            self._ducked = plan
 
-        self._ducked = plan
+        await self._slide(
+            [
+                (session, described)
+                for session, described in sessions
+                if described.pid in self._ducked
+            ],
+            target=lambda _: self._duck_level,
+            seconds=self._fade_out,
+        )
         self.log.info(
             "Приглушил на время команды: %s",
-            ", ".join(sorted({s.name or str(s.pid) for _, s in sessions if s.pid in plan})),
+            ", ".join(
+                sorted({s.name or str(s.pid) for _, s in sessions if s.pid in self._ducked})
+            ),
         )
         self._arm_restore_timer()
+
+    async def _slide(
+        self,
+        targets: Sequence[tuple[Any, SoundSession]],
+        *,
+        target: Any,
+        seconds: float,
+    ) -> bool:
+        """Плавно перевести громкость сессий к нужным значениям.
+
+        Список сессий собирается **один раз**: перебирать их на каждом шаге
+        значило бы три десятка обходов COM за секунду. Пропавшая по дороге
+        сессия просто выпадает — приложение закрыли, и возвращать ей нечего.
+
+        :return: ``False``, если переход не доведён до конца — его перебил
+            следующий.
+        """
+        if not targets:
+            return True
+        self._move += 1
+        mine = self._move
+        # У каждой сессии своя дорожка: играли они с разной громкостью, и
+        # вернуться должны туда же, откуда ушли.
+        tracks = [
+            (session, described, fade_steps(described.volume, float(target(described)), seconds))
+            for session, described in targets
+        ]
+        length = max(len(steps) for _, _, steps in tracks)
+
+        for index in range(length):
+            if self._move != mine:
+                # Начался следующий переход — этот больше не нужен.
+                return False
+            for session, described, steps in tracks:
+                if index >= len(steps):
+                    continue
+                try:
+                    session.SimpleAudioVolume.SetMasterVolume(steps[index], None)
+                except Exception as exc:  # noqa: BLE001 — сессия могла закрыться
+                    self.log.debug("Сессия %s не отозвалась: %s", described.name, exc)
+            if index + 1 < length:
+                await asyncio.sleep(FADE_STEP_S)
+        return True
 
     def _arm_restore_timer(self) -> None:
         """Страховка: вернуть громкость, даже если ответа так и не будет.
@@ -838,7 +925,7 @@ class WindowsSkill(Skill):
             self._duck_timer.cancel()
             self._duck_timer = None
         self._awaiting_command = False
-        saved, self._ducked = self._ducked, {}
+        saved = dict(self._ducked)
         if not saved:
             return
 
@@ -846,17 +933,19 @@ class WindowsSkill(Skill):
             sessions = sound_sessions()
         except Exception as exc:  # noqa: BLE001 — вернуть громкость важнее причины
             self.log.warning("Не удалось вернуть громкость: %s: %s", type(exc).__name__, exc)
+            self._ducked = {}
             return
 
-        for session, described in sessions:
-            level = saved.get(described.pid)
-            if level is None:
-                continue
-            try:
-                session.SimpleAudioVolume.SetMasterVolume(level, None)
-            except Exception as exc:  # noqa: BLE001 — сессия могла закрыться
-                self.log.debug("Сессия %s не вернулась: %s", described.name, exc)
-        self.log.debug("Громкость вернул: %d приложений", len(saved))
+        # Сохранённые громкости живут до конца перехода: позвали посреди
+        # возврата — приглушим снова, и вернуть надо будет туда же, откуда
+        # уходили в самый первый раз, а не в середину кривой.
+        if await self._slide(
+            [(session, described) for session, described in sessions if described.pid in saved],
+            target=lambda described: saved[described.pid],
+            seconds=self._fade_in,
+        ):
+            self._ducked = {}
+            self.log.debug("Громкость вернул: %d приложений", len(saved))
 
     @tool(routable=False)
     async def duck_others(self, level: float = DUCK_LEVEL) -> ToolResult:

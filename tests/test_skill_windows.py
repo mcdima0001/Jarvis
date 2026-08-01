@@ -819,3 +819,48 @@ def test_volume_returns_only_after_the_reply_was_spoken() -> None:
 def test_the_listening_reply_does_not_return_the_volume() -> None:
     """«Слушаю, сэр» — тоже произнесённая реплика, но команда ещё впереди."""
     assert not windows.restores_volume("voice", awaiting_command=True)
+
+
+def test_fade_ends_exactly_where_asked() -> None:
+    """Последним значением стоит ровно цель, а не «почти».
+
+    Кривая складывается из умножений, и накопленная погрешность оставила бы
+    музыку на 0.98 навсегда — вроде и вернули, а на самом деле нет.
+    """
+    steps = windows.fade_steps(0.2, 0.8, seconds=1.0)
+
+    assert steps[-1] == 0.8
+    assert steps == sorted(steps), "возврат идёт только вверх"
+    assert len(steps) > 10, "секунда — это не два шага"
+
+
+def test_fade_is_even_by_ear_not_by_numbers() -> None:
+    """Шаги равные в децибелах: громкость умножается, а не прибавляется.
+
+    Слух устроен так, что путь от 0.2 к 0.4 — такой же скачок, как от 0.4
+    к 0.8. Ровная по долям кривая на слух рвётся в начале и еле ползёт в конце,
+    поэтому проверяем именно отношение соседних значений.
+    """
+    steps = windows.fade_steps(0.1, 0.8, seconds=0.5)
+    ratios = [second / first for first, second in zip(steps, steps[1:])]
+
+    assert max(ratios) - min(ratios) < 0.01, f"шаги неровные: {ratios}"
+
+
+def test_fade_down_is_a_fade_too() -> None:
+    """Убавление идёт той же кривой, только вниз."""
+    steps = windows.fade_steps(1.0, 0.2, seconds=0.25)
+
+    assert steps[-1] == 0.2
+    assert steps == sorted(steps, reverse=True), "убавление идёт только вниз"
+
+
+def test_no_fade_when_there_is_nothing_to_fade() -> None:
+    """Нулевое время и нулевая громкость — просто ставим цель.
+
+    Умножать от нуля бессмысленно (из нуля не выйти), а нулевое время означает
+    «сейчас же»: настройка `fade_in_s: 0` должна возвращать прежнее поведение.
+    """
+    assert windows.fade_steps(0.5, 0.5, seconds=1.0) == [0.5]
+    assert windows.fade_steps(0.2, 0.9, seconds=0.0) == [0.9]
+    assert windows.fade_steps(0.0, 0.9, seconds=1.0) == [0.9]
