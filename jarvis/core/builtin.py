@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.llm import LLMService
@@ -21,6 +21,7 @@ from jarvis.core.persona import Persona
 from jarvis.core.situation import Situation
 from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, minutes_word
 from jarvis.core.tools import ToolRegistry, tool
+from jarvis.core.version import current
 
 if TYPE_CHECKING:
     from jarvis.core.router import LearnedResolver
@@ -60,15 +61,14 @@ _DIALOG_SYSTEM = {
 }
 
 
-#: Что дописывается к подсказке в режиме «отвечай коротко».
-_BRIEF_SYSTEM = {
-    "ru": "Сейчас просили отвечать коротко: уложись в одно предложение.",
-    "en": "You were asked to keep it short: answer in a single sentence.",
-}
-
 #: Сколько длится «не слушай», если срок не назвали. Полчаса — то, что обычно
 #: и имеют в виду; ошибиться в эту сторону безопаснее, чем оглохнуть навсегда.
 DEFAULT_SLEEP_MINUTES = 30
+
+#: Сколько секунд считать «тем же событием». Одна команда учит сразу нескольких
+#: (формулировку и кнопку), и записи ложатся в одну секунду; всё, что старше, —
+#: уже другая история, и отменять его никто не просил.
+FORGET_WINDOW_S = 10.0
 
 
 def _language(code: str | None) -> str:
@@ -130,9 +130,11 @@ class CoreTools:
             journals=("today",),
             journal_limit=5,
         )
+        # Режим «отвечай коротко» тут не проверяется намеренно: он живёт в
+        # `LLMService`, через который проходит любой текст вслух. Пока проверка
+        # была здесь, поиск в том же режиме зачитывал три предложения из
+        # Википедии — он про режим не знал.
         system = f"{_DIALOG_SYSTEM[code]} {self._persona.style(code)}"
-        if self._modes.active(BRIEF):
-            system = f"{system} {_BRIEF_SYSTEM[code]}"
         # Обстановка вместо одной только даты: разговор тоже выигрывает от того,
         # что ассистент знает, в каком он режиме и что делал минуту назад.
         answer = await self._llm.ask(
@@ -224,7 +226,9 @@ class CoreTools:
         health = await self._skills.health()
         broken = [name for name, state in health.items() if not state.ok]
         spending = self._llm.spending
+        build = current()
         payload = {
+            "version": build.label,
             "skills": {name: state.ok for name, state in health.items()},
             "tools": len(self._registry),
             "models": self._llm.models(),
@@ -240,17 +244,20 @@ class CoreTools:
             cost = (
                 f" Модель: {spending.calls} запросов, {spending.total_tokens} токенов."
             )
+        # Версию проговариваем: «какая у тебя версия» спрашивают ровно тогда,
+        # когда сомневаются, что запущено свежее.
+        build_line = f" Версия {build.version}."
         if broken:
             speech = {
-                "ru": f"Есть проблемы в модулях: {', '.join(broken)}.{cost}",
-                "en": f"Problems in modules: {', '.join(broken)}.{cost}",
+                "ru": f"Есть проблемы в модулях: {', '.join(broken)}.{cost}{build_line}",
+                "en": f"Problems in modules: {', '.join(broken)}.{cost}{build_line}",
             }
         else:
             speech = {
                 "ru": f"Всё работает: {len(health)} модулей, "
-                      f"{len(self._registry)} команд.{cost}",
+                      f"{len(self._registry)} команд.{cost}{build_line}",
                 "en": f"All good: {len(health)} modules, "
-                      f"{len(self._registry)} commands.{cost}",
+                      f"{len(self._registry)} commands.{cost}{build_line}",
             }
         return ToolResult.success(payload, speech=speech)
 
@@ -398,6 +405,40 @@ class CoreTools:
             speech={"ru": f"Сейчас: {listed}.", "en": f"Right now: {listed_en}."},
         )
 
+    async def _forgettable(self) -> list[tuple[float, str]]:
+        """Собрать всё, что можно отменить, вместе со временем записи.
+
+        Возвращает пары «когда» и «чем отменять»: пустое имя — резолвер
+        выученных формулировок (он объект, а не инструмент), остальное — имена
+        инструментов `*.forget_last` у скиллов, которые учатся сами.
+        """
+        found: list[tuple[float, str]] = []
+        if self._learner is not None and self._learner.last_at:
+            found.append((self._learner.last_at, ""))
+
+        # Имя инструмента — договорённость (`FORGET_TOOL`), поэтому новый
+        # самообучающийся скилл попадает под общую отмену без правки ядра.
+        for spec in self._registry.specs():
+            if spec.name == f"{NAMESPACE}.{FORGET_TOOL}":
+                continue
+            if not spec.name.endswith(f".{FORGET_TOOL}"):
+                continue
+            # Спрашиваем по схеме, а не по факту вызова: инструмент без
+            # `apply` ответил бы отказом, неотличимым от «мне нечего забывать».
+            if "apply" not in spec.parameters.get("properties", {}):
+                logger.warning(
+                    "%s не принимает apply — отмена его не увидит. Добавь этот "
+                    "параметр: при apply=False инструмент только сообщает "
+                    "{'what': …, 'at': …}, ничего не стирая",
+                    spec.name,
+                )
+                continue
+            seen = await self._registry.invoke(spec.name, {"apply": False})
+            if not seen.ok or not isinstance(seen.value, Mapping) or not seen.value.get("what"):
+                continue
+            found.append((float(seen.value.get("at") or 0.0), spec.name))
+        return found
+
     @tool(
         name="forget_last",
         phrases=["не сохраняй в память", "не запоминай", "не запоминай это",
@@ -418,23 +459,39 @@ class CoreTools:
         отвергнутое не предлагается — ни в плане нажатий, ни модели. Иначе
         отмена была бы бессмысленной: модель уверенно предложила бы то же
         самое, разбор прошёл бы «удачно», и связка выучилась бы снова.
+
+        **Отменяется одно событие, а не по записи у каждого, кто учится.**
+        Сперва все кандидаты опрашиваются «что и когда», потом забывается
+        только самое свежее — и вместе с ним то, что записано в те же
+        секунды, потому что одна команда вполне могла научить сразу двоих
+        (формулировку и кнопку). Живой случай 01.08.2026: владелец отменял
+        разбор фразы, сказанной сорок секунд назад, а вместе с ней слетел
+        верный рецепт кнопки, выученный девятью минутами раньше.
         """
+        candidates = await self._forgettable()
+        if candidates:
+            newest = max(moment for moment, _ in candidates)
+            # Одна команда учит сразу нескольких, и записи ложатся в одну
+            # секунду. Всё, что старше окна, к этой отмене отношения не имеет.
+            group = [name for moment, name in candidates if newest - moment <= FORGET_WINDOW_S]
+            dropped = [
+                f"{name} (запомнено {time.strftime('%H:%M:%S', time.localtime(moment))})"
+                for moment, name in candidates
+                if newest - moment > FORGET_WINDOW_S
+            ]
+            if dropped:
+                logger.info("Не трогаю более раннее: %s", "; ".join(dropped))
+        else:
+            group = []
+
         forgotten: list[str] = []
-
-        if self._learner is not None:
-            phrase = await self._learner.reject()
-            if phrase:
-                forgotten.append(phrase)
-
-        # Скиллы, которые учатся сами, отменяют это своим инструментом. Имя —
-        # договорённость (`FORGET_TOOL`), поэтому новый такой скилл попадает
-        # под эту команду без правки ядра.
-        for spec in self._registry.specs():
-            if spec.name == f"{NAMESPACE}.{FORGET_TOOL}":
+        for name in group:
+            if name == "":
+                phrase = await self._learner.reject() if self._learner else ""
+                if phrase:
+                    forgotten.append(phrase)
                 continue
-            if not spec.name.endswith(f".{FORGET_TOOL}"):
-                continue
-            result = await self._registry.invoke(spec.name, {})
+            result = await self._registry.invoke(name, {})
             if result.ok and result.value:
                 forgotten.append(str(result.value))
 

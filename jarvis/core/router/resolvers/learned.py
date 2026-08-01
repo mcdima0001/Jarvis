@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Mapping
 
 from jarvis.core.contracts import Intent, Utterance
@@ -128,6 +129,10 @@ class LearnedResolver:
         self._known: dict[str, dict[str, Any]] | None = None
         #: Что записали последним: это и отменяет «не сохраняй в память».
         self._last: str = ""
+        #: **Когда** записали. Без отметки времени «последнее» у каждого, кто
+        #: учится, своё, и общая отмена сносит их все разом — в том числе
+        #: правильное, выученное десять минут назад.
+        self._last_at: float = 0.0
 
     @property
     def name(self) -> str:
@@ -138,6 +143,11 @@ class LearnedResolver:
     def last_learned(self) -> str:
         """Последняя выученная формулировка за этот сеанс."""
         return self._last
+
+    @property
+    def last_at(self) -> float:
+        """Когда это было (unix-время); 0 — не было ничего."""
+        return self._last_at if self._last else 0.0
 
     async def _load(self) -> dict[str, dict[str, Any]]:
         """Прочитать выученное; недоступный раздел выключает обучение."""
@@ -198,6 +208,7 @@ class LearnedResolver:
         # Отменять просят последнее сделанное, а не последнее выученное: чаще
         # всего мимо бьёт как раз то, что выучено вчера и повторилось сегодня.
         self._last = key
+        self._last_at = time.time()
         return Intent(
             tool=str(entry["tool"]),
             arguments=arguments,
@@ -278,6 +289,7 @@ class LearnedResolver:
 
         known[key] = entry
         self._last = key
+        self._last_at = time.time()
         logger.info(
             "Запомнил формулировку: %r -> %s%s. Не то, что нужно — скажи «не сохраняй в память»",
             key,

@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import re
+import time
 from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -1563,6 +1564,11 @@ class PageSkill(Skill):
             "learned": learned,
             "name": str(result.get("detail", "")).strip(),
             "sel": str(result.get("sel", "")).strip(),
+            # Отметка времени обязательна: общая отмена «не сохраняй в память»
+            # выбирает самое свежее из всего, что запомнилось. Без неё она
+            # сносила и это нажатие — даже если оно было десять минут назад и
+            # к делу не относилось.
+            "at": time.time(),
         }
 
     def _plan(
@@ -1944,7 +1950,7 @@ class PageSkill(Skill):
         await self._write(host, entry)
 
     @tool(routable=False)
-    async def forget_last(self) -> ToolResult:
+    async def forget_last(self, apply: bool = True) -> ToolResult:
         """Забыть последнее нажатие: не только выученное, но и **куда** нажали.
 
         Отмена работает в две стороны. Выученный способ убирается — раз он не
@@ -1958,12 +1964,27 @@ class PageSkill(Skill):
 
         Имя не случайное: по нему ядро находит все скиллы, которые учатся сами,
         и общая команда «не сохраняй в память» отменяет и их работу тоже.
+
+        :param apply: ``False`` — только сказать, что и когда запомнилось, не
+            трогая память. Так ядро выбирает **самое свежее** из всего, что
+            помнят разные скиллы: без этого «не сохраняй в память» сносило по
+            одной записи у каждого, включая давние и верные.
         """
         last = dict(self._last)
         host = str(last.get("host", ""))
         action = str(last.get("action", ""))
         if not host or not action:
             return ToolResult.success("")
+
+        if not apply:
+            name = str(last.get("name", ""))
+            described = f"{action} на {host}"
+            return ToolResult.success(
+                {
+                    "what": f"{described}: {name}" if name else described,
+                    "at": float(last.get("at", 0.0)),
+                }
+            )
 
         entry = await self._entry(host)
         changed = False

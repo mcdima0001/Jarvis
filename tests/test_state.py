@@ -367,32 +367,81 @@ async def test_modes_tool_makes_state_visible(registry) -> None:
     assert "не слушаю" in listed.speech_for("ru")
 
 
-async def test_brief_mode_reaches_the_dialog_prompt(registry, tmp_path) -> None:
-    """Режим краткости меняет подсказку разговора, а не только настроение."""
-    from jarvis.core.tools import collect_tools
+async def test_brief_mode_reaches_every_spoken_text() -> None:
+    """Краткость живёт в LLMService, а не в одном инструменте.
 
-    asked: dict[str, str] = {}
+    Живой случай 01.08.2026: режим включили, `core.chat` послушался, а поиск в
+    ту же минуту зачитал три предложения из Википедии — он про режим не знал.
+    Текст вслух производит не один инструмент, поэтому проверка стоит там, где
+    проходят все.
+    """
+    from jarvis.core.llm import LLMService, ProfileRegistry
+    from jarvis.core.llm.protocol import LLMResponse
+    from jarvis.core.config import TaskProfile
 
-    class Talker:
-        """Заглушка модели, которая запоминает системную подсказку."""
+    seen: list = []
 
-        available = True
+    class Provider:
+        name = "fake"
+        configured = True
 
-        async def ask(self, prompt, *, task=None, system=None, context=None):
-            asked["system"] = system or ""
-            return "Готово."
+        async def complete(self, request):
+            seen.append(request)
+            return LLMResponse(text="Готово.", model=request.model)
 
+        async def aclose(self) -> None: ...
+
+    profile = TaskProfile(task="dialog", provider="fake", model="stub", max_tokens=300)
     modes = Modes()
-    core = _core(modes=modes, llm=Talker(), memory=_memory(tmp_path), registry=registry)
-    for item in collect_tools(core, namespace="core"):
-        registry.register(item)
+    llm = LLMService(
+        providers={"fake": Provider()},
+        profiles=ProfileRegistry({"dialog": profile, "summarize": profile}, default_task="dialog"),
+        modes=modes,
+    )
 
-    await registry.invoke("core.chat", {"text": "как дела"})
-    assert "одно предложение" not in asked["system"]
+    await llm.ask("расскажи про борщ", task="dialog", system="Ты Джарвис.")
+    assert "одним предложением" not in seen[-1].messages[0].content
+    assert seen[-1].max_tokens == 300
 
     modes.on(BRIEF)
-    await registry.invoke("core.chat", {"text": "как дела"})
-    assert "одно предложение" in asked["system"]
+    await llm.ask("расскажи про борщ", task="dialog", system="Ты Джарвис.")
+    assert "одним предложением" in seen[-1].messages[0].content
+    assert seen[-1].max_tokens < 300, "потолок нужен: просьбу модель иногда не слышит"
+
+    # И пересказ тоже: именно он читал Википедию вслух.
+    await llm.summarize("Длинный текст про борщ и его историю.", task="summarize")
+    assert "одним предложением" in seen[-1].messages[0].content
+
+
+async def test_brief_hint_follows_the_language() -> None:
+    """Русская подсказка на английском вопросе утащила бы и ответ в русский."""
+    from jarvis.core.llm import LLMService, ProfileRegistry
+    from jarvis.core.llm.protocol import LLMResponse
+    from jarvis.core.config import TaskProfile
+
+    seen: list = []
+
+    class Provider:
+        name = "fake"
+        configured = True
+
+        async def complete(self, request):
+            seen.append(request)
+            return LLMResponse(text="ok", model=request.model)
+
+        async def aclose(self) -> None: ...
+
+    profile = TaskProfile(task="dialog", provider="fake", model="stub")
+    modes = Modes()
+    modes.on(BRIEF)
+    llm = LLMService(
+        providers={"fake": Provider()},
+        profiles=ProfileRegistry({"dialog": profile}, default_task="dialog"),
+        modes=modes,
+    )
+
+    await llm.ask("what is borscht")
+    assert "single sentence" in seen[-1].messages[0].content
 
 
 async def test_dialog_prompt_carries_the_situation(registry, tmp_path) -> None:

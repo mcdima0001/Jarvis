@@ -22,6 +22,7 @@ import sys
 import time
 
 from jarvis.core.config import LoggingConfig
+from jarvis.core.version import describe, executable_line
 
 from .colors import ColorFormatter, enable_windows_colors, supports_color
 from .daily import DailyFileHandler
@@ -98,4 +99,9 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
     # начало приходится искать по времени — а владелец однажды из-за этого решил,
     # что файл перезаписывается каждый сеанс.
     app.info("%s Запуск %s %s", "─" * 24, time.strftime(config.time_format), "─" * 24)
+    # Второй строкой — что именно запущено. Логи разбираются на другой машине и
+    # через день-другой, и вопрос «это уже с исправлением или ещё до него» без
+    # коммита решался гаданием по поведению.
+    app.info("%s", describe())
+    app.debug("Интерпретатор: %s", executable_line())
     return app

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import time
+
 from pathlib import Path
 
 import pytest
@@ -267,8 +269,15 @@ async def test_forget_last_tool_covers_skills(registry: ToolRegistry, store) -> 
             self.asked = 0
 
         @tool(routable=False)
-        async def forget_last(self) -> ToolResult:
-            """Забыть последнее."""
+        async def forget_last(self, apply: bool = True) -> ToolResult:
+            """Забыть последнее.
+
+            :param apply: False — только сказать, что и когда, ничего не стирая.
+            """
+            if not apply:
+                return ToolResult.success(
+                    {"what": "кнопку лайка на music.yandex.ru", "at": time.time()}
+                )
             self.asked += 1
             return ToolResult.success("кнопку лайка на music.yandex.ru")
 
@@ -332,3 +341,138 @@ async def test_missing_memory_section_only_warns(tmp_path: Path) -> None:
 
     assert await learner.resolve(Utterance(text="включи третье видео")) is None
     assert await learner.remember("включи третье видео", Intent(tool="studio.press")) == ""
+
+
+async def test_forget_touches_only_the_latest(registry: ToolRegistry, store) -> None:
+    """Отменяется одно событие, а не по записи у каждого, кто учится.
+
+    Живой случай 01.08.2026: владелец сказал «не сохраняй в память», отменяя
+    разбор фразы сорокасекундной давности, — и вместе с ней слетел верный
+    рецепт кнопки, выученный девятью минутами раньше. «Последнее» у каждого
+    было своё, а команда отменяла все «последние» разом.
+    """
+    from jarvis.core.builtin import CoreTools
+
+    class Learning:
+        """Скилл, который запомнил кнопку давно и с тех пор ничего не делал."""
+
+        def __init__(self) -> None:
+            self.asked = 0
+
+        @tool(routable=False)
+        async def forget_last(self, apply: bool = True) -> ToolResult:
+            """Забыть последнее.
+
+            :param apply: False — только сказать, что и когда, ничего не стирая.
+            """
+            if not apply:
+                return ToolResult.success(
+                    {"what": "next на music.yandex.ru", "at": time.time() - 9 * 60}
+                )
+            self.asked += 1
+            return ToolResult.success("next на music.yandex.ru")
+
+    skill = Learning()
+    for item in collect_tools(skill, namespace="page"):
+        registry.register(item)
+
+    learner = LearnedResolver(store)
+    await learner.remember("так, говорите больше", Intent(tool="core.be_brief", arguments={}))
+
+    core = CoreTools(
+        llm=None,  # type: ignore[arg-type]
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+        learner=learner,
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    result = await registry.invoke("core.forget_last")
+
+    assert result.ok
+    assert result.value == ["так, говорите больше"]
+    assert skill.asked == 0, "давнее нажатие к этой отмене отношения не имеет"
+
+
+async def test_one_command_can_teach_two_things(registry: ToolRegistry, store) -> None:
+    """А вот записанное в те же секунды отменяется вместе.
+
+    «Нажми лайк» разбирается моделью и тут же учит и формулировку, и кнопку —
+    это одно событие, и отменять его надо целиком.
+    """
+    from jarvis.core.builtin import CoreTools
+
+    class Learning:
+        def __init__(self) -> None:
+            self.asked = 0
+
+        @tool(routable=False)
+        async def forget_last(self, apply: bool = True) -> ToolResult:
+            """Забыть последнее.
+
+            :param apply: False — только сказать, что и когда, ничего не стирая.
+            """
+            if not apply:
+                return ToolResult.success({"what": "like на music.yandex.ru", "at": time.time()})
+            self.asked += 1
+            return ToolResult.success("like на music.yandex.ru")
+
+    skill = Learning()
+    for item in collect_tools(skill, namespace="page"):
+        registry.register(item)
+
+    learner = LearnedResolver(store)
+    await learner.remember("поставь сердечко", Intent(tool="page.like", arguments={}))
+
+    core = CoreTools(
+        llm=None,  # type: ignore[arg-type]
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+        learner=learner,
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    result = await registry.invoke("core.forget_last")
+
+    assert skill.asked == 1
+    assert sorted(result.value) == ["like на music.yandex.ru", "поставь сердечко"]
+
+
+async def test_tool_without_apply_is_named_in_the_log(
+    registry: ToolRegistry, store, caplog
+) -> None:
+    """Скилл со старым `forget_last` пропускается — но не молча.
+
+    Молчаливый пропуск означал бы, что «не запоминай» перестало работать для
+    целого скилла, а по логу этого не видно.
+    """
+    from jarvis.core.builtin import CoreTools
+
+    class Old:
+        @tool(routable=False)
+        async def forget_last(self) -> ToolResult:
+            """Забыть последнее — по-старому, без apply."""
+            return ToolResult.success("что-то")
+
+    for item in collect_tools(Old(), namespace="legacy"):
+        registry.register(item)
+
+    core = CoreTools(
+        llm=None,  # type: ignore[arg-type]
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+        learner=LearnedResolver(store),
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    with caplog.at_level("WARNING"):
+        await registry.invoke("core.forget_last")
+
+    assert "legacy.forget_last" in caplog.text
+    assert "apply" in caplog.text

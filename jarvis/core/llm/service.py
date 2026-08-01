@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from jarvis.core.errors import LLMError, LLMNotConfigured
+from jarvis.core.contracts import detect_language
+from jarvis.core.state import BRIEF, Modes
 from jarvis.core.tools import ToolCatalog
 
 from .profiles import ProfileRegistry
@@ -39,6 +41,16 @@ _INTENT_SYSTEM = (
     "Отвечай текстом без вызова только если это вопрос или разговор, а не "
     "просьба что-то сделать."
 )
+
+#: Что дописывается к подсказке в режиме «отвечай коротко», по языку просьбы.
+_BRIEF_HINT = {
+    "ru": "Отвечай одним предложением: сейчас просили покороче.",
+    "en": "Answer in a single sentence: brevity was requested.",
+}
+
+#: Потолок ответа в этом режиме. Просьбу уложиться в предложение модель иногда
+#: не слышит, а потолок слышит всегда.
+BRIEF_TOKENS = 90
 
 _SUMMARY_SYSTEM = (
     "Ты сжимаешь текст до сути. Пиши по-русски, без вступлений и оценок, "
@@ -98,10 +110,15 @@ class LLMService:
         *,
         providers: Mapping[str, LLMProvider],
         profiles: ProfileRegistry,
+        modes: "Modes | None" = None,
     ) -> None:
         self._providers = dict(providers)
         self._profiles = profiles
         self._spending = Spending()
+        #: Режимы. Нужен ровно один — «отвечай коротко»: он про длину любого
+        #: текста, который ассистент произносит, а производит текст не один
+        #: инструмент. Место, через которое проходят все, здесь.
+        self._modes = modes
 
     @property
     def spending(self) -> Spending:
@@ -163,8 +180,14 @@ class LLMService:
         task: str | None = None,
         tools: Sequence[Mapping[str, object]] = (),
         tool_choice: str = "auto",
+        max_tokens: int | None = None,
     ) -> LLMResponse:
-        """Выполнить запрос по профилю задачи."""
+        """Выполнить запрос по профилю задачи.
+
+        :param max_tokens: предел ответа поверх профиля. Нужен режиму «отвечай
+            коротко»: просьбы уложиться в предложение модель иногда не слышит,
+            а потолок слышит всегда.
+        """
         profile = self._profiles.get(task)
         provider = self._provider(profile.provider)
 
@@ -176,7 +199,7 @@ class LLMService:
             messages=payload,
             model=profile.model,
             temperature=profile.temperature,
-            max_tokens=profile.max_tokens,
+            max_tokens=min(profile.max_tokens, max_tokens) if max_tokens else profile.max_tokens,
             tools=tools,
             tool_choice=tool_choice,
         )
@@ -212,13 +235,32 @@ class LLMService:
             передавать нельзя — только нужные разделы (см. `ContextBuilder`).
         """
         messages: list[Message] = []
-        if system:
-            messages.append(Message.system(system))
+        brief = self._brief_line(prompt)
+        if system or brief:
+            messages.append(Message.system(" ".join(part for part in (system, brief) if part)))
         if context:
             messages.append(Message.system(f"Контекст:\n{context}"))
         messages.append(Message.user(prompt))
-        response = await self.complete(messages, task=task)
+        response = await self.complete(
+            messages, task=task, max_tokens=BRIEF_TOKENS if brief else None
+        )
         return response.text
+
+    def _brief_line(self, prompt: str) -> str:
+        """Что дописать к подсказке в режиме «отвечай коротко».
+
+        Живёт здесь, а не в инструменте, ровно по одной причине: текст вслух
+        производит не один инструмент. Режим включили — и `core.chat`
+        послушался, а поиск в тот же момент зачитал три предложения из
+        Википедии, потому что про режим не знал (поймано на живом запуске
+        01.08.2026). Место, через которое проходят все, здесь одно.
+
+        Язык берётся у самой просьбы: русская подсказка на английском вопросе
+        утащила бы и ответ в русский.
+        """
+        if self._modes is None or not self._modes.active(BRIEF):
+            return ""
+        return _BRIEF_HINT.get(detect_language(prompt, default="ru"), _BRIEF_HINT["ru"])
 
     async def chat(
         self,
@@ -234,10 +276,15 @@ class LLMService:
         """Сжать текст до нескольких предложений."""
         if not text.strip():
             return ""
+        brief = self._brief_line(text)
+        if brief:
+            sentences = 1
         prompt = f"Сожми до {sentences} предложений, сохранив факты и цифры:\n\n{text}"
         response = await self.complete(
-            [Message.system(_SUMMARY_SYSTEM), Message.user(prompt)],
+            [Message.system(" ".join(part for part in (_SUMMARY_SYSTEM, brief) if part)),
+             Message.user(prompt)],
             task=task,
+            max_tokens=BRIEF_TOKENS if brief else None,
         )
         return response.text
 

@@ -103,6 +103,11 @@ class SkillManager:
         return tuple(sorted(self._records))
 
     @property
+    def versions(self) -> dict[str, str]:
+        """Имя скилла -> его версия. Для одной строки в логе о том, что запущено."""
+        return {name: record.instance.meta.version for name, record in self._records.items()}
+
+    @property
     def tree(self) -> tuple[str, ...]:
         """Как скиллы лежат на диске: ``browser`` и ``browser/page``.
 

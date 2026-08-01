@@ -81,6 +81,25 @@ class FakeCapture:
         self.stopped += 1
 
 
+def _stream_clock(monkeypatch: pytest.MonkeyPatch, step: float = FRAME / RATE) -> None:
+    """Пустить часы вровень со звуком.
+
+    Проверки выравнивания разнесены во времени (`_RECHECK_S`), а стенд
+    проигрывает полминуты записи за доли секунды — по настоящим часам за весь
+    прогон случилась бы ровно одна проверка. Здесь монотонное время идёт на
+    длину кадра за каждое обращение, то есть ровно так же, как вживую.
+    """
+    import jarvis.core.audio.echo as module
+
+    ticks = [0.0]
+
+    def clock() -> float:
+        ticks[0] += step
+        return ticks[0]
+
+    monkeypatch.setattr(module.time, "monotonic", clock)
+
+
 async def _drain(source: EchoCancellingSource) -> numpy.ndarray:
     """Прогнать весь микрофон и собрать, что вышло."""
     out = [to_float(frame.data) async for frame in source.frames()]
@@ -249,7 +268,9 @@ async def test_missing_capture_is_not_a_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_microphone_is_held_back_when_the_reference_lags() -> None:
+async def test_microphone_is_held_back_when_the_reference_lags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Опора отстаёт сильнее начальной задержки — микрофон придерживают сильнее.
 
     Ровно этот случай встретился на живой машине 01.08.2026: петлевой захват
@@ -258,6 +279,7 @@ async def test_microphone_is_held_back_when_the_reference_lags() -> None:
     двадцати. Двигать опору вперёд тут бесполезно — тех сэмплов ещё нет, — так
     что придерживать надо микрофон, и подобрать это можно только измерением.
     """
+    _stream_clock(monkeypatch)
     samples = 30 * RATE
     late = int(RATE * 0.3)
     music = _noise(samples, seed=11)
@@ -324,3 +346,96 @@ def test_silence_in_a_quiet_room_is_not_a_complaint(caplog) -> None:
         source._notice_silence(100.0 + _SILENCE_ALARM_S + 1, 0.0)
 
     assert not caplog.records
+
+
+@pytest.mark.asyncio
+async def test_noisy_measurements_do_not_move_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Замер, который не подтвердился вторым, потоки не двигает.
+
+    Живой запуск 01.08.2026: подряд пришли −347, +237, +225, +4, +395, −462 мс
+    при уверенности 0.51–0.59 — это шум, а не измерение. Каждая правка
+    сбрасывала подобранный тракт, фильтр начинал с нуля и не успевал сойтись;
+    задержка микрофона доползла до предела в 900 мс, а за сеанс вышло −29 дБ,
+    то есть эхоподавление сделало хуже, чем его отсутствие.
+    """
+    import jarvis.core.audio.echo as module
+
+    _stream_clock(monkeypatch)
+    swings = iter([(-5000, 0.55), (3000, 0.52), (-4000, 0.56), (2500, 0.53)])
+
+    def wobbly(mic, reference, *, sample_rate):
+        try:
+            return next(swings)
+        except StopIteration:
+            return 0, 0.0
+
+    monkeypatch.setattr(module, "estimate_delay", wobbly)
+
+    samples = 30 * RATE
+    music = _noise(samples, seed=5)
+    source = EchoCancellingSource(
+        FakeMicrophone(music), sample_rate=RATE, residual=False, high_pass_hz=0.0
+    )
+    source._source._before = _feeder(source, music)
+
+    await _drain(source)
+
+    assert source._delay == DELAY, "по шуму двигать микрофон нельзя"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_measurement_is_acted_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """А согласный сам с собой замер — двигает, и со второго раза.
+
+    Проверка парная к предыдущей: осторожность не должна означать паралич.
+    """
+    import jarvis.core.audio.echo as module
+
+    _stream_clock(monkeypatch)
+    steady = (-4000, 0.8)
+    monkeypatch.setattr(module, "estimate_delay", lambda *a, **k: steady)
+
+    samples = 30 * RATE
+    music = _noise(samples, seed=6)
+    source = EchoCancellingSource(
+        FakeMicrophone(music), sample_rate=RATE, residual=False, high_pass_hz=0.0
+    )
+    source._source._before = _feeder(source, music)
+
+    await _drain(source)
+
+    assert source._delay > DELAY, "подтверждённый замер обязан сработать"
+
+
+def test_filter_zeroes_itself_when_gain_correction_does_not_help() -> None:
+    """Фильтр, который вредит и не чинится усилением, обнуляется.
+
+    Пустой фильтр отдаёт вход как есть — то есть работает не хуже, чем полное
+    отсутствие эхоподавления. Без такого пола живой сеанс 01.08.2026 закончился
+    на −29 дБ: выравнивание съехало, фильтр учился на мусоре, а поправка
+    усиления чинить выравнивание не умеет — она меняет громкость, а не время.
+    """
+    from jarvis.core.audio.aec import _WATCH_BLOCKS, EchoCanceller
+
+    canceller = EchoCanceller(sample_rate=RATE, tail_ms=200, residual=False)
+    music = _noise(RATE, seed=7)
+    for at in range(0, len(music) - BLOCK, BLOCK):
+        canceller.process(music[at : at + BLOCK] * 0.5, music[at : at + BLOCK])
+    assert float(numpy.abs(canceller._weights).sum()) > 0, "фильтр должен был чему-то научиться"
+
+    def diverged() -> None:
+        """Полсекунды, на которых выход громче входа."""
+        canceller._watch = numpy.array([1.0, 10.0, 0.1, 1.0])
+        canceller._watched = _WATCH_BLOCKS
+        canceller._recover()
+
+    diverged()  # первое плохое окно — терпим, фильтр мог просто сходиться
+    diverged()  # второе — поправляем усиление
+    assert canceller.stats().rescales == 1
+    assert float(numpy.abs(canceller._weights).sum()) > 0
+
+    diverged()
+    diverged()  # усиление не помогло — значит дело во времени, а не в громкости
+    assert float(numpy.abs(canceller._weights).sum()) == 0.0, "обязан обнулиться"

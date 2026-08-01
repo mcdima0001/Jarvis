@@ -32,11 +32,14 @@ ERLE в децибелах), но комната, колонка с сабом �
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any
 
 import numpy
+
+logger = logging.getLogger(__name__)
 
 #: Длина блока обработки в сэмплах. При 16 кГц это 16 мс.
 #:
@@ -234,6 +237,7 @@ class EchoCanceller:
         self._watched = 0
         self._rescales = 0
         self._bad = 0
+        self._rescued = 0
 
     @property
     def block(self) -> int:
@@ -346,6 +350,7 @@ class EchoCanceller:
         self._watched = 0
         if left <= _DIVERGED * heard or echo <= _EPS:
             self._bad = 0
+            self._rescued = 0
             return
         # Одного плохого полусекундного окна мало. Пока фильтр только сходится,
         # его выход законно бывает громче входа, и поправка усиления в этот
@@ -355,6 +360,24 @@ class EchoCanceller:
         if self._bad < 2:
             return
         self._bad = 0
+
+        # Поправка усиления не помогла — значит дело не в громкости, а в
+        # выравнивании: фильтр вычитает эхо не оттуда, где оно есть, и никакой
+        # множитель этого не исправит. Тогда обнуляемся: пустой фильтр отдаёт
+        # вход как есть, то есть **не хуже, чем без эхоподавления вовсе**.
+        #
+        # Живой запуск 01.08.2026 показал, чем кончается отсутствие такого пола:
+        # выравнивание съехало, фильтр учился на мусоре, и за сеанс вышло
+        # −29 дБ — то есть ассистент стал слышать хуже, чем если бы AEC не было.
+        self._rescued += 1
+        if self._rescued >= 2:
+            self._rescued = 0
+            self.forget()
+            logger.warning(
+                "Фильтр вредит, и усилением это не чинится — обнулил. "
+                "Обычно это съехавшее выравнивание потоков"
+            )
+            return
         scale = float(numpy.clip(cross / echo, *_RESCALE))
         self._weights *= scale
         self._rescales += 1

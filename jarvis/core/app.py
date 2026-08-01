@@ -47,6 +47,7 @@ from jarvis.core.state import Modes
 from jarvis.core.stt import build_stt
 from jarvis.core.tools import ToolRegistry, collect_tools
 from jarvis.core.tts import build_tts
+from jarvis.core.version import current, platform_line
 from jarvis.core.voice import VoicePipeline
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,9 @@ class JarvisApp:
                 config.llm.profiles,
                 default_task=config.llm.default_task,
             ),
+            # Режим «отвечай коротко» — про длину любого текста, который
+            # ассистент произносит, а производит его не один инструмент.
+            modes=modes,
         )
 
         persona = Persona(
@@ -275,6 +279,14 @@ class JarvisApp:
                 "Скиллу %s не хватает инструментов: %s", skill, ", ".join(missing)
             )
 
+        # Версии скиллов одной строкой. Поштучно они пишутся при загрузке, но
+        # искать их по десятку строк неудобно, а вопрос «на какой версии это
+        # было» задаётся к логу целиком.
+        versions = self.skills.versions
+        if versions:
+            logger.info(
+                "Скиллы: %s", ", ".join(f"{name} {ver}" for name, ver in sorted(versions.items()))
+            )
         logger.info(
             "%s готов: скиллов %d, инструментов %d",
             self.config.app.name,
@@ -341,6 +353,8 @@ class JarvisApp:
     def summary(self) -> str:
         """Человекочитаемый отчёт о состоянии сборки (режим ``--check``)."""
         lines: list[str] = [
+            f"Версия:        {current().label}",
+            f"Среда:         {platform_line()}",
             f"Конфигурация:  {self.config.source}",
             f"Корень:        {self.config.root}",
             f"Резолверы:     {' -> '.join(self.router.resolvers)}",

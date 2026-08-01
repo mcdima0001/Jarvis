@@ -42,6 +42,21 @@ _TAGS = re.compile(r"<[^>]+>")
 #: Википедии хватает на ответ в два-три предложения, а платим мы за каждый.
 _DIGEST_CHARS = 700
 
+#: Чем модель отвечает, когда ответа в выдержках нет. Метка нужна необычная:
+#: обычное «нет» бывает и настоящим ответом («правда ли, что…» — «Нет, это
+#: миф»), и такой ответ мы бы выбросили.
+_NO_ANSWER = {"ru": "НЕТ ОТВЕТА", "en": "NO ANSWER"}
+
+
+def _unanswered(summary: str) -> bool:
+    """Сказала ли модель, что ответа в выдержках нет.
+
+    Сравнение целиком, а не по началу: ответ, **начинающийся** с «нет», — это
+    обычный ответ, а не отказ.
+    """
+    cleaned = summary.strip().strip(".!,:;\"'«»").upper()
+    return cleaned in (_NO_ANSWER["ru"], _NO_ANSWER["en"])
+
 
 def _plain(markup: str) -> str:
     """Выкинуть теги и восстановить HTML-мнемоники."""
@@ -259,23 +274,23 @@ class SearchSkill(Skill):
             },
         )
 
-    @tool(phrases=["что такое {query}", "расскажи про {query}", "кто такой {query}",
-                   "what is {query}", "tell me about {query}", "who is {query}"])
-    async def answer(self, query: str) -> ToolResult:
-        """Найти информацию и дать короткий ответ своими словами.
+    async def _ask_source(
+        self, provider: SearchProvider, query: str, language: str
+    ) -> str | None:
+        """Спросить один источник и попробовать собрать по нему ответ.
 
-        :param query: тема вопроса.
+        :return: ответ; ``None`` — этот источник вопрос не закрывает, надо
+            идти к следующему.
         """
-        language = detect_language(query, default="ru")
-        pages = await self._collect(query, self._max_results, language)
+        try:
+            pages = await provider.search(self._http(), query, self._max_results, language)
+        except Exception as exc:  # noqa: BLE001 — сбой источника не фатален
+            self.log.warning("Источник %s не ответил: %s", provider.name, exc)
+            return None
         if not pages:
-            return ToolResult.success(
-                "",
-                speech={
-                    "ru": f"Ничего не нашёл по запросу {query}.",
-                    "en": f"Found nothing for {query}.",
-                },
-            )
+            self.log.info("Источник %s ничего не нашёл", provider.name)
+            return None
+        self.log.info("Источник %s: %d результатов", provider.name, len(pages))
 
         # Выдержки обрезаются: ответ всё равно нужен в два-три предложения, а
         # каждый лишний абзац — это входные токены в каждом таком вопросе.
@@ -284,23 +299,57 @@ class SearchSkill(Skill):
             for page in pages
             if page["snippet"]
         )
+        if not digest:
+            return None
         if not self.context.llm.available:
             # Без модели отдаём первый абзац как есть — это уже связный текст.
-            return ToolResult.success(pages[0]["snippet"], speech=pages[0]["snippet"])
+            return pages[0]["snippet"]
 
         instruction = (
             f"Ответь на вопрос «{query}» по этим выдержкам. Два-три предложения, "
             f"без вступлений и списков, только суть. Ответ будет прочитан вслух. "
-            f"Если ответа в выдержках нет — скажи прямо."
+            f"Если ответа на вопрос в выдержках нет, ответь ровно: {_NO_ANSWER['ru']}"
             if language == "ru"
             else f"Answer the question '{query}' from these excerpts. Two or three "
             f"sentences, no preamble or lists. The answer will be read aloud. "
-            f"If the excerpts do not contain the answer, say so."
+            f"If the excerpts do not contain the answer, reply exactly: {_NO_ANSWER['en']}"
         )
-        summary = await self.context.llm.ask(
-            f"{instruction}\n\n{digest}", task="summarize"
+        summary = await self.context.llm.ask(f"{instruction}\n\n{digest}", task="summarize")
+        if _unanswered(summary):
+            self.log.info(
+                "Источник %s нашёл страницы, но ответа на %r в них нет — иду дальше",
+                provider.name,
+                query,
+            )
+            return None
+        return summary
+
+    @tool(phrases=["что такое {query}", "расскажи про {query}", "кто такой {query}",
+                   "what is {query}", "tell me about {query}", "who is {query}"])
+    async def answer(self, query: str) -> ToolResult:
+        """Найти информацию и дать короткий ответ своими словами.
+
+        Источники перебираются **по ответу, а не по наличию страниц**. Это не
+        придирка: «как варить борщ» Википедия находит прекрасно — статьёй о
+        самом супе, — и на этом перебор раньше заканчивался, а вслух звучало
+        «в выдержках нет информации о том, как варить борщ». Страницы были,
+        ответа не было, а DuckDuckGo с рецептом рядом даже не спросили.
+
+        :param query: тема вопроса.
+        """
+        language = detect_language(query, default="ru")
+        for provider in self._providers:
+            found = await self._ask_source(provider, query, language)
+            if found:
+                return ToolResult.success(found, speech=found)
+
+        return ToolResult.success(
+            "",
+            speech={
+                "ru": f"Не нашёл ответа на вопрос {query}.",
+                "en": f"I found no answer for {query}.",
+            },
         )
-        return ToolResult.success(summary, speech=summary)
 
     async def health(self) -> HealthStatus:
         """Скилл работоспособен, пока есть хотя бы один источник."""

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -137,3 +138,87 @@ def test_dialog_prompt_carries_current_date() -> None:
     assert str(today.year) in line
     assert f"{today:%H:%M}" in line
     assert str(today.year) in _now_line("en")
+
+
+# --- источники перебираются по ответу, а не по наличию страниц ---------------
+
+
+def test_no_answer_marker_is_recognized() -> None:
+    """Метка «ответа нет» отличается от ответа, начинающегося с «нет».
+
+    Обычное «нет» бывает и настоящим ответом («правда ли, что…» — «Нет, это
+    миф»), и по началу строки такой ответ мы бы выбросили.
+    """
+    assert search._unanswered("НЕТ ОТВЕТА")
+    assert search._unanswered("  нет ответа.  ")
+    assert search._unanswered("NO ANSWER")
+    assert not search._unanswered("Нет, это миф. Борщ варят из свёклы.")
+    assert not search._unanswered("Борщ варят из свёклы и капусты.")
+
+
+async def test_source_with_pages_but_no_answer_is_not_the_last_word() -> None:
+    """«Как варить борщ» Википедия находит статьёй о самом супе.
+
+    Живой случай 01.08.2026: страницы были, ответа не было, перебор на этом
+    заканчивался — и вслух звучало «в выдержках нет информации о том, как
+    варить борщ», хотя DuckDuckGo с рецептом даже не спросили.
+    """
+    from types import SimpleNamespace
+
+    asked: list[str] = []
+
+    class Source:
+        def __init__(self, name: str, snippet: str) -> None:
+            self.name = name
+            self._snippet = snippet
+
+        async def search(self, client, query, limit, language):
+            asked.append(self.name)
+            return [{"title": self.name, "snippet": self._snippet, "url": ""}]
+
+    replies = iter(["НЕТ ОТВЕТА", "Свёклу пассеруют, потом варят с капустой."])
+
+    class LLM:
+        available = True
+
+        async def ask(self, prompt, *, task=None, system=None, context=None):
+            return next(replies)
+
+    skill = search.SearchSkill()
+    skill._max_results = 3
+    skill._client = SimpleNamespace()
+    skill._providers = [Source("wikipedia", "Борщ — суп."), Source("duckduckgo", "Рецепт.")]
+    skill._context = SimpleNamespace(llm=LLM(), logger=logging.getLogger("test.search"))
+
+    result = await skill.answer("как варить борщ")
+
+    assert asked == ["wikipedia", "duckduckgo"], "второй источник обязан быть спрошен"
+    assert "Свёклу" in result.speech_for("ru")
+
+
+async def test_all_sources_silent_is_said_honestly() -> None:
+    """Никто не ответил — так и говорим, а не зачитываем отказ модели."""
+    from types import SimpleNamespace
+
+    class Source:
+        name = "wikipedia"
+
+        async def search(self, client, query, limit, language):
+            return [{"title": "Борщ", "snippet": "Борщ — суп.", "url": ""}]
+
+    class LLM:
+        available = True
+
+        async def ask(self, prompt, *, task=None, system=None, context=None):
+            return "НЕТ ОТВЕТА"
+
+    skill = search.SearchSkill()
+    skill._max_results = 3
+    skill._client = SimpleNamespace()
+    skill._providers = [Source()]
+    skill._context = SimpleNamespace(llm=LLM(), logger=logging.getLogger("test.search"))
+
+    result = await skill.answer("как варить борщ")
+
+    assert result.value == ""
+    assert "Не нашёл ответа" in result.speech_for("ru")
