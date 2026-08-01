@@ -146,10 +146,22 @@ def _touches(part: str, key: str) -> bool:
 #: нельзя, а отказ отправит фразу дальше, в браузер.
 MAX_PROGRAM_WORDS = 5
 
-#: До какой доли громкости убавлять чужой звук, пока Jarvis слушает команду.
-#: Не в ноль намеренно: полная тишина посреди трека пугает сильнее, чем
-#: приглушение, а для микрофона разница между 20% и нулём уже невелика.
-DUCK_LEVEL = 0.2
+#: На сколько децибел убавлять чужой звук — на тихой и на громкой системе.
+#:
+#: Одной цифрой тут не обойтись, и это не придирка. На системной громкости 20%
+#: музыка микрофону почти не мешает, и глубокий рез превратил бы её в тишину
+#: посреди трека; на 100% микрофон захлёбывается, и мягкого реза не хватает
+#: вовсе. Поэтому глубина едет по прямой между двумя точками.
+QUIET_CUT_DB = 10.0
+LOUD_CUT_DB = 35.0
+
+#: Между какими значениями системной громкости натянута прямая. Ниже тихой
+#: точки режем мягко, выше громкой — на полную.
+QUIET_AT = 0.2
+LOUD_AT = 1.0
+
+#: Мельче этого резать незачем: разницу не слышно, а сессию мы уже потрогали.
+MIN_CUT_DB = 2.0
 
 #: Сколько подождать после ответа, прежде чем вернуть громкость. Колонки
 #: договаривают последний слог, и в комнате остаётся реверберация.
@@ -623,25 +635,36 @@ class SoundSession:
 
 
 def plan_ducking(
-    sessions: Sequence[SoundSession], *, own_pids: Container[int], level: float
+    sessions: Sequence[SoundSession], *, own_pids: Container[int], cut_db: float
 ) -> dict[int, float]:
     """Кого приглушить и какая у него сейчас громкость.
 
     Своя сессия не трогается принципиально: Jarvis отвечает голосом, и
-    приглушённый ответ утонул бы вместе с музыкой. Уже тихие тоже пропускаем —
-    «восстановление» сделало бы их громче, чем было.
+    приглушённый ответ утонул бы вместе с музыкой. Совсем тихие пропускаем: у
+    них после реза не останется ничего, а «восстановление» потом сделало бы их
+    громче, чем было.
 
     Ключ — номер процесса: у одного приложения бывает несколько сессий, и
     возвращать их по отдельности незачем — громкость у них общая по смыслу.
     """
+    if cut_db < MIN_CUT_DB:
+        return {}
     plan: dict[int, float] = {}
     for session in sessions:
         if session.pid <= 0 or session.pid in own_pids:
             continue
-        if session.volume <= level:
+        if session.volume <= 0.01:
             continue
         plan[session.pid] = max(plan.get(session.pid, 0.0), session.volume)
     return plan
+
+
+def system_volume() -> float:
+    """Громкость системы, 0..1. Выключенный звук — это ноль."""
+    volume = endpoint_volume()
+    if volume.GetMute():
+        return 0.0
+    return float(volume.GetMasterVolumeLevelScalar())
 
 
 #: Кто прислал реплику, которую действительно произнесли вслух. Диспетчер шлёт
@@ -665,6 +688,31 @@ def restores_volume(source: str, *, awaiting_command: bool) -> bool:
       впереди, музыку возвращать рано.
     """
     return source == VOICE_SOURCE and not awaiting_command
+
+
+def cut_for(system: float, *, quiet_db: float = QUIET_CUT_DB, loud_db: float = LOUD_CUT_DB) -> float:
+    """На сколько децибел убавлять при такой громкости системы.
+
+    Прямая между двумя точками: тише тихой — режем как на тихой, громче
+    громкой — как на громкой. Никакой физики, чистая настройка на слух: цифры
+    правятся в конфиге, а смысл виден без чтения кода.
+    """
+    span = max(1e-6, LOUD_AT - QUIET_AT)
+    share = (max(0.0, min(1.0, system)) - QUIET_AT) / span
+    share = max(0.0, min(1.0, share))
+    return quiet_db + (loud_db - quiet_db) * share
+
+
+def quieter_by(volume: float, cut_db: float) -> float:
+    """Громкость после реза на столько-то децибел.
+
+    Децибелы — потому что глушим **относительно того, что было**: у одного
+    приложения свой ползунок на 30%, у другого на 100%, и одинаковая доля
+    оставила бы первое неслышным, а второе громким.
+    """
+    if cut_db <= 0:
+        return volume
+    return max(0.0, min(1.0, volume * 10 ** (-cut_db / 20)))
 
 
 #: Из скольких шагов складывается плавный переход. Сорок миллисекунд — предел,
@@ -767,7 +815,9 @@ class WindowsSkill(Skill):
         см. `restores_volume`.
         """
         ducking = dict(self.context.setting("ducking", {}))
-        self._duck_level = float(ducking.get("level", DUCK_LEVEL))
+        cut = dict(ducking.get("cut_db", {}))
+        self._quiet_cut = float(cut.get("quiet", QUIET_CUT_DB))
+        self._loud_cut = float(cut.get("loud", LOUD_CUT_DB))
         self._duck_timeout = float(ducking.get("restore_after_s", DUCK_TIMEOUT_S))
         self._restore_delay = float(ducking.get("restore_delay_s", RESTORE_DELAY_S))
         self._fade_out = float(ducking.get("fade_out_s", FADE_OUT_S))
@@ -804,10 +854,17 @@ class WindowsSkill(Skill):
     async def _on_command(self, event: Event) -> None:
         """Команда распознана: следующая реплика вернёт громкость."""
         self._awaiting_command = False
+        # И заодно продлеваем страховку: работа идёт, бросать её посреди
+        # выполнения незачем.
+        self._arm_restore_timer()
 
     async def _on_replied(self, event: Event) -> None:
         """Ответ прозвучал — вернуть громкость, если это был ответ на команду."""
         if not restores_volume(event.source, awaiting_command=self._awaiting_command):
+            # Реплика от диспетчера означает «сейчас буду говорить»: до конца
+            # речи страховка сработать не должна, а реплика бывает длинной.
+            if self._ducked:
+                self._arm_restore_timer()
             return
         if self._restore_delay > 0:
             # Колонки ещё договаривают последний слог, плюс реверберация
@@ -824,10 +881,19 @@ class WindowsSkill(Skill):
             self.log.debug("Приглушить звук не удалось: %s: %s", type(exc).__name__, exc)
             return
 
+        # Глубина считается по громкости системы: на тихой музыка микрофону
+        # почти не мешает, на громкой он захлёбывается.
+        try:
+            system = system_volume()
+        except Exception as exc:  # noqa: BLE001 — не прочли, считаем громкой
+            self.log.debug("Громкость системы не прочиталась: %s", exc)
+            system = 1.0
+        cut_db = cut_for(system, quiet_db=self._quiet_cut, loud_db=self._loud_cut)
+
         plan = plan_ducking(
             [described for _, described in sessions],
             own_pids={os.getpid()},
-            level=self._duck_level,
+            cut_db=cut_db,
         )
         if not plan and not self._ducked:
             return
@@ -844,11 +910,13 @@ class WindowsSkill(Skill):
                 for session, described in sessions
                 if described.pid in self._ducked
             ],
-            target=lambda _: self._duck_level,
+            target=lambda described: quieter_by(described.volume, cut_db),
             seconds=self._fade_out,
         )
         self.log.info(
-            "Приглушил на время команды: %s",
+            "Приглушил на %.0f дБ (громкость системы %.0f%%): %s",
+            cut_db,
+            system * 100,
             ", ".join(
                 sorted({s.name or str(s.pid) for _, s in sessions if s.pid in self._ducked})
             ),
@@ -903,6 +971,15 @@ class WindowsSkill(Skill):
 
         Сценарий обычный — позвали по имени и передумали. Без таймера музыка
         осталась бы тихой до следующей команды.
+
+        **Отсчёт начинается заново на каждый признак жизни**, и это не мелочь.
+        Сначала таймер заводился один раз от приглушения, и на живом запуске
+        (01.08.2026) он выстрелил ровно в ту секунду, когда началась длинная
+        реплика: шесть секунд окна ответа, три на распознавание, пара на
+        выполнение — двадцать секунд набираются законным путём. Со стороны это
+        выглядело как «Джарвис не успевает договорить, а музыка уже орёт».
+        Теперь таймер означает то, чем и был задуман: **ничего не происходит
+        столько-то секунд**.
         """
         if self._duck_timer is not None:
             self._duck_timer.cancel()
@@ -948,12 +1025,14 @@ class WindowsSkill(Skill):
             self.log.debug("Громкость вернул: %d приложений", len(saved))
 
     @tool(routable=False)
-    async def duck_others(self, level: float = DUCK_LEVEL) -> ToolResult:
+    async def duck_others(self, cut_db: float = 0.0) -> ToolResult:
         """Приглушить звук всех приложений, кроме самого ассистента.
 
-        :param level: до какой доли громкости убавить, от 0 до 1.
+        :param cut_db: на сколько децибел убавить; 0 — на своё усмотрение,
+            по громкости системы.
         """
-        self._duck_level = max(0.0, min(1.0, level))
+        if cut_db > 0:
+            self._quiet_cut = self._loud_cut = float(cut_db)
         await self._duck()
         return ToolResult.success(len(self._ducked))
 

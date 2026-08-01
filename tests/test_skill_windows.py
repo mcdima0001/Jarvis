@@ -774,25 +774,32 @@ def test_own_session_is_never_ducked() -> None:
         _session(200, "browser.exe", 0.8),
     ]
 
-    plan = windows.plan_ducking(sessions, own_pids={100}, level=0.2)
+    plan = windows.plan_ducking(sessions, own_pids={100}, cut_db=20)
 
     assert plan == {200: 0.8}
 
 
-def test_already_quiet_sessions_are_left_alone() -> None:
-    """Тихую сессию приглушать нечего, а «вернуть» значило бы сделать громче."""
-    sessions = [_session(300, "quiet.exe", 0.1), _session(400, "loud.exe", 0.9)]
+def test_silent_sessions_are_left_alone() -> None:
+    """Совсем тихую сессию трогать нечего: после реза от неё ничего не останется."""
+    sessions = [_session(300, "silent.exe", 0.0), _session(400, "loud.exe", 0.9)]
 
-    plan = windows.plan_ducking(sessions, own_pids=set(), level=0.2)
+    plan = windows.plan_ducking(sessions, own_pids=set(), cut_db=20)
 
     assert plan == {400: 0.9}
+
+
+def test_tiny_cut_is_not_worth_touching_anything() -> None:
+    """Рез в пару децибел не слышно, а сессию мы бы уже потрогали."""
+    sessions = [_session(400, "loud.exe", 0.9)]
+
+    assert windows.plan_ducking(sessions, own_pids=set(), cut_db=1.0) == {}
 
 
 def test_several_sessions_of_one_program_share_a_pid() -> None:
     """У приложения бывает несколько сессий — запоминаем громче всех звучащую."""
     sessions = [_session(500, "game.exe", 0.4), _session(500, "game.exe", 0.9)]
 
-    plan = windows.plan_ducking(sessions, own_pids=set(), level=0.2)
+    plan = windows.plan_ducking(sessions, own_pids=set(), cut_db=20)
 
     assert plan == {500: 0.9}
 
@@ -801,7 +808,7 @@ def test_sessions_without_a_process_are_skipped() -> None:
     """Системные звуки приходят без номера процесса — их не вернуть обратно."""
     sessions = [_session(0, "", 1.0)]
 
-    assert windows.plan_ducking(sessions, own_pids=set(), level=0.2) == {}
+    assert windows.plan_ducking(sessions, own_pids=set(), cut_db=20) == {}
 
 
 def test_volume_returns_only_after_the_reply_was_spoken() -> None:
@@ -864,3 +871,32 @@ def test_no_fade_when_there_is_nothing_to_fade() -> None:
     assert windows.fade_steps(0.5, 0.5, seconds=1.0) == [0.5]
     assert windows.fade_steps(0.2, 0.9, seconds=0.0) == [0.9]
     assert windows.fade_steps(0.0, 0.9, seconds=1.0) == [0.9]
+
+
+def test_deeper_cut_when_the_system_is_louder() -> None:
+    """Глубина реза едет вместе с громкостью системы.
+
+    Просьба владельца от 01.08.2026: на системной громкости 20% музыка микрофону
+    почти не мешает, а на 100% он захлёбывается. Одна цифра тут либо превращает
+    тихую музыку в тишину, либо не спасает от громкой.
+    """
+    assert windows.cut_for(0.2) == pytest.approx(10.0)
+    assert windows.cut_for(1.0) == pytest.approx(35.0)
+    assert windows.cut_for(0.6) == pytest.approx(22.5)
+
+
+def test_cut_is_clamped_outside_the_anchors() -> None:
+    """Тише тихой точки режем как на тихой, громче громкой — как на громкой."""
+    assert windows.cut_for(0.0) == pytest.approx(10.0)
+    assert windows.cut_for(0.05) == pytest.approx(10.0)
+
+
+def test_cut_is_relative_to_what_the_app_had() -> None:
+    """Режем **от текущей громкости приложения**, а не до общей доли.
+
+    У одного приложения свой ползунок на 30%, у другого на 100%: одинаковая
+    доля оставила бы первое неслышным, а второе — всё ещё громким.
+    """
+    assert windows.quieter_by(1.0, 20) == pytest.approx(0.1)
+    assert windows.quieter_by(0.5, 20) == pytest.approx(0.05)
+    assert windows.quieter_by(1.0, 0) == 1.0
