@@ -117,6 +117,7 @@ class ReferenceTrack:
         self._dropped = 0
         self._skip = 0
         self._starved = 0
+        self._pushed = 0
 
     @property
     def waiting(self) -> int:
@@ -127,6 +128,18 @@ class ReferenceTrack:
     def dropped(self) -> int:
         """Сколько сэмплов пришлось выбросить из-за расхождения потоков."""
         return self._dropped
+
+    @property
+    def pushed(self) -> int:
+        """Сколько сэмплов опоры пришло всего.
+
+        По нему считается **настоящая частота** опорного потока. Она обязана
+        совпадать с микрофонной, иначе фильтр гонится за трактом, который
+        уезжает от него равномерно, — и никакая подстройка выравнивания этого
+        не догонит. Проверить это иначе нельзя: `soundcard` берёт частоту, о
+        которой его попросили, и о расхождении не сообщает.
+        """
+        return self._pushed
 
     def settle(self) -> None:
         """Забыть, что накопилось до первого прочитанного кадра.
@@ -142,6 +155,7 @@ class ReferenceTrack:
         self._size = 0
         self._dropped = 0
         self._starved = 0
+        self._pushed = 0
 
     @property
     def starved(self) -> int:
@@ -159,6 +173,7 @@ class ReferenceTrack:
             wave = wave[taken:]
             if not len(wave):
                 return
+        self._pushed += len(wave)
         self._pieces.append(wave)
         self._size += len(wave)
         # Очередь длиннее предела означает, что опорный поток обгоняет
@@ -279,6 +294,8 @@ class EchoCancellingSource:
         #: С какого сдвига и когда начали считать расхождение часов.
         self._drift_from = 0
         self._drift_at = 0.0
+        #: Сколько сэмплов микрофона прошло через конвейер — для замера частот.
+        self._heard_samples = 0
 
     @property
     def service_name(self) -> str:
@@ -312,6 +329,7 @@ class EchoCancellingSource:
             self._reference.stop()
         await self._source.stop()
         stats = self._aec.stats()
+        self._tell_rates()
         logger.info(
             "Эхоподавление: убрано %.1f дБ, задержка тракта %.0f мс, "
             "музыка звучала %.0f%% времени, микрофон молчал %.0f%% времени, "
@@ -334,7 +352,10 @@ class EchoCancellingSource:
                 # относится: сравнивать его не с чем.
                 self._track.settle()
                 self._started = time.monotonic()
+                self._heard_samples = 0
                 first = False
+            # Два байта на сэмпл: раскодировать кадр второй раз ради счёта незачем.
+            self._heard_samples += len(frame.data) // 2
             wave = to_float(frame.data)
             if self._high_pass is not None:
                 wave = self._high_pass.process(wave)
@@ -484,6 +505,44 @@ class EchoCancellingSource:
         # вычитал бы эхо не оттуда, где оно есть.
         self._aec.forget()
         self._forget_history()
+
+    def _tell_rates(self) -> None:
+        """Сказать, с какой частотой на самом деле шли оба потока.
+
+        Единственная проверка, которая отвечает на вопрос «почему за десять
+        секунд убирается пятнадцать децибел, а за пять минут — ноль». Если
+        опора идёт хоть на процент быстрее микрофона, тракт уезжает равномерно,
+        и никакая подстройка выравнивания этого не догонит: фильтр всё время
+        описывает то, что было секунду назад.
+
+        Спросить об этом систему нельзя: `soundcard` берёт ту частоту, о
+        которой его попросили, а о том, что отдаёт другую, не сообщает. Считаем
+        сами — по числу сэмплов и по часам.
+        """
+        passed = time.monotonic() - self._started
+        if passed < 10.0 or not self._heard_samples:
+            return
+        mic_rate = self._heard_samples / passed
+        reference_rate = self._track.pushed / passed
+        if reference_rate < 1.0:
+            return
+        off = (reference_rate / mic_rate - 1.0) * 100 if mic_rate else 0.0
+        logger.info(
+            "Частоты потоков: микрофон %.0f Гц, опора %.0f Гц (расхождение %+.2f%%)",
+            mic_rate,
+            reference_rate,
+            off,
+        )
+        # Процент — это уже не дрейф кварцев (те дают сотые доли), а другая
+        # частота. Фильтр в таких условиях бесполезен, и лучше сказать об этом
+        # прямо, чем оставлять «убрано 0 дБ» без объяснения.
+        if abs(off) > 0.5:
+            logger.warning(
+                "Опора идёт не в такт микрофону (%+.2f%%) — эхоподавление так работать "
+                "не может. Проверь audio.aec.reference: копию надо снимать с того "
+                "устройства, которое звучит, а не с виртуального",
+                off,
+            )
 
     def _note_drift(self, shift: int, now: float) -> None:
         """Заметить, как уползает сдвиг между потоками.

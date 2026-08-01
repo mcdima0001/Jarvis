@@ -494,3 +494,42 @@ async def test_clock_drift_between_devices_is_measured(
 
     assert "уполз" in caplog.text, "расхождение часов обязано быть названо числом"
     assert "ppm" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stream_rates_are_measured_and_mismatch_is_named(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Опора, идущая не в такт микрофону, обязана называться прямо.
+
+    Это единственная проверка, которая отвечает на вопрос «почему за десять
+    секунд убирается пятнадцать децибел, а за пять минут — ноль». Спросить об
+    этом систему нельзя: `soundcard` берёт ту частоту, о которой его попросили,
+    и о расхождении молчит.
+    """
+    _stream_clock(monkeypatch)
+    samples = 30 * RATE
+    music = _noise(samples, seed=12)
+    source = EchoCancellingSource(
+        FakeMicrophone(music), sample_rate=RATE, residual=False, high_pass_hz=0.0
+    )
+
+    # Опора идёт на 5% быстрее: на каждый кадр микрофона кладём чуть больше.
+    # Своя волна и подлиннее — иначе она кончится раньше микрофонной, и замер
+    # покажет ровно обратное тому, что проверяем.
+    played = _noise(int(samples * 1.2), seed=13)
+    fast = int(FRAME * 1.05)
+    position = [0]
+
+    def feed(number: int) -> None:
+        start = position[0]
+        position[0] = start + fast
+        source.push_reference(played[start : start + fast])
+
+    source._source._before = feed
+
+    await _drain(source)
+    with caplog.at_level("WARNING", logger="jarvis.core.audio.echo"):
+        await source.stop()
+
+    assert "не в такт" in caplog.text, "расхождение частот обязано быть названо"
