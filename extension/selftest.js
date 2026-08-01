@@ -991,3 +991,16 @@ check("название не менялось — значит не включи
   assert(result.played === false, "играет то же самое — успехом это не считается");
   assert(String(result.heard).includes("Старый трек"), "в лог уходит то, что слышали");
 });
+
+check("не сработало ничего — говорим, что слышала страница", async () => {
+  // Живой случай 01.08.2026: «перемотай на 30 секунд» на Яндекс Музыке.
+  // Перемотка опирается на сам плеер, а его в разметке нет — и ответ был
+  // неотличим от «команда не подошла». «Плееров 0» объясняет это мгновенно.
+  const media = { metadata: { title: "Трек", artist: "Кто-то" }, playbackState: "playing" };
+  const api = load(makeDocument({ players: [] }), { mediaSession: media });
+
+  const result = await api.jarvisRunPlan([{ media: "forward", seconds: 30 }]);
+
+  assert(result.done === null, "перематывать было нечем");
+  assert(String(result.heard).includes("плееров 0"), result.heard);
+});

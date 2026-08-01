@@ -560,8 +560,20 @@ async function jarvisRunPlan(plan) {
     return started();
   };
 
-  /** Чем закончилось дело с точки зрения звука — строкой для лога. */
+  /** Чем закончилось дело с точки зрения звука — строкой для лога.
+
+    Отчёт не имеет права упасть: его зовут как раз тогда, когда уже что-то не
+    сработало, и уронить им ответ значило бы потерять и саму причину.
+  */
   const heardNow = (before) => {
+    try {
+      return describeSound(before);
+    } catch (error) {
+      return `состояние звука не прочиталось: ${(error && error.message) || error}`;
+    }
+  };
+
+  const describeSound = (before) => {
     const now = snapshot();
     const track = now.now.title || "название не сообщается";
     const was = before && before.now ? before.now.title : "";
@@ -918,6 +930,11 @@ async function jarvisRunPlan(plan) {
   if (broke.length) {
     nothing.broke = broke;
   }
+  // Не сработало вообще ничего — скажем, что у страницы есть по части звука.
+  // Половина шагов (пауза, громкость, перемотка) опирается на сам плеер, и
+  // «плееров 0» объясняет неудачу мгновенно: у сайта его просто не видно в
+  // разметке. Без этой строки причина неотличима от «команда не подошла».
+  nothing.heard = heardNow(null);
   return nothing;
 }
 
