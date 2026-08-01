@@ -26,10 +26,18 @@ DELAY = int(RATE * _MIC_DELAY_MS / 1000)
 
 
 class FakeMicrophone:
-    """Микрофон, отдающий заранее заготовленную волну кадрами."""
+    """Микрофон, отдающий заранее заготовленную волну кадрами.
 
-    def __init__(self, wave: numpy.ndarray) -> None:
+    Перед каждым кадром зовётся `before` — так подкладывается опорный сигнал.
+    Порядок тут не формальность: вживую петлевой захват идёт своим потоком и
+    успевает раньше, а если подкладывать опору **после** кадра, она окажется
+    позади микрофона, и вычитать станет нечего. Стенд должен повторять живую
+    расстановку, иначе проверяет он не то.
+    """
+
+    def __init__(self, wave: numpy.ndarray, before=None) -> None:
         self._wave = wave
+        self._before = before
         self.started = 0
         self.stopped = 0
 
@@ -44,7 +52,9 @@ class FakeMicrophone:
         self.stopped += 1
 
     async def frames(self) -> AsyncIterator[AudioFrame]:
-        for at in range(0, len(self._wave) - FRAME, FRAME):
+        for number, at in enumerate(range(0, len(self._wave) - FRAME, FRAME)):
+            if self._before is not None:
+                self._before(number)
             yield AudioFrame(
                 data=to_pcm(self._wave[at : at + FRAME]), sample_rate=RATE, timestamp=1.0
             )
@@ -65,16 +75,19 @@ class FakeCapture:
         self.stopped += 1
 
 
-async def _drain(source: EchoCancellingSource, reference: numpy.ndarray | None = None) -> numpy.ndarray:
-    """Прогнать весь микрофон, подкладывая опорный сигнал по ходу дела."""
-    at = 0
-    out: list[numpy.ndarray] = []
-    async for frame in source.frames():
-        if reference is not None:
-            source.push_reference(reference[at : at + FRAME])
-            at += FRAME
-        out.append(to_float(frame.data))
+async def _drain(source: EchoCancellingSource) -> numpy.ndarray:
+    """Прогнать весь микрофон и собрать, что вышло."""
+    out = [to_float(frame.data) async for frame in source.frames()]
     return numpy.concatenate(out) if out else numpy.zeros(0)
+
+
+def _feeder(source: EchoCancellingSource, reference: numpy.ndarray):
+    """Подкладывать опорный сигнал того же момента, что и очередной кадр."""
+
+    def feed(number: int) -> None:
+        source.push_reference(reference[number * FRAME : (number + 1) * FRAME])
+
+    return feed
 
 
 def _noise(samples: int, seed: int = 3) -> numpy.ndarray:
@@ -143,9 +156,31 @@ async def test_microphone_passes_through_when_nothing_plays() -> None:
 
     out = await _drain(source)
 
-    lag = DELAY + BLOCK
     assert len(out) > RATE // 2
-    assert numpy.allclose(out[lag:], wave[: len(out) - lag], atol=2e-4)
+    assert numpy.allclose(out[BLOCK:], wave[: len(out) - BLOCK], atol=2e-4)
+
+
+@pytest.mark.asyncio
+async def test_the_delay_line_holds_samples_back_instead_of_padding() -> None:
+    """Придерживание микрофона обязано **удерживать** сэмплы, а не сыпать нули.
+
+    Первая версия вставляла тишину в начало буфера, а тот вычерпывался до конца
+    в том же цикле: в поток подмешивалась тишина, но звук не задерживался ни на
+    сэмпл. На живом запуске это дало бесконечный рост задержки — правка
+    применялась, замер не менялся, за минуту упёрлись в предел, и AEC работал в
+    минус. Проверка «выход совпадает со входом» такое не ловит: при единственной
+    вставке в самом начале оба поведения неотличимы.
+
+    Ловится это счётом: у настоящей линии задержки выход **короче** входа ровно
+    на её длину.
+    """
+    wave = _noise(4 * RATE)
+    source = EchoCancellingSource(FakeMicrophone(wave), sample_rate=RATE, high_pass_hz=0.0)
+
+    out = await _drain(source)
+
+    held = len(wave) - len(out)
+    assert abs(held - DELAY) < 2 * FRAME, f"удержано {held} сэмплов вместо {DELAY}"
 
 
 @pytest.mark.asyncio
@@ -157,12 +192,13 @@ async def test_music_is_subtracted_from_the_microphone() -> None:
     source = EchoCancellingSource(
         FakeMicrophone(echo), sample_rate=RATE, residual=False, high_pass_hz=0.0
     )
+    source._source._before = _feeder(source, music)
 
-    out = await _drain(source, music)
+    out = await _drain(source)
 
     # Первые секунды фильтр только подбирает тракт — смотрим, к чему он пришёл.
     was = float(numpy.mean(echo[10 * RATE : 18 * RATE] ** 2))
-    left = float(numpy.mean(out[DELAY + 10 * RATE : DELAY + 18 * RATE] ** 2))
+    left = float(numpy.mean(out[BLOCK + 10 * RATE : BLOCK + 18 * RATE] ** 2))
     assert 10.0 * numpy.log10(was / left) > 20.0
 
 
@@ -225,15 +261,16 @@ async def test_microphone_is_held_back_when_the_reference_lags() -> None:
     source = EchoCancellingSource(
         FakeMicrophone(echo), sample_rate=RATE, residual=False, high_pass_hz=0.0
     )
+    source._source._before = _feeder(source, delayed)
 
-    out = await _drain(source, delayed)
+    out = await _drain(source)
 
     grown = source._delay
     assert grown > DELAY, f"задержка микрофона осталась прежней: {grown}"
     assert grown >= late + int(RATE * _KEEP_MS / 1000) - BLOCK, "придержали недостаточно"
 
     was = float(numpy.mean(echo[20 * RATE : 28 * RATE] ** 2))
-    left = float(numpy.mean(out[grown + 20 * RATE : grown + 28 * RATE] ** 2))
+    left = float(numpy.mean(out[BLOCK + 20 * RATE : BLOCK + 28 * RATE] ** 2))
     assert 10.0 * numpy.log10(was / left) > 15.0, "после правки эхо обязано уйти"
 
 

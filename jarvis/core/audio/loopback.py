@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import warnings
 from typing import Any, Callable
 
 import numpy
@@ -35,6 +36,50 @@ logger = logging.getLogger(__name__)
 #: Сколько сэмплов просить за один раз. При 16 кГц это 32 мс — вдвое больше
 #: блока обработки, чтобы поток захвата не дёргался на каждый чих.
 _CHUNK = 512
+
+#: Сколько ждать открытия записи, прежде чем ответить вызывающему.
+_OPEN_TIMEOUT_S = 3.0
+
+
+def _prepare_com() -> None:
+    """Разрешить потоку работать с COM.
+
+    В Windows это делается **на каждый поток**, а `soundcard` вызывает
+    инициализацию один раз при импорте — то есть в том потоке, который его
+    импортировал. Наш поток захвата про это ничего не знает.
+
+    Лезем во внутренности пакета намеренно: своей обёртки он не даёт, а тянуть
+    ради одного вызова ещё одну библиотеку незачем. Не получилось — не беда: на
+    не-Windows этого не нужно вовсе, а на Windows COM обычно уже поднят.
+    """
+    try:
+        from soundcard.mediafoundation import _ffi, _ole32
+
+        _ole32.CoInitializeEx(_ffi.NULL, 0)
+    except Exception:  # noqa: BLE001 — не Windows либо уже поднят
+        pass
+
+
+def _quiet_discontinuity_warnings() -> None:
+    """Убрать из консоли «data discontinuity in recording».
+
+    `soundcard` печатает это через `warnings.warn` на каждый пропуск в записи, а
+    пропуски у петлевого захвата — дело обычное: WASAPI отдаёт буфер по своему
+    расписанию, и любая заминка планировщика помечается этим флагом. За минуту
+    работы набегают десятки строк, и за ними перестаёт быть видно происходящее
+    (жалоба владельца от 01.08.2026: «засирает лог»).
+
+    Молча терять это всё же неправильно: пропуск означает потерянные сэмплы, то
+    есть съехавшее выравнивание. Поэтому предупреждение гасится, а следит за
+    последствиями `_realign` — он замечает сдвиг по самому звуку, что надёжнее
+    любого флага.
+    """
+    try:
+        from soundcard.mediafoundation import SoundcardRuntimeWarning
+
+        warnings.filterwarnings("ignore", category=SoundcardRuntimeWarning)
+    except Exception:  # noqa: BLE001 — не Windows либо пакета нет
+        pass
 
 
 def _import_soundcard() -> Any:
@@ -79,6 +124,7 @@ class LoopbackSource:
         self._on_audio = on_audio
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._opened = threading.Event()
         self._name = ""
         self._failed = ""
 
@@ -96,17 +142,19 @@ class LoopbackSource:
         """Открыть поток. `False` — не вышло, причина в `failure`."""
         if self._thread is not None:
             return True
-        try:
-            microphone = self._find()
-        except Exception as exc:  # noqa: BLE001
-            self._failed = f"{type(exc).__name__}: {exc}"
+        self._stop.clear()
+        self._opened.clear()
+        self._failed = ""
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="aec-loopback")
+        self._thread.start()
+        # Ждём недолго и только ради внятного ответа: и в логе при запуске, и в
+        # отчёте `--check-aec` разница между «опоры нет» и «опора есть» должна
+        # быть видна сразу, а не выясняться по отсутствию эффекта.
+        self._opened.wait(timeout=_OPEN_TIMEOUT_S)
+        if self._failed:
             logger.warning("Опорный сигнал недоступен (%s) — AEC работать не будет", self._failed)
             return False
-
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, args=(microphone,), daemon=True, name="aec-loopback")
-        self._thread.start()
-        logger.info("Опорный сигнал: %s", self._name)
+        logger.info("Опорный сигнал: %s", self._name or "устройство вывода по умолчанию")
         return True
 
     def stop(self) -> None:
@@ -127,15 +175,30 @@ class LoopbackSource:
         self._name = getattr(microphone, "name", str(microphone))
         return microphone
 
-    def _loop(self, microphone: Any) -> None:
-        """Поток захвата: пишет в обработчик, пока не попросят остановиться."""
+    def _loop(self) -> None:
+        """Поток захвата: пишет в обработчик, пока не попросят остановиться.
+
+        Устройство ищется **здесь же**, а не в вызывающем потоке, и это не
+        придирка: в Windows COM инициализируется на каждый поток отдельно, а
+        объекты WASAPI создаются и используются через него. Открыть запись в
+        одном потоке и читать её из другого — верный способ получить
+        `CO_E_NOTINITIALIZED` в самом неудобном месте.
+        """
         try:
+            _prepare_com()
+            _quiet_discontinuity_warnings()
+            microphone = self._find()
             # Два канала, а не один: микрофон слышит стерео сведённым по воздуху,
             # и среднее ближе к правде, чем один левый канал.
             with microphone.recorder(samplerate=self._rate, channels=2, blocksize=_CHUNK) as recorder:
+                self._opened.set()
                 while not self._stop.is_set():
                     block = recorder.record(numframes=_CHUNK)
                     self._on_audio(numpy.mean(numpy.asarray(block, dtype=numpy.float64), axis=1))
         except Exception as exc:  # noqa: BLE001
             self._failed = f"{type(exc).__name__}: {exc}"
             logger.warning("Захват опорного сигнала прервался (%s) — AEC выключен", self._failed)
+        finally:
+            # Разбудить ожидающего в любом случае: молчание тут читалось бы как
+            # «ещё открывается» и стоило бы полной паузы на пустом месте.
+            self._opened.set()

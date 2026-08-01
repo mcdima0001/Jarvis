@@ -72,8 +72,13 @@ _WORTH_FIXING = 2 * BLOCK
 #: фразы всё равно ждём 800 мс.
 _MIC_DELAY_MS = 200.0
 
-#: Насколько опора должна опережать микрофон. Это и есть цель подстройки.
+#: Насколько опора должна опережать микрофон. Это цель подстройки — но только
+#: тогда, когда подстраивать вообще приходится.
 _KEEP_MS = 150.0
+
+#: Меньше этого опережения уже опасно: замер плавает, и опора рискует уйти за
+#: микрофон, откуда её не достать. Выше — не трогаем, сколько бы ни было.
+_SAFE_LEAD_MS = 60.0
 
 #: Больше этого микрофон не придерживаем. Предохранитель на случай, когда сдвиг
 #: измерился неверно: лишняя задержка бьёт по отзывчивости, а бесконечная
@@ -210,9 +215,14 @@ class EchoCancellingSource:
         self._aec = EchoCanceller(sample_rate=sample_rate, tail_ms=tail_ms, residual=residual)
         self._track = ReferenceTrack(sample_rate=sample_rate)
         self._high_pass = HighPass(high_pass_hz, sample_rate) if high_pass_hz > 0 else None
-        # Начальные нули и есть линия задержки микрофона: кадры уходят в фильтр
-        # ровно на столько позже, на сколько её длина.
-        self._mic: numpy.ndarray = numpy.zeros(int(sample_rate * _MIC_DELAY_MS / 1000))
+        # Линия задержки микрофона. Она **удерживает** сэмплы, а не подсыпает
+        # тишину: в буфере всегда остаётся `_delay` штук, и в фильтр уходит то,
+        # что пришло на столько же раньше. Первая версия вставляла нули в
+        # начало — а буфер тут же вычерпывался до конца в том же цикле, так что
+        # в поток подмешивалась тишина, но звук не задерживался ни на сэмпл.
+        # На живом запуске это выглядело как бесконечный рост задержки: правка
+        # применялась, замер не менялся, и через минуту упёрлись в предел.
+        self._mic: numpy.ndarray = numpy.zeros(0)
         self._ready: numpy.ndarray = numpy.zeros(0)
         # История для измерения сдвига: держим ровно столько, сколько нужно.
         self._seen_mic: list[numpy.ndarray] = []
@@ -224,8 +234,13 @@ class EchoCancellingSource:
         self._reference: Any = None
         self._keep = int(sample_rate * _KEEP_MS / 1000)
         self._max_delay = int(sample_rate * _MAX_MIC_DELAY_MS / 1000)
+        self._safe = int(sample_rate * _SAFE_LEAD_MS / 1000)
+        # Дальше половины хвоста опору отпускать незачем: фильтру нужно место и
+        # под саму комнату, а не только под дорогу между потоками.
+        self._roomy = int(sample_rate * tail_ms / 2000)
         self._delay = int(sample_rate * _MIC_DELAY_MS / 1000)
         self._settled = False
+        self._rescales = 0
 
     @property
     def service_name(self) -> str:
@@ -277,7 +292,7 @@ class EchoCancellingSource:
                 wave = self._high_pass.process(wave)
             self._mic = numpy.concatenate((self._mic, wave))
 
-            while len(self._mic) >= BLOCK:
+            while len(self._mic) >= self._delay + BLOCK:
                 block, self._mic = self._mic[:BLOCK], self._mic[BLOCK:]
                 reference = self._track.take(BLOCK)
                 self._remember(block, reference)
@@ -329,6 +344,14 @@ class EchoCancellingSource:
         now = time.monotonic()
         if now - self._started < _WARMUP_S:
             return
+        # Пересборка фильтра по усилению означает, что тракт заметно изменился,
+        # — а рядом с петлевым захватом самая частая причина этого пропуск в
+        # записи, то есть потерянные сэмплы и съехавшее выравнивание. Значит,
+        # сдвиг стоит перемерить скоро, а не через минуту.
+        rescales = self._aec.stats().rescales
+        if rescales != self._rescales:
+            self._rescales = rescales
+            self._settled = False
         wait = _SETTLED_RECHECK_S if self._settled else _RECHECK_S
         if self._checked and now - self._checked < wait:
             return
@@ -346,17 +369,21 @@ class EchoCancellingSource:
         if sure < _SURE_ENOUGH:
             self._tell_once(shift, sure)
             return
-        # Цель — чтобы опора опережала микрофон ровно на `keep`.
-        off = shift - self._keep
-        if abs(off) < _WORTH_FIXING:
+        # Опора должна опережать микрофон, но **сколько именно — не важно**,
+        # лишь бы в пределах хвоста фильтра. Гнаться за точным числом нельзя:
+        # каждая правка сбрасывает подобранный тракт, а замер плавает на
+        # десятки миллисекунд, и на живом запуске это вылилось в правку каждые
+        # восемь секунд подряд. Поэтому есть полоса, внутри которой не трогаем.
+        if self._safe <= shift <= self._roomy:
             self._settled = True
             self._tell_once(shift, sure)
             return
+        off = shift - self._keep
 
         if off > 0:
             self._track.hold(off)
             logger.info(
-                "Опора опережала микрофон на %d мс — задержал её (уверенность %.2f)",
+                "Опора опережала микрофон на %d мс — многовато, задержал её (уверенность %.2f)",
                 shift * 1000 // self._rate,
                 sure,
             )
@@ -364,18 +391,17 @@ class EchoCancellingSource:
             added = min(-off, self._max_delay - self._delay)
             if added <= 0:
                 logger.warning(
-                    "Опора отстаёт от микрофона на %d мс, а придерживать его дальше некуда. "
-                    "Эхоподавление работать не будет: проверь audio.aec.reference",
-                    -shift * 1000 // self._rate,
+                    "Опора опережает микрофон лишь на %d мс, а придерживать его дальше "
+                    "некуда. Эхоподавление работать не будет: проверь audio.aec.reference",
+                    shift * 1000 // self._rate,
                 )
                 self._settled = True
                 return
-            self._mic = numpy.concatenate((numpy.zeros(added), self._mic))
             self._delay += added
             logger.info(
-                "Опора отставала от микрофона на %d мс — придержал микрофон, "
+                "Опора опережала микрофон всего на %d мс — придержал микрофон, "
                 "теперь задержка %d мс (уверенность %.2f)",
-                -shift * 1000 // self._rate,
+                shift * 1000 // self._rate,
                 self._delay * 1000 // self._rate,
                 sure,
             )
