@@ -6,7 +6,9 @@ import time
 
 import pytest
 
-from jarvis.core.audio import AudioFrame, EnergyVAD, frame_rms
+from pathlib import Path
+
+from jarvis.core.audio import AudioFrame, EnergyVAD, SileroVAD, frame_rms
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import AudioConfig, VADConfig, WakeWordConfig
 from jarvis.core.contracts import ToolResult, Utterance
@@ -697,3 +699,127 @@ async def test_check_starts_neither_half() -> None:
 
     assert (ears.started, voice.started) == (0, 0)
     await runner.stop_all()
+
+
+# --- Silero VAD -------------------------------------------------------------
+
+
+class _FakeInput:
+    """Описание входа модели: у настоящего интерфейса важно только имя."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeSession:
+    """Модель, которая отдаёт заранее заданные вероятности речи."""
+
+    def __init__(self, probabilities: list[float]) -> None:
+        self._probabilities = probabilities
+        self.calls = 0
+
+    def get_inputs(self) -> list[_FakeInput]:
+        """Пятая версия Silero: звук, состояние и частота."""
+        return [_FakeInput("input"), _FakeInput("state"), _FakeInput("sr")]
+
+    def run(self, _outputs, feed):  # type: ignore[no-untyped-def]
+        """Вернуть очередную вероятность и то же состояние."""
+        assert feed["input"].shape == (1, 512), "модель принимает ровно 512 сэмплов"
+        index = min(self.calls, len(self._probabilities) - 1)
+        self.calls += 1
+        return [[[self._probabilities[index]]], feed["state"]]
+
+
+def _silero(monkeypatch, tmp_path, probabilities: list[float], threshold: float = 0.5):
+    """Собрать SileroVAD на подставной модели."""
+    import sys
+    import types
+
+    session = _FakeSession(probabilities)
+    fake = types.ModuleType("onnxruntime")
+    fake.SessionOptions = lambda: types.SimpleNamespace(  # type: ignore[attr-defined]
+        inter_op_num_threads=0, intra_op_num_threads=0
+    )
+    fake.InferenceSession = lambda *a, **kw: session  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+
+    model = tmp_path / "silero_vad.onnx"
+    model.write_bytes(b"")
+    return SileroVAD(model, sample_rate=16000, threshold=threshold), session
+
+
+def test_silero_regroups_frames_into_its_own_chunks(monkeypatch, tmp_path) -> None:
+    """Кадр 30 мс — это 480 сэмплов, а модель берёт 512.
+
+    Пересборка живёт внутри детектора: `audio.frame_ms` — настройка захвата, и
+    подгонять её под чужую модель неправильно. Побочное следствие: часть кадров
+    вывода не даёт, и ответ на них — прежнее решение.
+    """
+    vad, session = _silero(monkeypatch, tmp_path, [0.9])
+
+    assert not vad.is_speech(_frame(3000)), "480 сэмплов модели ещё мало"
+    assert session.calls == 0
+    assert vad.is_speech(_frame(3000)), "960 сэмплов — есть полный кусок"
+    assert session.calls == 1
+
+
+def _chunk_frame() -> AudioFrame:
+    """Кадр ровно в один кусок модели — чтобы кадры и вероятности совпадали."""
+    import array
+
+    return AudioFrame(data=array.array("h", [3000] * 512).tobytes(), sample_rate=16000)
+
+
+def test_silero_holds_speech_through_short_pauses(monkeypatch, tmp_path) -> None:
+    """Гистерезис: пауза между словами не считается концом фразы.
+
+    Без него одна фраза разваливалась бы на куски по числу вдохов, и каждый
+    кусок уезжал бы в Whisper отдельно.
+    """
+    vad, _ = _silero(monkeypatch, tmp_path, [0.9, 0.4, 0.1], threshold=0.5)
+
+    frames = [vad.is_speech(_chunk_frame()) for _ in range(3)]
+
+    assert frames[0], "громкая уверенность — речь началась"
+    assert frames[1], "0.4 ниже порога, но выше отпускания — держим"
+    assert not frames[2], "0.1 — речь кончилась"
+
+
+def test_silero_forgets_everything_between_phrases(monkeypatch, tmp_path) -> None:
+    """После фразы состояние сети и недобранный хвост сбрасываются."""
+    vad, session = _silero(monkeypatch, tmp_path, [0.9])
+
+    vad.is_speech(_frame(3000))
+    vad.reset()
+
+    assert not vad.is_speech(_frame(3000)), "хвост прошлой фразы не копится"
+    assert session.calls == 0
+
+
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parent.parent / "models/vad/silero_vad.onnx").is_file(),
+    reason="модель Silero VAD не скачана",
+)
+def test_silero_does_not_hear_speech_in_noise() -> None:
+    """Главное отличие от энергетического: громкое ещё не значит «речь».
+
+    Белый шум такой громкости энергетический пропускает как речь — именно так
+    музыка и набивала очередь распознавания. Тест идёт на настоящей модели,
+    поэтому пропускается, пока её не скачали.
+    """
+    import array
+    import random
+
+    model = Path(__file__).resolve().parent.parent / "models/vad/silero_vad.onnx"
+    silero = SileroVAD(model, sample_rate=16000)
+    energy = EnergyVAD(threshold=0.05)
+    random.seed(1)
+
+    def noise() -> AudioFrame:
+        data = array.array("h", [random.randint(-6000, 6000) for _ in range(480)])
+        return AudioFrame(data=data.tobytes(), sample_rate=16000)
+
+    frames = [noise() for _ in range(40)]
+
+    assert any(energy.is_speech(f) for f in frames), "громкость шума высокая"
+    assert not any(silero.is_speech(f) for f in frames), "но речи в нём нет"

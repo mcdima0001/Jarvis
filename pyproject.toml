@@ -20,6 +20,10 @@ xtts = ["coqui-tts>=0.27", "torch>=2.0", "torchaudio", "torchcodec",
         "transformers>=4.57,<5.0"]
 edge = ["edge-tts>=6.1", "av>=11.0"]
 audio = ["sounddevice>=0.4"]
+# Silero VAD: детектор речи вместо энергетического. Модель качается сама,
+# считает на процессоре и весит 2 МБ. onnxruntime обычно уже стоит — его
+# тянет faster-whisper ради своего фильтра тишины.
+vad = ["onnxruntime>=1.17", "numpy>=1.24"]
 # Telegram от своего аккаунта: боту чужие чаты не покажут.
 telegram = ["telethon>=1.36"]
 # Громкость на Windows: остальное в скилле обходится стандартной библиотекой.

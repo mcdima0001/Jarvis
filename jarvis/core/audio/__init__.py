@@ -12,6 +12,7 @@ from .devices import SoundDeviceSink, SoundDeviceSource, list_devices
 from .null import AlwaysActiveWakeWord, NullAudioSink, NullAudioSource, PassthroughVAD
 from .sound import load_sound, trim_silence
 from .protocol import VAD, AudioFrame, AudioSink, AudioSource, WakeWord
+from .silero import SileroVAD
 from .vad import EnergyVAD, frame_rms
 
 logger = logging.getLogger(__name__)
@@ -32,17 +33,40 @@ class AudioStack:
         return not isinstance(self.source, NullAudioSource)
 
 
+def _energy_vad(config: AudioConfig) -> EnergyVAD:
+    """Энергетический детектор — он же запасной для всех остальных."""
+    return EnergyVAD(
+        threshold=config.vad.threshold,
+        calibrate_frames=max(1, int(config.vad.calibrate_seconds * 1000 / config.frame_ms)),
+    )
+
+
 def _build_vad(config: AudioConfig) -> VAD:
     """Выбрать детектор речи по конфигу."""
     if config.vad.engine in ("", "none", "null"):
         return PassthroughVAD()
     if config.vad.engine == "energy":
-        return EnergyVAD(
-            threshold=config.vad.threshold,
-            calibrate_frames=max(1, int(config.vad.calibrate_seconds * 1000 / config.frame_ms)),
-        )
+        return _energy_vad(config)
+    if config.vad.engine == "silero":
+        try:
+            from jarvis.core.assets import ensure_vad_model
+
+            return SileroVAD(
+                ensure_vad_model(config.vad.models_dir),
+                sample_rate=config.sample_rate,
+                threshold=config.vad.threshold,
+            )
+        except Exception as exc:  # noqa: BLE001 — нет модели, сети или onnxruntime
+            # Остаться без детектора хуже, чем остаться с грубым: без него
+            # Whisper молотит на любом шуме.
+            logger.warning(
+                "Silero VAD не поднялся (%s: %s) — беру энергетический",
+                type(exc).__name__,
+                exc,
+            )
+            return _energy_vad(config)
     logger.warning(
-        "Неизвестный движок VAD %r — пропускаю весь звук. Доступен: energy",
+        "Неизвестный движок VAD %r — пропускаю весь звук. Доступны: energy, silero",
         config.vad.engine,
     )
     return PassthroughVAD()
@@ -115,6 +139,7 @@ __all__ = [
     "NullAudioSink",
     "NullAudioSource",
     "PassthroughVAD",
+    "SileroVAD",
     "SoundDeviceSink",
     "SoundDeviceSource",
     "WakeWord",
