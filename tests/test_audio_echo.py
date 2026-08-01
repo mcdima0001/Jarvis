@@ -15,6 +15,7 @@ import pytest
 
 from jarvis.core.audio.aec import BLOCK, to_float, to_pcm
 from jarvis.core.audio.echo import _MIC_DELAY_MS, EchoCancellingSource, ReferenceTrack
+from jarvis.core.audio.loopback import LoopbackSource
 from jarvis.core.audio.protocol import AudioFrame
 
 RATE = 16000
@@ -203,3 +204,18 @@ async def test_missing_capture_is_not_a_failure() -> None:
     await source.stop()
 
     assert (microphone.started, microphone.stopped) == (1, 1)
+
+
+def test_missing_soundcard_is_reported_not_raised() -> None:
+    """Нет пакета для петлевого захвата — это отказ с причиной, а не падение.
+
+    Проверка идёт ровно на той машине, где `soundcard` не установлен: на
+    сервере. Ассистент без AEC работает хуже, а упавший из-за звуковой
+    библиотеки не работает вовсе.
+    """
+    heard: list[numpy.ndarray] = []
+    capture = LoopbackSource(sample_rate=RATE, device=None, on_audio=heard.append)
+
+    assert capture.start() is False
+    assert capture.failure, "причина обязана попасть наружу"
+    capture.stop()
