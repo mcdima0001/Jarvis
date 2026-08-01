@@ -48,6 +48,7 @@ def _pipeline(
     persona: Persona | None = None,
     tts: NullTTS | None = None,
     wake_word: object | None = None,
+    modes: object | None = None,
     **wake: object,
 ) -> VoicePipeline:
     """Собрать конвейер с заглушками вместо звука."""
@@ -76,6 +77,7 @@ def _pipeline(
         events=events,
         config=config,
         persona=persona,
+        modes=modes,  # type: ignore[arg-type]
     )
 
 
@@ -976,3 +978,118 @@ async def test_assistant_says_it_is_about_to_speak(
 
     assert said == ["AssistantSpeaking"], "предупредить надо до синтеза"
     assert order == ["AssistantSpeaking", "AssistantReplied"]
+
+
+# --- режим «не слушаю» ------------------------------------------------------
+#
+# Гейт стоит в конвейере, а не в инструменте, и это принципиально: реплика,
+# остановленная здесь, не стоит ни ожидания, ни токена. Проверка в инструменте
+# случилась бы уже после роутера, то есть после платного разбора моделью.
+
+
+def test_deaf_mode_drops_ordinary_commands(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """В режиме «не слушаю» обычная команда до роутера не доходит."""
+    from jarvis.core.state import DEAF, Modes
+
+    modes = Modes()
+    pipe = _pipeline(registry, events, modes=modes)
+
+    assert pipe._extract_command("джарвис, включи свет") == "включи свет"
+
+    modes.on(DEAF, minutes=30)
+    assert pipe._extract_command("джарвис, включи свет") is None
+    assert pipe._extract_command("включи свет") is None
+    # И само имя больше ничего не открывает: голое «Джарвис» тоже мимо.
+    assert pipe._extract_command("джарвис") is None
+
+
+def test_deaf_mode_lets_the_wake_phrase_through(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Выход из режима обязан существовать, иначе это не режим, а поломка.
+
+    Фраза проходит гейт как обычная команда — дальше её узнаёт резолвер фраз и
+    зовёт `core.as_usual`. Отдельного пути для пробуждения нет намеренно.
+    """
+    from jarvis.core.state import DEAF, Modes
+
+    modes = Modes()
+    modes.on(DEAF, minutes=30)
+    pipe = _pipeline(registry, events, modes=modes)
+
+    assert pipe._extract_command("джарвис, проснись") == "проснись"
+    assert pipe._extract_command("джарвис, как обычно") == "как обычно"
+
+
+def test_waking_up_requires_the_name(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Гейт строже обычного, а не мягче: без имени не будим.
+
+    Иначе случайное «слушай» в разговоре рядом поднимало бы ассистента ровно
+    тогда, когда его просили помолчать.
+    """
+    from jarvis.core.state import DEAF, Modes
+
+    modes = Modes()
+    modes.on(DEAF, minutes=30)
+    pipe = _pipeline(registry, events, modes=modes)
+
+    assert pipe._extract_command("проснись") is None
+    assert pipe._extract_command("джарвис, проснись") == "проснись"
+
+
+async def test_deaf_mode_does_not_duck_the_music(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Имя, услышанное в режиме молчания, не дёргает громкость.
+
+    Событие о распознанном имени приглушает музыку. Пока ассистент молчит,
+    приглушать её незачем — а слышит своё имя он всё так же часто.
+    """
+    from jarvis.core.state import DEAF, Modes
+
+    heard: list[object] = []
+
+    async def note(event: object) -> None:
+        heard.append(event)
+
+    events.subscribe("voice.wake_word.detected", note)
+
+    modes = Modes()
+    pipe = _pipeline(registry, events, modes=modes)
+
+    pipe._on_name_heard()
+    await asyncio.sleep(0.01)
+    assert len(heard) == 1
+    assert pipe._follow_up_until > 0
+
+    modes.on(DEAF, minutes=30)
+    pipe._follow_up_until = 0.0
+    pipe._on_name_heard()
+    await asyncio.sleep(0.01)
+
+    assert len(heard) == 1, "в режиме молчания имя ничего не сообщает"
+    assert pipe._follow_up_until == 0.0, "и окна ответа не открывает"
+
+
+def test_expired_deaf_mode_restores_hearing(
+    registry: ToolRegistry, events: LocalEventBus, monkeypatch
+) -> None:
+    """Срок вышел — команды снова проходят, и никто для этого ничего не делал."""
+    import time as clock_module
+
+    from jarvis.core.state import DEAF, Modes
+
+    clock = [1000.0]
+    monkeypatch.setattr(clock_module, "monotonic", lambda: clock[0])
+
+    modes = Modes()
+    modes.on(DEAF, minutes=30)
+    pipe = _pipeline(registry, events, modes=modes)
+    assert pipe._extract_command("джарвис, включи свет") is None
+
+    clock[0] += 31 * 60
+    assert pipe._extract_command("джарвис, включи свет") == "включи свет"

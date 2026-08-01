@@ -27,6 +27,8 @@ from jarvis.core.llm import LLMService
 from jarvis.core.tools import ToolRegistry
 
 if TYPE_CHECKING:  # только для типов: резолверы друг о друге знать не обязаны
+    from jarvis.core.situation import Situation
+
     from .learned import LearnedResolver
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,7 @@ class LLMResolver:
         *,
         tasks: tuple[str, ...] = ("intent",),
         learner: "LearnedResolver | None" = None,
+        situation: "Situation | None" = None,
     ) -> None:
         self._registry = registry
         self._llm = llm
@@ -49,6 +52,9 @@ class LLMResolver:
         self._tasks = tuple(tasks) or ("intent",)
         #: У него же спрашиваем, что для этой просьбы уже отвергли.
         self._learner = learner
+        #: Обстановка для подсказки. Без неё модель разбирает фразу вслепую:
+        #: не зная ни времени, ни того, что открыто, ни что было минуту назад.
+        self._situation = situation
 
     @property
     def name(self) -> str:
@@ -77,6 +83,10 @@ class LLMResolver:
                     ", ".join(avoid),
                 )
 
+        situation = self._situation.describe(utterance.language) if self._situation else ""
+        if situation:
+            logger.debug("Обстановка для модели: %s", situation)
+
         call = None
         for attempt, task in enumerate(self._tasks):
             if attempt:
@@ -86,7 +96,7 @@ class LLMResolver:
                     utterance.text,
                 )
             call = await self._llm.extract_intent(
-                utterance.text, catalog, task=task, avoid=avoid
+                utterance.text, catalog, task=task, avoid=avoid, situation=situation
             )
             if call is not None:
                 break

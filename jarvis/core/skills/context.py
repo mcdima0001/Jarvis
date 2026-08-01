@@ -20,6 +20,8 @@ from .scope import SkillScope
 if TYPE_CHECKING:  # только для типов — реальных зависимостей не создаём
     from jarvis.core.llm import LLMService
     from jarvis.core.memory import Memory
+    from jarvis.core.situation import Situation
+    from jarvis.core.state import Modes
     from jarvis.core.tts import TTS
 
 
@@ -29,6 +31,12 @@ class SkillContext:
 
     :param config: секция ``skills.settings.<имя>`` из config.yaml.
     :param scope: через него регистрируются инструменты, подписки и задачи.
+    :param modes: состояние, которое живёт между командами. Скилл его читает
+        («меня просили не трогать музыку») и при желании ставит сам.
+    :param situation: куда положить факт о происходящем, который скилл узнал по
+        дороге. Оттуда он попадёт в подсказку модели при разборе следующей
+        фразы. Класть только то, что уже известно: ходить за фактом специально
+        нельзя, это добавит ожидание к каждой команде.
     """
 
     skill: str
@@ -41,6 +49,8 @@ class SkillContext:
     tts: "TTS"
     scope: SkillScope
     root: Path
+    modes: "Modes"
+    situation: "Situation"
 
     def setting(self, key: str, default: Any = None) -> Any:
         """Достать значение из конфига скилла."""

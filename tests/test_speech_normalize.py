@@ -172,3 +172,33 @@ def test_currency_read_after_number() -> None:
 def test_english_voice_keeps_digits() -> None:
     """Английскому движку цифры чистить не надо — он их читает сам."""
     assert normalize_for_speech("22 degrees", language="en") == "22 degrees"
+
+
+def test_feminine_nouns_agree_with_the_numeral() -> None:
+    """«21 минут» голос читает как «двадцать один минут», и это слышно сразу.
+
+    Род числительного задаёт не само число, а существительное следом, поэтому
+    оно и подсматривается. Понадобится это не только режимам: следующая же
+    просьба — «напомни через 21 минуту».
+    """
+    from jarvis.core.tts.normalize import normalize_for_speech
+
+    assert normalize_for_speech("Не слушаю 21 минуту.") == "Не слушаю двадцать одну минуту."
+    assert normalize_for_speech("Не слушаю 22 минуты.") == "Не слушаю двадцать две минуты."
+    assert normalize_for_speech("Через 41 секунду.") == "Через сорок одну секунду."
+
+
+def test_accusative_differs_only_in_one_word() -> None:
+    """«Прошла одна минута», но «подожди одну минуту» — падеж виден по слову."""
+    from jarvis.core.tts.normalize import normalize_for_speech
+
+    assert normalize_for_speech("Осталась 1 минута.") == "Осталась одна минута."
+    assert normalize_for_speech("Подожди 1 минуту.") == "Подожди одну минуту."
+
+
+def test_masculine_nouns_are_left_alone() -> None:
+    """Подсматривание вперёд не должно чинить то, что и так было верно."""
+    from jarvis.core.tts.normalize import normalize_for_speech
+
+    assert "двадцать один градус" in normalize_for_speech("21 градус на улице")
+    assert "двадцать два процента" in normalize_for_speech("22 процента")

@@ -130,7 +130,7 @@ def test_dialog_prompt_carries_current_date() -> None:
     """
     from datetime import datetime
 
-    from jarvis.core.builtin import _now_line
+    from jarvis.core.situation import now_line as _now_line
 
     today = datetime.now().astimezone()
     line = _now_line("ru")

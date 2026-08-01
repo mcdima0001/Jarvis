@@ -248,6 +248,7 @@ class LLMService:
         *,
         task: str = "intent",
         avoid: Sequence[str] = (),
+        situation: str = "",
     ) -> ToolCall | None:
         """Определить, какой инструмент вызвать для реплики.
 
@@ -257,6 +258,9 @@ class LLMService:
         :param avoid: инструменты, которые для этой просьбы уже пробовали и
             которые владелец отверг. Модели о них говорится прямо: иначе она
             уверенно предложит то же самое, и отмена окажется бессмысленной.
+        :param situation: что происходит прямо сейчас — время, режимы, открытый
+            сайт (см. `core/situation.py`). Половина «он не понял» — это не
+            непонятая фраза, а фраза, понятая вслепую.
         """
         schemas = catalog.function_schemas()
         if not schemas:
@@ -269,9 +273,16 @@ class LLMService:
                 f"{', '.join(avoid)}. Выбери другой инструмент."
             )
 
+        # Обстановка идёт в системное сообщение, а не в вопрос: вопрос — это то,
+        # что сказал человек, и подмешивать туда служебное значило бы кормить
+        # модель фразой, которой не звучало.
+        system = _INTENT_SYSTEM
+        if situation:
+            system = f"{system}\n\nЧто происходит сейчас: {situation}"
+
         try:
             response = await self.complete(
-                [Message.system(_INTENT_SYSTEM), Message.user(question)],
+                [Message.system(system), Message.user(question)],
                 task=task,
                 tools=schemas,
                 tool_choice="auto",

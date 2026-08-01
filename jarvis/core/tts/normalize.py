@@ -245,11 +245,16 @@ def _triple_to_words(value: int, *, female: bool) -> list[str]:
     return words
 
 
-def number_to_words(value: int) -> str:
+def number_to_words(value: int, *, female: bool = False) -> str:
     """Записать целое число словами.
 
     Нужно не для красоты: у модели Vosk в алфавите нет цифр, и «22» роняет
     синтез так же, как кавычка-ёлочка.
+
+    :param female: читать единицы в женском роде — «двадцать одна минута»
+        вместо «двадцать один минута». Разряды свой род знают сами (тысяча
+        женского рода всегда), а вот последняя группа зависит от того, к чему
+        число относится, и по самому числу этого не узнать.
     """
     if value == 0:
         return _ONES[0]
@@ -272,8 +277,12 @@ def number_to_words(value: int) -> str:
         group = groups[index]
         if not group:
             continue
-        forms, female = _SCALES[index]
-        words.extend(_triple_to_words(group, female=female))
+        forms, scale_female = _SCALES[index]
+        # Род последней группы задаёт не разряд, а то существительное, которое
+        # идёт следом: «двадцать одна минута», но «двадцать один градус».
+        words.extend(
+            _triple_to_words(group, female=scale_female or (female and index == 0))
+        )
         if forms[0]:
             words.append(plural_form(group, forms))
 
@@ -353,11 +362,35 @@ def _spell_ordinal(match: re.Match[str]) -> str:
     return ordinal_to_words(int(match.group(1)), ending=match.group(2))
 
 
+#: Существительные женского рода, которые в речи ассистента стоят при числах.
+#: «21 минут» голос читает как «двадцать один минут» — и это слышно сразу.
+#: Список короткий намеренно: сюда попадает только то, что мы правда говорим.
+_FEMALE_NOUNS = ("минут", "секунд", "недел", "тысяч", "сотн", "тонн")
+
+
+def _following_noun(text: str, at: int) -> str:
+    """Слово сразу за числом; пусто, если там не слово."""
+    tail = text[at:]
+    if not tail[:1].isspace():
+        return ""
+    match = re.match(r"\s+([^\W\d_]+)", tail)
+    return match.group(1).lower() if match else ""
+
+
 def _spell_number(match: re.Match[str]) -> str:
     """Заменить найденное число его словесной записью."""
     raw = match.group(0)
     whole, _, fraction = raw.replace(",", ".").partition(".")
-    words = number_to_words(int(whole))
+
+    # Заглядываем на слово вперёд: род и падеж числительного задаёт оно.
+    noun = _following_noun(match.string, match.end())
+    female = any(noun.startswith(stem) for stem in _FEMALE_NOUNS)
+    words = number_to_words(int(whole), female=female)
+    # Винительный падеж отличается от именительного ровно в одном слове:
+    # «прошла одна минута», но «подожди одну минуту». Само существительное уже
+    # стоит в нужной форме — по нему и определяем.
+    if female and words.endswith("одна") and noun.endswith(("у", "ю")):
+        words = words[: -len("одна")] + "одну"
     if fraction:
         # «22.5» читаем как «двадцать два запятая пять» — так же, как говорят.
         words += " запятая " + " ".join(_ONES[int(digit)] for digit in fraction)

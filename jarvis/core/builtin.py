@@ -11,13 +11,15 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import time
 from typing import TYPE_CHECKING
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.llm import LLMService
 from jarvis.core.memory import Memory
 from jarvis.core.persona import Persona
+from jarvis.core.situation import Situation
+from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, minutes_word
 from jarvis.core.tools import ToolRegistry, tool
 
 if TYPE_CHECKING:
@@ -58,37 +60,21 @@ _DIALOG_SYSTEM = {
 }
 
 
-#: Дни недели: у модели даты нет, а «какой сегодня день» спрашивают постоянно.
-_WEEKDAYS = {
-    "ru": ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"),
-    "en": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+#: Что дописывается к подсказке в режиме «отвечай коротко».
+_BRIEF_SYSTEM = {
+    "ru": "Сейчас просили отвечать коротко: уложись в одно предложение.",
+    "en": "You were asked to keep it short: answer in a single sentence.",
 }
 
-_MONTHS_RU = ("января", "февраля", "марта", "апреля", "мая", "июня",
-              "июля", "августа", "сентября", "октября", "ноября", "декабря")
+#: Сколько длится «не слушай», если срок не назвали. Полчаса — то, что обычно
+#: и имеют в виду; ошибиться в эту сторону безопаснее, чем оглохнуть навсегда.
+DEFAULT_SLEEP_MINUTES = 30
 
 
 def _language(code: str | None) -> str:
     """Привести код языка к короткому виду с откатом на русский."""
     short = (code or "ru").split("-")[0].lower()
     return short if short in _DIALOG_SYSTEM else "ru"
-
-
-def _now_line(code: str) -> str:
-    """Строка с текущей датой и временем для системной подсказки.
-
-    Модель не знает, какой сегодня день: её знания заканчиваются на дате
-    обучения, а часов у неё нет. Без этой строки на «какой сегодня день» она
-    честно выдумывает.
-    """
-    now = datetime.now().astimezone()
-    weekday = _WEEKDAYS[code][now.weekday()]
-    if code == "ru":
-        return (
-            f"Сейчас {now.day} {_MONTHS_RU[now.month - 1]} {now.year} года, "
-            f"{weekday}, {now:%H:%M}."
-        )
-    return f"Current date and time: {weekday}, {now:%d %B %Y, %H:%M}."
 
 
 class CoreTools:
@@ -103,6 +89,8 @@ class CoreTools:
         skills: "SkillManager",
         persona: Persona | None = None,
         learner: "LearnedResolver | None" = None,
+        modes: Modes | None = None,
+        situation: Situation | None = None,
     ) -> None:
         self._llm = llm
         self._memory = memory
@@ -110,6 +98,13 @@ class CoreTools:
         self._skills = skills
         self._persona = persona or Persona()
         self._learner = learner
+        #: Режимы и обстановка приходят снаружи: их же читают конвейер, скиллы
+        #: и резолвер модели. Свои завести здесь означало бы два разных
+        #: состояния с одним смыслом.
+        self._modes = modes if modes is not None else Modes()
+        self._situation = (
+            situation if situation is not None else Situation(modes=self._modes)
+        )
 
     @tool(name="chat")
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
@@ -135,10 +130,15 @@ class CoreTools:
             journals=("today",),
             journal_limit=5,
         )
+        system = f"{_DIALOG_SYSTEM[code]} {self._persona.style(code)}"
+        if self._modes.active(BRIEF):
+            system = f"{system} {_BRIEF_SYSTEM[code]}"
+        # Обстановка вместо одной только даты: разговор тоже выигрывает от того,
+        # что ассистент знает, в каком он режиме и что делал минуту назад.
         answer = await self._llm.ask(
             text,
             task="dialog",
-            system=f"{_DIALOG_SYSTEM[code]} {self._persona.style(code)} {_now_line(code)}",
+            system=f"{system} {self._situation.describe(code)}",
             context=context or None,
         )
         await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))
@@ -253,6 +253,150 @@ class CoreTools:
                       f"{len(self._registry)} commands.{cost}",
             }
         return ToolResult.success(payload, speech=speech)
+
+    # --- режимы ------------------------------------------------------------
+    #
+    # Просьбы вроде «полчаса не слушай» — не действия, а поведение на время, и
+    # выразить их каталогом из одних глаголов было нечем. Механизм лежит в
+    # `core/state.py`; здесь только способы включить и выключить голосом.
+
+    @tool(
+        name="sleep",
+        # Окончание у «минуты» своё на каждое число («21 минуту», «22 минуты»,
+        # «30 минут»), а шаблон сравнивается целиком — отсюда три написания на
+        # глагол. Выглядит избыточно, стоит того: без них каждая просьба с
+        # числом уезжает в платную модель. Остальные формулировки ей и
+        # достанутся — один раз, дальше их запомнит резолвер `learned`.
+        phrases=[
+            "не слушай", "не слушай меня", "не реагируй", "поспи", "отдохни",
+            "помолчи", "спи", "не слушай полчаса", "поспи полчаса",
+            "полчаса не слушай", "не слушай меня полчаса",
+            "не слушай {minutes} минут", "не слушай {minutes} минуты",
+            "не слушай {minutes} минуту",
+            "поспи {minutes} минут", "поспи {minutes} минуты",
+            "поспи {minutes} минуту",
+            "stop listening", "go to sleep", "don't listen",
+            "stop listening for {minutes} minutes",
+        ],
+    )
+    async def sleep(self, minutes: int = DEFAULT_SLEEP_MINUTES) -> ToolResult:
+        """Перестать принимать команды на заданное время.
+
+        Ассистент продолжает работать, но всё услышанное пропускает мимо: до
+        роутера не доходит ничего, а значит и денег это не стоит. Вернуть
+        обратно можно в любой момент — фразой «Джарвис, проснись».
+
+        :param minutes: сколько молчать; 0 — пока не скажут иначе.
+        """
+        span = max(0, minutes)
+        self._modes.on(DEAF, minutes=span)
+        # Способ вернуться называется вслух намеренно: режим этот выключает
+        # ассистента целиком, и человек должен услышать, чем его включить
+        # обратно, — иначе выглядит как поломка.
+        if span:
+            speech = {
+                "ru": (
+                    f"Не слушаю {span} {minutes_word(span)}. "
+                    f"Скажи «Джарвис, проснись», если понадоблюсь раньше.",
+                    f"Молчу {span} {minutes_word(span)}. "
+                    f"Позови «Джарвис, проснись», когда буду нужен.",
+                ),
+                "en": (
+                    f"Not listening for {span} minutes. "
+                    f"Say “Jarvis, wake up” to bring me back.",
+                ),
+            }
+        else:
+            speech = {
+                "ru": (
+                    "Не слушаю, пока не скажешь «Джарвис, проснись».",
+                    "Молчу до тех пор, пока не позовёшь: «Джарвис, проснись».",
+                ),
+                "en": ("Not listening until you say “Jarvis, wake up”.",),
+            }
+        return ToolResult.success({"mode": DEAF, "minutes": span}, speech=speech)
+
+    @tool(
+        name="be_brief",
+        phrases=[
+            "отвечай покороче", "покороче", "отвечай коротко", "говори короче",
+            "короче отвечай", "be brief", "keep it short", "shorter answers",
+        ],
+    )
+    async def be_brief(self, minutes: int = 0) -> ToolResult:
+        """Отвечать короче обычного — одним предложением.
+
+        :param minutes: на сколько; 0 — пока не скажут иначе.
+        """
+        self._modes.on(BRIEF, minutes=max(0, minutes))
+        return ToolResult.success(
+            {"mode": BRIEF, "minutes": max(0, minutes)},
+            speech={
+                "ru": ("Буду краток.", "Понял, коротко."),
+                "en": ("I'll keep it short.", "Understood, briefly."),
+            },
+        )
+
+    @tool(name="as_usual", phrases=list(WAKE_PHRASES), routable=False)
+    async def as_usual(self) -> ToolResult:
+        """Вернуться к обычному поведению: выключить все режимы разом.
+
+        Один выключатель на всё, а не по инструменту на режим. Причин две.
+        Голосом неудобно вспоминать, какой именно режим мешает, — «как обычно»
+        говорят про всё сразу. И каталог инструментов уезжает в модель на каждой
+        неузнанной фразе, то есть каждый лишний инструмент — это деньги на
+        каждой фразе.
+
+        В каталог для модели он не идёт намеренно: в режиме «не слушаю» до
+        роутера вообще ничего не доходит, кроме фраз пробуждения, и они
+        сверяются буквально.
+        """
+        was = self._modes.clear()
+        if not was:
+            return ToolResult.success(
+                [],
+                speech={
+                    "ru": ("Я и так в обычном режиме.", "Ничего и не включено."),
+                    "en": ("I'm already in the usual mode.",),
+                },
+            )
+        return ToolResult.success(
+            [mode.name for mode in was],
+            speech={
+                "ru": ("Снова слушаю, сэр.", "Вернулся к обычной работе."),
+                "en": ("Listening again, sir.", "Back to normal."),
+            },
+        )
+
+    @tool(
+        name="modes",
+        phrases=["какие режимы", "в каком ты режиме", "какой режим",
+                 "что у тебя включено", "what mode are you in", "active modes"],
+        routable=False,
+    )
+    async def modes(self) -> ToolResult:
+        """Перечислить включённые режимы.
+
+        Режим меняет поведение молча и надолго — ровно тот случай, когда
+        состояние обязано быть видимым. Иначе «почему он не отвечает» разбирать
+        нечем.
+        """
+        active = self._modes.all()
+        listed = self._modes.describe("ru")
+        listed_en = self._modes.describe("en")
+        if not active:
+            return ToolResult.success(
+                [],
+                speech={
+                    "ru": ("Работаю как обычно.", "Никаких особых режимов."),
+                    "en": ("Working as usual.",),
+                },
+            )
+        now = time.monotonic()
+        return ToolResult.success(
+            [{"name": mode.name, "seconds": round(mode.remaining(now))} for mode in active],
+            speech={"ru": f"Сейчас: {listed}.", "en": f"Right now: {listed_en}."},
+        )
 
     @tool(
         name="forget_last",

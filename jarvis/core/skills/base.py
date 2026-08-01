@@ -25,13 +25,17 @@ from __future__ import annotations
 import sys
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from jarvis.core.bus import EventBus
 from jarvis.core.errors import SkillError
 from jarvis.core.tools import ToolRegistry
 
 from .context import SkillContext
+
+if TYPE_CHECKING:  # только для типов — цикла импорта не создаём
+    from jarvis.core.situation import Situation
+    from jarvis.core.state import Modes
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -114,6 +118,21 @@ class Skill(ABC):
     def tools(self) -> ToolRegistry:
         """Реестр инструментов — вызов чужих команд по имени."""
         return self.context.tools
+
+    @property
+    def modes(self) -> "Modes":
+        """Режимы: состояние, которое живёт между командами."""
+        return self.context.modes
+
+    @property
+    def situation(self) -> "Situation":
+        """Куда положить факт о происходящем, узнанный по дороге.
+
+        Оттуда он попадёт в подсказку модели при разборе следующей фразы.
+        Специально ходить за фактом нельзя: это добавит ожидание к каждой
+        команде ради строчки в подсказке.
+        """
+        return self.context.situation
 
     # --- жизненный цикл ----------------------------------------------------
 

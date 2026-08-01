@@ -21,6 +21,8 @@ from jarvis.core.bus import EventBus
 from jarvis.core.config import SkillsConfig
 from jarvis.core.contracts import SkillLoaded, SkillUnloaded
 from jarvis.core.errors import SkillError, SkillLoadError, SkillUnsupportedPlatform
+from jarvis.core.situation import Situation
+from jarvis.core.state import Modes
 from jarvis.core.tools import ToolRegistry, collect_tools
 
 from .base import HealthStatus, Skill
@@ -71,6 +73,8 @@ class SkillManager:
         llm: "LLMService",
         tts: "TTS",
         root: Path,
+        modes: "Modes | None" = None,
+        situation: "Situation | None" = None,
     ) -> None:
         self._config = config
         self._events = events
@@ -79,6 +83,13 @@ class SkillManager:
         self._llm = llm
         self._tts = tts
         self._root = root
+        # Свои — только чтобы менеджер собирался в тесте, где состояние
+        # системы не при чём. В живой сборке приходят снаружи: те же объекты
+        # читают конвейер и резолвер модели.
+        self._modes = modes if modes is not None else Modes()
+        self._situation = (
+            situation if situation is not None else Situation(modes=self._modes)
+        )
         self._records: dict[str, SkillRecord] = {}
 
     @property
@@ -187,6 +198,8 @@ class SkillManager:
             tts=self._tts,
             scope=scope,
             root=self._root,
+            modes=self._modes,
+            situation=self._situation,
         )
 
         try:

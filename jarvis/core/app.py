@@ -41,7 +41,9 @@ from jarvis.core.router import (
     Router,
 )
 from jarvis.core.runtime import BlockingWorker
+from jarvis.core.situation import Situation
 from jarvis.core.skills import SkillManager
+from jarvis.core.state import Modes
 from jarvis.core.stt import build_stt
 from jarvis.core.tools import ToolRegistry, collect_tools
 from jarvis.core.tts import build_tts
@@ -106,6 +108,14 @@ class JarvisApp:
 
         memory = build_memory(config.memory)
 
+        # Состояние, которое живёт между командами, и обстановка, которую видит
+        # модель при разборе. Собираются здесь и раздаются всем, кому нужны:
+        # конвейеру (гейт «не слушаю»), резолверу модели (подсказка), скиллам
+        # (чтение и пополнение). Один объект на систему — иначе получилось бы
+        # несколько состояний с одним смыслом.
+        modes = Modes()
+        situation = Situation(modes=modes)
+
         providers = {
             name: build_provider(provider_config)
             for name, provider_config in config.llm.providers.items()
@@ -139,6 +149,8 @@ class JarvisApp:
             llm=llm,
             tts=tts,
             root=config.root,
+            modes=modes,
+            situation=situation,
         )
 
         # Кеш удачных разборов моделью: один объект и подсказывает роутеру, и
@@ -156,6 +168,7 @@ class JarvisApp:
                 llm=llm,
                 config=config,
                 learner=learner,
+                situation=situation,
             ),
             threshold=config.router.confidence_threshold,
             events=events,
@@ -165,6 +178,7 @@ class JarvisApp:
             registry=registry,
             events=events,
             learner=learner if config.router.learn_commands else None,
+            situation=situation,
         )
 
         # Встроенные инструменты ядра: диалог, справка, перезагрузка, модели.
@@ -175,6 +189,8 @@ class JarvisApp:
             skills=skills,
             persona=persona,
             learner=learner,
+            modes=modes,
+            situation=situation,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
@@ -190,6 +206,7 @@ class JarvisApp:
             events=events,
             config=config.audio,
             persona=persona,
+            modes=modes,
         )
 
         runner = ServiceRunner()
@@ -370,6 +387,7 @@ def _build_resolvers(
     llm: LLMService,
     config: JarvisConfig,
     learner: LearnedResolver | None = None,
+    situation: Situation | None = None,
 ) -> list[Resolver]:
     """Собрать цепочку резолверов в порядке, заданном конфигом.
 
@@ -383,7 +401,11 @@ def _build_resolvers(
         "alias": lambda: AliasResolver(registry, config.router.aliases),
         "learned": lambda: learner,
         "llm": lambda: LLMResolver(
-            registry, llm, tasks=_intent_tasks(llm, config), learner=learner
+            registry,
+            llm,
+            tasks=_intent_tasks(llm, config),
+            learner=learner,
+            situation=situation if config.router.situation else None,
         ),
         "fallback": lambda: FallbackResolver(),
     }

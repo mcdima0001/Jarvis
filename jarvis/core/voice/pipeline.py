@@ -45,6 +45,7 @@ from jarvis.core.contracts import (
 )
 from jarvis.core.persona import DONE, FAILED, LISTENING, Persona
 from jarvis.core.router import Dispatcher
+from jarvis.core.state import DEAF, Modes, wakes_up
 from jarvis.core.stt import STT
 from jarvis.core.tts import TTS
 
@@ -73,6 +74,7 @@ class VoicePipeline:
         events: EventBus,
         config: AudioConfig,
         persona: Persona | None = None,
+        modes: Modes | None = None,
     ) -> None:
         self._source = source
         self._sink = sink
@@ -86,6 +88,10 @@ class VoicePipeline:
         # Без явной персоны берётся стандартная: конвейер должен собираться и
         # в тесте, где характер ассистента не при чём.
         self._persona = persona or Persona()
+        #: Режимы. Конвейеру интересен один — «не слушаю»: он решается тут и
+        #: только тут, потому что гейт обязан стоять **до** роутера. Проверять
+        #: его в инструменте было бы поздно: реплика уже уехала бы в модель.
+        self._modes = modes if modes is not None else Modes()
 
         # Вместе со звуком храним момент, когда он прозвучал: окно ответа
         # должно отсчитываться от речи, а не от того, когда до неё дошли руки.
@@ -339,6 +345,12 @@ class VoicePipeline:
         голого «Джарвис», а имя из расшифровки снимет `_strip_wake`.
         """
         self._wake_word.reset()
+        # В режиме «не слушаю» имя ничего не открывает и никого не будит.
+        # Событие отсюда приглушает музыку, и без этой проверки каждое
+        # случайное «Джарвис» дёргало бы громкость у молчащего ассистента.
+        if self._modes.active(DEAF):
+            logger.debug("Услышал имя, но сейчас не слушаю")
+            return
         self._follow_up_until = time.time() + self._config.wake_word.follow_up_s
         logger.info(
             "Услышал имя (%.2f) — жду команду %.0f с",
@@ -492,6 +504,30 @@ class VoicePipeline:
             )
         return False, cleaned
 
+    def _deaf_gate(self, text: str) -> str | None:
+        """Что пропускать, пока включён режим «не слушаю».
+
+        Ровно одно: обращение по имени плюс фраза пробуждения. Всё остальное
+        останавливается **здесь**, до роутера, — то есть не стоит ни секунды
+        ожидания, ни токена.
+
+        Сама фраза при этом идёт дальше как обычная команда: её узнаёт резолвер
+        фраз и зовёт `core.as_usual`. Отдельного пути для пробуждения нет
+        намеренно — список фраз тут и у инструмента один и тот же
+        (`WAKE_PHRASES`), поэтому разъехаться им негде.
+        """
+        called, command = self._strip_wake(text)
+        # Имя обязательно: гейт должен быть строже обычного, а не мягче.
+        # Без него случайное «слушай» в разговоре рядом будило бы ассистента.
+        if self._config.wake_word.mode in ("text", "acoustic") and not called:
+            logger.debug("Не слушаю: реплика без имени пропущена")
+            return None
+        if not wakes_up(command):
+            logger.debug("Не слушаю: %r не похоже на просьбу вернуться", command)
+            return None
+        logger.info("Просыпаюсь по фразе %r", command)
+        return command
+
     def _extract_command(self, text: str, *, spoken_at: float | None = None) -> str | None:
         """Решить, обращались ли к ассистенту, и вернуть команду.
 
@@ -500,6 +536,9 @@ class VoicePipeline:
         :return: текст команды; пустая строка, если позвали только по имени;
             ``None``, если обращения не было и окно ответа закрыто.
         """
+        if self._modes.active(DEAF):
+            return self._deaf_gate(text)
+
         called, command = self._strip_wake(text)
 
         if self._config.wake_word.mode not in ("text", "acoustic"):
