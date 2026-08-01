@@ -79,6 +79,17 @@ _FILLER = (
     "о", "том", "про", "то", "please", "me", "to", "that", "about",
 )
 
+#: Числительные, которых нет ни в цифрах, ни в общем словаре чисел.
+_HALVES = {"полтора": 1.5, "полторы": 1.5, "пол": 0.5}
+
+#: Единица времени без «через»: «на минуту», «5 минут», «полторы минуты».
+_DURATION = re.compile(
+    r"(?:(?P<count>\d+(?:[.,]\d+)?|[а-яё]+(?:\s+[а-яё]+)?)\s*)?"
+    r"(?P<unit>секунд\w*|сек\b|минут\w*|мин\b|час(?:а|ов|у)?\b|"
+    r"seconds?|secs?|minutes?|mins?|hours?)\b",
+    re.IGNORECASE,
+)
+
 #: «через полчаса» и «через полтора часа» — обычные слова, но числом их не
 #: записать, а говорят их постоянно.
 _SPECIALS: tuple[tuple[re.Pattern[str], float], ...] = (
@@ -130,6 +141,59 @@ def _seconds_in(unit: str) -> float:
     if unit.startswith(("мин", "min")):
         return 60.0
     return 3600.0
+
+
+def _count_of(raw: str | None) -> float | None:
+    """Сколько единиц названо. Без числа — одна: «на минуту» это одна минута."""
+    if raw is None:
+        return 1.0
+    text = " ".join(raw.split()).lower()
+    if not text:
+        return 1.0
+    for word, value in _HALVES.items():
+        if text.endswith(word):
+            return value
+    return parse_number(text)
+
+
+def parse_duration(text: str) -> float | None:
+    """Сколько минут названо: «минуту», «5 минут», «полторы минуты», «полчаса».
+
+    Отдельно от `parse_when`, потому что вопрос другой: там «когда», здесь
+    «сколько». И отвечать «не понял» тут так же обязательно: таймер, поставленный
+    не на то время, хуже непоставленного — про него-то человек знает.
+    """
+    text = " ".join(text.split())
+    if not text:
+        return None
+    if re.search(r"\bполчаса\b", text, re.IGNORECASE):
+        return 30.0
+    found = _DURATION.search(text)
+    if not found:
+        return None
+    count = _count_of(found.group("count"))
+    if count is None or count <= 0:
+        return None
+    minutes = count * _seconds_in(found.group("unit")) / 60.0
+    return minutes if 0 < minutes <= MAX_AHEAD_DAYS * 24 * 60 else None
+
+
+def _length_phrase(minutes: float) -> str:
+    """Назвать длительность так, как её произносят.
+
+    Дробные минуты в речи не звучат: «0.5 минуты» это «30 секунд», а «1.5» —
+    «полторы минуты». Читать вслух десятичную точку синтез всё равно не умеет.
+    """
+    if minutes < 1:
+        seconds = max(1, round(minutes * 60))
+        return f"{seconds} {plural_form(seconds, ('секунду', 'секунды', 'секунд'))}"
+    if abs(minutes - 1.5) < 0.01:
+        return "полторы минуты"
+    whole = int(round(minutes))
+    if whole % 60 == 0 and whole >= 60:
+        hours = whole // 60
+        return f"{hours} {plural_form(hours, _HOURS)}"
+    return f"{whole} {plural_form(whole, _MINUTES)}"
 
 
 def _shift(day: str | None) -> int:
@@ -442,10 +506,10 @@ class RemindersSkill(Skill):
         moment = datetime.fromtimestamp(float(item["at"]))
 
         if item.get("kind") == "timer":
-            minutes = int(float(item.get("minutes", 0)) or 0)
+            spoken = _length_phrase(float(item.get("minutes", 0)))
             if language == "en":
-                return f"Timer for {minutes} minutes. Time's up."
-            return f"Таймер на {minutes} {plural_form(minutes, _MINUTES)}. Время вышло."
+                return f"Timer for {spoken}. Time's up."
+            return f"Таймер на {spoken}. Время вышло."
 
         # Опоздание называется временем, а не «извини»: важно, на когда оно
         # было, — по этому человек и поймёт, о чём речь.
@@ -535,26 +599,37 @@ class RemindersSkill(Skill):
         )
 
     @tool(
-        # Окончание у «минуты» своё на каждое число, а шаблон сравнивается
-        # целиком — отсюда три написания на форму. Без них каждый таймер уезжал
-        # бы в платный разбор.
+        # Подстановка стоит **последней** и забирает хвост целиком: «на минуту»,
+        # «на 5 минут», «на полторы минуты». Раньше в шаблоне было число, и
+        # окончание приходилось перечислять по три раза на глагол, а «на минуту»
+        # (без числа вовсе) не подходило ни под одно написание.
         phrases=[
-            "поставь таймер на {minutes} минут", "поставь таймер на {minutes} минуты",
-            "поставь таймер на {minutes} минуту",
-            "таймер на {minutes} минут", "таймер на {minutes} минуты",
-            "таймер на {minutes} минуту",
-            "засеки {minutes} минут", "засеки {minutes} минуты", "засеки {minutes} минуту",
-            "timer for {minutes} minutes",
+            "поставь таймер", "заведи таймер", "таймер",
+            "поставь таймер на {request}", "поставь таймер {request}",
+            "таймер на {request}", "засеки {request}", "заведи таймер на {request}",
+            "timer for {request}", "set a timer for {request}",
         ],
         routable=False,
     )
-    async def timer(self, minutes: float = 5, language: str = "ru") -> ToolResult:
+    async def timer(self, request: str = "", language: str = "ru") -> ToolResult:
         """Засечь время и сказать, когда оно выйдет.
 
-        :param minutes: сколько минут отсчитать.
+        :param request: сколько времени: «минуту», «5 минут», «полторы минуты».
         :param language: на каком языке объявить.
         """
-        minutes = max(0.1, float(minutes))
+        minutes = parse_duration(request)
+        if minutes is None:
+            # Умолчание тут было бы догадкой, а догадка про время — худший вид
+            # ошибки: живой случай 01.08.2026, «поставь таймер на минуту»
+            # превратилось в пять. Фраза дошла нечётким совпадением, подстановка
+            # осталась пустой, и умолчание молча выиграло.
+            return ToolResult.failure(
+                f"не разобрал длительность в {request!r}",
+                speech={
+                    "ru": ("На сколько ставить таймер?", "Сколько засечь?"),
+                    "en": ("How long should the timer be?",),
+                },
+            )
         now = datetime.now()
         moment = now + timedelta(minutes=minutes)
         item = self._add(
@@ -562,14 +637,13 @@ class RemindersSkill(Skill):
         )
         await self._save()
 
-        whole = int(minutes)
-        self.log.info("Таймер #%d на %.0f мин", item["id"], minutes)
+        spoken = _length_phrase(minutes)
+        self.log.info("Таймер #%d на %.2f мин (из %r)", item["id"], minutes, request)
         return ToolResult.success(
             {"id": item["id"], "at": item["at"], "minutes": minutes},
             speech={
-                "ru": (f"Таймер на {whole} {plural_form(whole, _MINUTES)}.",
-                       f"Засёк {whole} {plural_form(whole, _MINUTES)}."),
-                "en": (f"Timer set for {whole} minutes.",),
+                "ru": (f"Таймер на {spoken}.", f"Засёк {spoken}."),
+                "en": (f"Timer set for {spoken}.",),
             },
         )
 

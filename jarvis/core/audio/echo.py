@@ -296,11 +296,14 @@ class EchoCancellingSource:
         stats = self._aec.stats()
         logger.info(
             "Эхоподавление: убрано %.1f дБ, задержка тракта %.0f мс, "
-            "музыка звучала %.0f%% времени, пересборок %d, потеряно опоры %d сэмплов",
+            "музыка звучала %.0f%% времени, микрофон молчал %.0f%% времени, "
+            "пересборок %d, разлётов %d, потеряно опоры %d сэмплов",
             stats.erle_db,
             stats.delay_ms,
             stats.active * 100,
+            stats.muted * 100,
             stats.rescales,
+            stats.blowups,
             self._track.dropped,
         )
 
@@ -381,6 +384,13 @@ class EchoCancellingSource:
 
         mic = numpy.concatenate(self._seen_mic)
         reference = numpy.concatenate(self._seen_reference)
+        # Выключенный кнопкой микрофон отдаёт ровные нули. Мерить по ним сдвиг
+        # бессмысленно, а получается не «ничего», а случайное число с
+        # правдоподобной уверенностью — и потоки уезжают неизвестно куда.
+        if float(numpy.max(numpy.abs(mic))) < _MUTED:
+            self._checked = 0.0
+            logger.debug("Микрофон молчит цифровой тишиной — сдвиг не меряю")
+            return
         if float(numpy.mean(reference**2)) < 1e-7:
             self._checked = 0.0  # тишина: попробуем в следующий раз, а не потом
             self._notice_silence(now, float(numpy.mean(mic**2)))

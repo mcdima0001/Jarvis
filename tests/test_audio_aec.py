@@ -315,3 +315,55 @@ def test_quiet_room_is_not_mistaken_for_a_muted_microphone() -> None:
 
     assert canceller.stats().muted == 0.0
     assert float(numpy.abs(canceller._weights).sum()) > 0, "в тихой комнате учимся"
+
+
+def test_quiet_reference_does_not_blow_the_filter_up(caplog) -> None:
+    """Тихая опора при громком микрофоне не должна рвать фильтр.
+
+    Живой лог 01.08.2026: «убрано −369.1 дБ». Число не плохое, а бессмысленное:
+    фильтр улетел в бесконечность. Механика — шаг NLMS делится на мощность
+    опоры, и на почти нулевой мощности вырастает на порядки. А почти нулевой
+    она бывает постоянно: владелец выключает звук, петлевой захват пропускает
+    буфер, между треками пауза. Микрофон при этом громкий — в него дует
+    вентилятор.
+    """
+    canceller = EchoCanceller(sample_rate=RATE, tail_ms=200, residual=False)
+    music = _music(RATE)
+    room = _room()
+    echo = numpy.convolve(music, room)[: len(music)]
+    for at in range(0, len(music) - BLOCK, BLOCK):
+        canceller.process(echo[at : at + BLOCK], music[at : at + BLOCK])
+
+    # Опора почти пропала, а комната шумит как прежде: ровно тот случай.
+    faint = music * 1e-3
+    noise = _speech(RATE) + _rng().normal(0, 0.02, RATE)
+    with caplog.at_level("WARNING"):
+        out = numpy.concatenate([
+            canceller.process(noise[at : at + BLOCK], faint[at : at + BLOCK])
+            for at in range(0, len(noise) - BLOCK, BLOCK)
+        ])
+
+    assert numpy.isfinite(out).all(), "выход обязан оставаться числом"
+    loudest = float(numpy.max(numpy.abs(out)))
+    assert loudest < 100.0, f"выход разлетелся: пик {loudest}"
+
+
+def test_runaway_filter_is_zeroed_not_left_to_grow() -> None:
+    """Оценка эха на порядки громче микрофона — это разлёт, а не громкий трек.
+
+    Настоящее эхо состоит из того, что услышал микрофон, и вдесятеро громче
+    него не бывает. Поправка усиления такое не лечит: она сработала бы через
+    полсекунды, а к тому времени следующие шаги уже умножат беду.
+    """
+    canceller = EchoCanceller(sample_rate=RATE, tail_ms=200, residual=False)
+    music = _music(RATE // 2)
+    for at in range(0, len(music) - BLOCK, BLOCK):
+        canceller.process(music[at : at + BLOCK] * 0.5, music[at : at + BLOCK])
+
+    # Подделываем разлетевшийся фильтр: коэффициенты в тысячу раз больше.
+    canceller._weights *= 1000.0
+    quiet = numpy.full(BLOCK, 1e-3)
+    canceller.process(quiet, music[:BLOCK])
+
+    assert canceller.stats().blowups == 1
+    assert float(numpy.abs(canceller._weights).sum()) == 0.0

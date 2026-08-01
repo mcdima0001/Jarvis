@@ -292,11 +292,78 @@ async def test_timer_reports_its_length(
 ) -> None:
     """Таймер называет длительность, а не время суток: спрашивали про неё."""
     skill = await _ready(tmp_path, events, registry)
-    result = await registry.invoke("reminders.timer", {"minutes": "10"})
+    result = await registry.invoke("reminders.timer", {"request": "10 минут"})
 
     assert result.ok
     assert result.speech_for("ru") == "Таймер на 10 минут."
     assert skill._items[0]["kind"] == "timer"
+
+
+async def test_timer_for_one_minute_is_one_minute(
+    tmp_path: Path, events: LocalEventBus, registry: ToolRegistry
+) -> None:
+    """«Поставь таймер на минуту» — это одна минута, а не умолчание.
+
+    Живой случай 01.08.2026: вышло пять. Фраза дошла нечётким совпадением с
+    шаблоном, подстановка осталась пустой, и умолчание молча выиграло. Догадка
+    про время — худший вид ошибки: человек её замечает, когда уже поздно.
+    """
+    from jarvis.core.contracts import Utterance
+    from jarvis.core.router import PhraseResolver
+
+    skill = await _ready(tmp_path, events, registry)
+    intent = await PhraseResolver(registry).resolve(Utterance(text="поставь таймер на минуту"))
+
+    assert intent is not None, "фраза обязана разбираться без модели"
+    assert intent.tool == "reminders.timer"
+
+    result = await registry.invoke(intent.tool, intent.arguments)
+    assert result.value["minutes"] == 1.0
+    assert result.speech_for("ru") == "Таймер на 1 минуту."
+    assert skill._items[0]["minutes"] == 1.0
+
+
+async def test_timer_without_a_length_asks_instead_of_guessing(
+    tmp_path: Path, events: LocalEventBus, registry: ToolRegistry
+) -> None:
+    """Умолчание у таймера — та же догадка про время, что и у напоминания."""
+    await _ready(tmp_path, events, registry)
+    result = await registry.invoke("reminders.timer", {})
+
+    assert not result.ok
+    assert "сколько" in result.speech_for("ru").lower()
+
+
+@pytest.mark.parametrize(
+    "spoken, minutes",
+    [
+        ("минуту", 1.0),
+        ("5 минут", 5.0),
+        ("две минуты", 2.0),
+        ("полторы минуты", 1.5),
+        ("полчаса", 30.0),
+        ("час", 60.0),
+        ("30 секунд", 0.5),
+        ("3 minutes", 3.0),
+    ],
+)
+def test_spoken_durations_are_understood(spoken: str, minutes: float) -> None:
+    """Так это и говорят: без числа, прописью, дробью."""
+    assert skill_module.parse_duration(spoken) == pytest.approx(minutes)
+
+
+def test_nonsense_duration_is_refused() -> None:
+    """Не разобрали — отказ, а не молчаливое умолчание."""
+    assert skill_module.parse_duration("") is None
+    assert skill_module.parse_duration("борщ") is None
+
+
+def test_length_is_spoken_not_printed() -> None:
+    """Дробные минуты вслух не звучат: полминуты — это 30 секунд."""
+    assert skill_module._length_phrase(0.5) == "30 секунд"
+    assert skill_module._length_phrase(1.0) == "1 минуту"
+    assert skill_module._length_phrase(1.5) == "полторы минуты"
+    assert skill_module._length_phrase(60.0) == "1 час"
 
 
 async def test_pending_and_cancel(
