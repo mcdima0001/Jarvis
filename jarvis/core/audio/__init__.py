@@ -72,6 +72,42 @@ def _build_vad(config: AudioConfig) -> VAD:
     return PassthroughVAD()
 
 
+def _build_wake_word(config: AudioConfig) -> WakeWord:
+    """Выбрать детектор активационной фразы по конфигу.
+
+    В режимах ``text`` и ``none`` детектора по звуку нет вовсе: имя ищется в
+    расшифровке, и слот занимает пропускающая заглушка. Модель нужна только
+    для ``acoustic`` — и её отсутствие не должно ломать запуск, поэтому откат
+    на текстовый гейт молча предусмотрен.
+    """
+    if config.wake_word.mode != "acoustic":
+        return AlwaysActiveWakeWord(config.wake_word.phrase)
+    if config.wake_word.model is None:
+        logger.warning(
+            "Режим активации acoustic, но модель не указана "
+            "(audio.wake_word.model) — слушаю имя по тексту. "
+            "Как обучить модель: docs/wakeword.md"
+        )
+        return AlwaysActiveWakeWord(config.wake_word.phrase)
+
+    try:
+        from .wakeword import OpenWakeWord
+
+        return OpenWakeWord(
+            config.wake_word.model,
+            phrase=config.wake_word.phrase,
+            sample_rate=config.sample_rate,
+            threshold=config.wake_word.threshold,
+        )
+    except Exception as exc:  # noqa: BLE001 — нет модели или пакета
+        logger.warning(
+            "Активация по звуку не поднялась (%s: %s) — слушаю имя по тексту",
+            type(exc).__name__,
+            exc,
+        )
+        return AlwaysActiveWakeWord(config.wake_word.phrase)
+
+
 def build_audio(config: AudioConfig) -> AudioStack:
     """Собрать аудиотракт по конфигу.
 
@@ -80,9 +116,7 @@ def build_audio(config: AudioConfig) -> AudioStack:
     сервере без звуковой карты.
     """
     vad = _build_vad(config)
-    # Активация по имени проверяется по распознанному тексту в конвейере;
-    # этот слот оставлен под будущий детектор по звуку (openWakeWord).
-    wake_word = AlwaysActiveWakeWord(config.wake_word.phrase)
+    wake_word = _build_wake_word(config)
 
     if config.engine in ("", "none", "null"):
         logger.info("Звук отключён в конфиге (audio.engine)")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -46,6 +47,7 @@ def _pipeline(
     *,
     persona: Persona | None = None,
     tts: NullTTS | None = None,
+    wake_word: object | None = None,
     **wake: object,
 ) -> VoicePipeline:
     """Собрать конвейер с заглушками вместо звука."""
@@ -67,7 +69,7 @@ def _pipeline(
         source=NullAudioSource(),
         sink=NullAudioSink(),
         vad=PassthroughVAD(),
-        wake_word=AlwaysActiveWakeWord("джарвис"),
+        wake_word=wake_word or AlwaysActiveWakeWord("джарвис"),
         stt=NullSTT(),
         tts=tts or NullTTS(),
         dispatcher=Dispatcher(router=router, registry=registry),
@@ -823,3 +825,83 @@ def test_silero_does_not_hear_speech_in_noise() -> None:
 
     assert any(energy.is_speech(f) for f in frames), "громкость шума высокая"
     assert not any(silero.is_speech(f) for f in frames), "но речи в нём нет"
+
+
+# --- активация по звуку -----------------------------------------------------
+
+
+class _AcousticWakeWord:
+    """Модель активации, которая срабатывает на заданном по счёту кадре."""
+
+    def __init__(self, at: int = 1) -> None:
+        self._at = at
+        self.seen = 0
+        self.resets = 0
+        self.score = 0.87
+
+    @property
+    def phrase(self) -> str:
+        """Имя, на которое обучена модель."""
+        return "джарвис"
+
+    def detect(self, frame: AudioFrame) -> bool:
+        """Сработать ровно один раз, на нужном кадре."""
+        self.seen += 1
+        return self.seen == self._at
+
+    def reset(self) -> None:
+        """Забыть накопленное."""
+        self.resets += 1
+
+
+async def test_acoustic_wake_word_opens_the_window_before_whisper(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Имя, услышанное моделью, открывает окно команды сразу.
+
+    Ради этого модель и нужна: текстовый гейт узнаёт имя после Whisper, когда
+    фраза уже записана вместе с музыкой. Здесь событие уходит в шину в момент
+    самого слова — приглушить фон успевают до команды.
+    """
+    heard: list[object] = []
+
+    async def remember(event: object) -> None:
+        heard.append(event)
+
+    events.subscribe("voice.wake_word.detected", remember)
+    pipe = _pipeline(registry, events, wake_word=_AcousticWakeWord(), mode="acoustic")
+
+    pipe._on_name_heard()
+    await asyncio.sleep(0.05)
+
+    assert heard, "событие уходит в шину до всякого распознавания"
+    assert pipe._extract_command("включи свет") == "включи свет", "имя уже прозвучало"
+    assert pipe._follow_up_until > time.time()
+
+
+async def test_acoustic_detector_is_reset_after_it_fires(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """После срабатывания модель забывает накопленное.
+
+    Внутри у неё своя история на секунду вперёд: без сброса одно слово
+    срабатывало бы несколько раз подряд.
+    """
+    detector = _AcousticWakeWord()
+    pipe = _pipeline(registry, events, wake_word=detector, mode="acoustic")
+
+    pipe._on_name_heard()
+
+    assert detector.resets == 1
+
+
+def test_stub_wake_word_is_never_asked(registry: ToolRegistry, events: LocalEventBus) -> None:
+    """Заглушка отвечает «да» на любой кадр — спрашивать её нельзя.
+
+    Признак работы по звуку — поднявшаяся модель, а не режим в конфиге: при
+    неудачной загрузке в слоте остаётся заглушка, и по ней ассистент
+    срабатывал бы на каждом кадре подряд.
+    """
+    pipe = _pipeline(registry, events, mode="acoustic")
+
+    assert not pipe._acoustic

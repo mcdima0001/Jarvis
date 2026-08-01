@@ -306,6 +306,12 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             ),
             wake_word=WakeWordConfig(
                 mode=str(_section(audio, "wake_word").get("mode") or "text"),
+                model=(
+                    _resolve(project_root, _section(audio, "wake_word")["model"])
+                    if _section(audio, "wake_word").get("model")
+                    else None
+                ),
+                threshold=float(_section(audio, "wake_word").get("threshold", 0.0)),
                 phrases=_wake_phrases(_section(audio, "wake_word")),
                 aliases=tuple(
                     str(a).lower() for a in (_section(audio, "wake_word").get("aliases") or ())
