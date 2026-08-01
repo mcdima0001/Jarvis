@@ -1245,6 +1245,17 @@ def test_seek_slider_survives_validation() -> None:
     assert plan == [{"range": ['[aria-label="Управление таймкодом"]'], "by": 1.0}]
 
 
+def test_seek_needs_no_selector_at_all() -> None:
+    """Ползунок ищется общим способом, поэтому селектор необязателен.
+
+    Живой случай 01.08.2026: селектор из рецепта был снят с плеера «Моей
+    волны», а на обычном треке плеер другой — и шаг не срабатывал ни разу.
+    Требовать селектор значило бы ломать перемотку ровно тогда, когда
+    разметка сменилась, то есть когда она и нужна.
+    """
+    assert page.validate_plan([{"range": (), "by": -1}]) == [{"range": [], "by": -1.0}]
+
+
 def test_seek_without_a_number_is_meaningless() -> None:
     """Ползунок без величины двигать некуда — шаг отбрасывается."""
     assert page.validate_plan([{"range": ["#seek"]}]) == []
@@ -1275,3 +1286,17 @@ def test_yandex_music_seeks_by_the_slider_first() -> None:
 
     assert "range" in recipe[0], "ползунок должен пробоваться первым"
     assert recipe[-1] == {"media": "forward"}, "общий способ остаётся запасным"
+
+
+def test_seeking_by_the_slider_works_everywhere() -> None:
+    """Ползунок — часть общего рецепта, а не особенность одного сайта.
+
+    Играть мимо документа (`new Audio()`) — обычный приём, и ждать его стоит
+    не только от Яндекс Музыки. Селекторов в общем шаге нет: страница находит
+    полосу по подписи, а без неё по длине шкалы.
+    """
+    for action, direction in (("forward", 1), ("back", -1)):
+        recipe = page.ACTIONS[action]
+
+        assert recipe[0] == {"media": action}, "сам плеер точнее — он первый"
+        assert recipe[-1] == {"range": (), "by": direction}

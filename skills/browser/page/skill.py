@@ -182,8 +182,12 @@ ACTIONS: dict[str, tuple[dict[str, Any], ...]] = {
     "unmute": ({"media": "unmute"}, {"label": ["включить звук", "unmute"]}),
     "louder": ({"media": "louder"},),
     "quieter": ({"media": "quieter"},),
-    "forward": ({"media": "forward"},),
-    "back": ({"media": "back"},),
+    # Перемотка: сперва сам плеер (там точные секунды), потом полоса на
+    # странице. Второй вариант общий, без селекторов: сайты, играющие через
+    # `new Audio()` мимо документа, плеера не показывают вовсе, а ползунок
+    # `input[type="range"]` у них обычный.
+    "forward": ({"media": "forward"}, {"range": (), "by": 1}),
+    "back": ({"media": "back"}, {"range": (), "by": -1}),
 }
 
 #: Рецепты под конкретные сайты — на случай, когда подписи не хватает.
@@ -651,6 +655,18 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 clean["into"] = into
             if step.get("submit"):
                 clean["submit"] = True
+        elif verb == "range":
+            # На сколько сдвинуть ползунок. Без числа шаг бессмыслен:
+            # «поставь на ноль» никто не просил.
+            by = step.get("by")
+            if not isinstance(by, (int, float)) or isinstance(by, bool) or not by:
+                continue
+            # Селекторы тут **необязательны**, и это не поблажка. Полосу
+            # перемотки страница находит общим способом — по подписи, а без
+            # неё по длине шкалы, — поэтому селектор сайта только ускоряет
+            # поиск. Требовать его значило бы ломать шаг ровно тогда, когда
+            # разметка сменилась, то есть когда он и нужен.
+            clean = {"range": _strings(step["range"], limit=MAX_AVOID), "by": float(by)}
         else:
             items = _strings(step[verb], limit=MAX_AVOID)
             if not items:
@@ -673,13 +689,6 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 avoid = _strings(step.get("avoid", ()), limit=MAX_AVOID)
                 if avoid:
                     clean["avoid"] = avoid
-            if verb == "range":
-                # На сколько сдвинуть ползунок. Без числа шаг бессмыслен:
-                # «поставь на ноль» никто не просил.
-                by = step.get("by")
-                if not isinstance(by, (int, float)) or isinstance(by, bool) or not by:
-                    continue
-                clean["by"] = float(by)
 
         if clean not in plan:
             plan.append(clean)
@@ -1533,6 +1542,16 @@ class PageSkill(Skill):
         if broke:
             self.log.warning(
                 "Шаг сломался на странице: %s", "; ".join(str(item) for item in broke)
+            )
+
+        # Ползунка перемотки не нашлось. Тот же приём, что и с кнопками: без
+        # списка того, что на странице есть, селектор в рецепте приходится
+        # угадывать вслепую по чужой разметке.
+        sliders = result.value.get("sliders")
+        if sliders is not None:
+            self.log.info(
+                "Ползунки страницы: %s",
+                "; ".join(str(item) for item in sliders) or "ни одного",
             )
 
         # Название не нашлось. Что было на странице — единственный способ

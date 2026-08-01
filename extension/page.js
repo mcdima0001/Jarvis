@@ -338,6 +338,46 @@ async function jarvisRunPlan(plan) {
     field.value = value;
   };
 
+  //: По каким словам в подписи узнаётся полоса перемотки.
+  const SEEK_MARKS = ["таймкод", "перемот", "прогресс", "время", "seek", "progress", "time"];
+
+  //: Ниже этого «максимума» ползунок полосой трека не бывает: у громкости
+  //: max равен единице, у перемотки — длительности в секундах.
+  const MIN_SEEK_MAX = 5;
+
+  /** Все ползунки страницы. Видимость не проверяется — см. `slide`. */
+  const sliders = () => Array.from(document.querySelectorAll('input[type="range"]'));
+
+  /**
+   * Полоса перемотки — **общим способом**, без селекторов сайта.
+   *
+   * Селектор из рецепта устаревает: подпись, снятая с плеера «Моей волны»
+   * («Управление таймкодом»), не нашлась на обычном треке — у сайта не один
+   * плеер, а несколько. Поэтому ищем по признакам, которые есть везде:
+   * сперва по подписи, а если её нет — по длине шкалы. Громкость всегда 0..1,
+   * перемотка — сотни секунд, и перепутать их трудно.
+   */
+  const seekSlider = () => {
+    const long = sliders().filter((item) => Number(item.max) > MIN_SEEK_MAX);
+    const named = long.filter((item) =>
+      SEEK_MARKS.some((word) => hits(spaced(caption(item)), word)),
+    );
+    const pool = named.length ? named : long;
+    // Видимость — **предпочтение, а не условие**: плееров у сайта бывает два
+    // сразу, и спрятан обычно тот, который сейчас не играет. Но если спрятаны
+    // оба, двигать всё равно надо: значение ставится напрямую, и невидимой
+    // полосе это не мешает.
+    const visible = pool.filter(seen);
+    const best = visible.length ? visible : pool;
+    return best.slice().sort((first, second) => Number(second.max) - Number(first.max))[0] || null;
+  };
+
+  /** Что за ползунки на странице — для лога, когда сдвинуть не удалось. */
+  const listSliders = () =>
+    sliders()
+      .slice(0, 8)
+      .map((item) => `${caption(item) || "без подписи"} (0..${item.max || "?"})`);
+
   /**
    * Сдвинуть ползунок сайта: перемотка и громкость там, где плеера нет.
    *
@@ -352,11 +392,29 @@ async function jarvisRunPlan(plan) {
    * где сейчас трек, а нам остаётся арифметика.
    */
   const slide = (step) => {
-    const found = bySelector(step.range);
-    if (!found) {
+    // Видимость **не проверяется**: значение ставится напрямую, а не нажатием,
+    // и прозрачная полоса поверх своей отрисовки работает ничуть не хуже.
+    // Ровно на этой проверке шаг и не сработал в первый раз.
+    let input = null;
+    let selector = "";
+    for (const item of step.range || []) {
+      try {
+        const found = document.querySelector(String(item));
+        if (found) {
+          input = found;
+          selector = String(item);
+          break;
+        }
+      } catch (error) {
+        // Селектор из рецепта мог устареть или оказаться кривым.
+      }
+    }
+    if (!input) {
+      input = seekSlider();
+    }
+    if (!input) {
       return null;
     }
-    const input = found.element;
     const by = Number(step.by || 0);
     const max = Number(input.max);
     const min = Number(input.min || 0);
@@ -373,7 +431,7 @@ async function jarvisRunPlan(plan) {
         // Событие не прошло — значение всё равно на месте.
       }
     }
-    return { detail: `${Math.round(target)} из ${Math.round(max)}`, selector: found.selector };
+    return { detail: `${Math.round(target)} из ${Math.round(max)}`, selector };
   };
 
   const typeInto = (step) => {
@@ -986,6 +1044,12 @@ async function jarvisRunPlan(plan) {
   // «плееров 0» объясняет неудачу мгновенно: у сайта его просто не видно в
   // разметке. Без этой строки причина неотличима от «команда не подошла».
   nothing.heard = heardNow(null);
+  // Просили перемотать, а ползунка не нашлось — перечислим, какие на странице
+  // есть. По этому списку рецепт сайта дописывается точно, а не наугад: та же
+  // мысль, что и с `buttons` у шага `item`.
+  if (Array.isArray(plan) && plan.some((step) => step && Array.isArray(step.range))) {
+    nothing.sliders = listSliders();
+  }
   return nothing;
 }
 

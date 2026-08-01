@@ -1034,10 +1034,45 @@ check("перемотка не уезжает за края трека", async (
   assert(slider.value === "194", `конец трека — это конец: ${slider.value}`);
 });
 
-check("нет ползунка — шаг не срабатывает", async () => {
+check("ползунок находится и без селектора — по подписи", async () => {
+  // Живой случай 01.08.2026: селектор из рецепта снят с плеера «Моей волны»
+  // («Управление таймкодом»), а на обычном треке плеер другой — и шаг не
+  // срабатывал вовсе. Селектор сайта тут подсказка, а не условие.
+  const volume = field();
+  volume.max = "1";
+  volume.getAttribute = (name) => (name === "aria-label" ? "Громкость" : null);
+  const seek = field();
+  seek.max = "194";
+  seek.value = "100";
+  seek.getAttribute = (name) => (name === "aria-label" ? "Управление таймкодом" : null);
+  const api = load(makeDocument({ players: [], fields: [volume, seek] }));
+
+  const result = await api.jarvisRunPlan([{ range: ["[data-test-id=\"NOPE\"]"], by: 10 }]);
+
+  assert(result.done === "range", `ожидался range, пришло ${result.done}`);
+  assert(seek.value === "110", `сдвинуть надо перемотку: ${seek.value}`);
+  assert(volume.value === "", "громкость трогать нельзя");
+});
+
+check("без подписи ползунок выбирается по длине шкалы", async () => {
+  // У громкости шкала 0..1, у перемотки — секунды трека. Перепутать трудно.
+  const volume = field();
+  volume.max = "1";
+  const seek = field();
+  seek.max = "194";
+  seek.value = "50";
+  const api = load(makeDocument({ players: [], fields: [volume, seek] }));
+
+  await api.jarvisRunPlan([{ range: ["#seek"], by: -20 }]);
+
+  assert(seek.value === "30", `ожидалось 30, стало ${seek.value}`);
+});
+
+check("нет ползунка — шаг не срабатывает, но список уходит в лог", async () => {
   const api = load(makeDocument({ players: [] }));
 
   const result = await api.jarvisRunPlan([{ range: ["#seek"], by: 10 }]);
 
   assert(result.done === null, "нечего было двигать");
+  assert(Array.isArray(result.sliders), "какие ползунки есть — обязано попасть в ответ");
 });
