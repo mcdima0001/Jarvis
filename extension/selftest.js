@@ -1121,3 +1121,38 @@ check("нет ползунка — шаг не срабатывает, но сп
   assert(result.done === null, "нечего было двигать");
   assert(Array.isArray(result.sliders), "какие ползунки есть — обязано попасть в ответ");
 });
+
+check("говорит, что играет, по данным сайта", async () => {
+  // `navigator.mediaSession` — то самое, из чего Windows рисует всплывашку по
+  // кнопке «play». Разметки это не касается, поэтому работает и там, где плеера
+  // в документе нет вовсе.
+  const media = { metadata: { title: "Shame", artist: "Joseph Angel" }, playbackState: "playing" };
+  const api = load(makeDocument({ players: [] }), { mediaSession: media });
+
+  const result = await api.jarvisRunPlan([{ now: "track" }]);
+
+  assert(result.done === "now", `ожидался now, пришло ${result.done}`);
+  assert(result.detail === "Shame — Joseph Angel", result.detail);
+});
+
+check("без исполнителя название не обрастает тире", async () => {
+  const media = { metadata: { title: "Подкаст" }, playbackState: "playing" };
+  const api = load(makeDocument({ players: [] }), { mediaSession: media });
+
+  const result = await api.jarvisRunPlan([{ now: "track" }]);
+
+  assert(result.detail === "Подкаст", result.detail);
+});
+
+check("сайт молчит — берём заголовок вкладки, но только пока звук идёт", async () => {
+  // У ютуба заголовок вкладки и есть название ролика. Проверка на звук
+  // обязательна: иначе в ответ уедет название любой открытой страницы.
+  const quiet = load(makeDocument({ players: [player({ paused: true })] }), { mediaSession: {} });
+  assert((await quiet.jarvisRunPlan([{ now: "track" }])).done === null, "в тишине называть нечего");
+
+  const loud = load(makeDocument({ players: [player({ paused: false })] }), { mediaSession: {} });
+  const result = await loud.jarvisRunPlan([{ now: "track" }]);
+
+  assert(result.done === "now", `ожидался now, пришло ${result.done}`);
+  assert(result.detail === "Тестовая страница", result.detail);
+});

@@ -64,7 +64,7 @@ MEDIA_ACTIONS = frozenset(
 
 #: Глаголы шага. Список закрытый: чего тут нет, того странице не отправить.
 #: У `type` и `scroll` значение — строка, у остальных — список.
-STEP_VERBS = ("media", "label", "click", "item", "type", "scroll", "suggest", "range")
+STEP_VERBS = ("media", "label", "click", "item", "type", "scroll", "suggest", "range", "now")
 
 #: Куда листать страницу. Тоже закрытый список — это данные, не код.
 SCROLL_WAYS = frozenset({"up", "down", "top", "bottom"})
@@ -186,6 +186,10 @@ ACTIONS: dict[str, tuple[dict[str, Any], ...]] = {
     # странице. Второй вариант общий, без селекторов: сайты, играющие через
     # `new Audio()` мимо документа, плеера не показывают вовсе, а ползунок
     # `input[type="range"]` у них обычный.
+    # Что играет: спрашиваем у самого сайта через `navigator.mediaSession` —
+    # то самое, из чего Windows рисует всплывашку по кнопке «play» на
+    # клавиатуре. Разметки это не касается вовсе, поэтому и рецептов не нужно.
+    "playing": ({"now": "track"},),
     "forward": ({"media": "forward"}, {"range": (), "by": 1}),
     "back": ({"media": "back"}, {"range": (), "by": -1}),
 }
@@ -427,6 +431,7 @@ INTENT_TEXT: dict[str, str] = {
     "unmute": "включить звук",
     "louder": "сделать громче",
     "quieter": "сделать тише",
+    "playing": "сказать, что сейчас играет",
     "forward": "перемотать вперёд",
     "back": "перемотать назад",
 }
@@ -655,6 +660,10 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 clean["into"] = into
             if step.get("submit"):
                 clean["submit"] = True
+        elif verb == "now":
+            # Вопрос, а не действие: страница просто рассказывает, что играет.
+            # Значение не несёт смысла — есть глагол, и этого достаточно.
+            clean = {"now": "track"}
         elif verb == "range":
             # На сколько сдвинуть ползунок. Без числа шаг бессмыслен:
             # «поставь на ноль» никто не просил.
@@ -1262,6 +1271,51 @@ class PageSkill(Skill):
             focused=True,
             extra=[{"scroll": way}],
             speech=SCROLL_SPEECH[way],
+        )
+
+    @tool(phrases=["что играет", "что сейчас играет", "что там играет",
+                   "какой трек", "какой трек играет", "какой сейчас трек",
+                   "какая песня", "какая песня играет", "что за трек",
+                   "что за песня", "как называется трек", "как называется песня",
+                   "what is playing", "what's playing", "what song is this"])
+    async def now_playing(self, site: str = "") -> ToolResult:
+        """Сказать, что сейчас играет.
+
+        Спрашивается у самого сайта — `navigator.mediaSession`, то есть то же
+        самое, из чего Windows рисует всплывашку при нажатии «play» на
+        клавиатуре. Разметки это не касается вовсе, поэтому работает и там, где
+        плеера в документе нет (Яндекс Музыка), и не ломается от редизайна.
+
+        Вкладка берётся **звучащая**, а не та, куда смотрят: вопрос про звук.
+
+        :param site: на каком сайте; пусто — там, откуда идёт звук.
+        """
+        answer = await self._act("playing", site=site, soft=True)
+        if not answer.ok or not isinstance(answer.value, Mapping):
+            return ToolResult.failure(
+                "сайт не сообщает, что играет",
+                speech={
+                    "ru": ("Не могу разобрать, что сейчас играет.",
+                           "Сайт не говорит, что за трек."),
+                    "en": ("I can't tell what's playing.",
+                           "The site doesn't say which track it is."),
+                },
+            )
+        track = str(answer.value.get("detail", "")).strip()
+        if not track:
+            return ToolResult.failure(
+                "название не пришло",
+                speech={
+                    "ru": ("Не могу разобрать, что сейчас играет.",),
+                    "en": ("I can't tell what's playing.",),
+                },
+            )
+        return ToolResult.success(
+            dict(answer.value),
+            speech={
+                "ru": (f"Сейчас играет {track}.", f"Это {track}.", f"{track}."),
+                "en": (f"Now playing {track}.", f"That's {track}.", f"{track}."),
+            },
         )
 
     @tool(phrases=["перейди на главную", "перейди на главную страницу",

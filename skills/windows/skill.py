@@ -918,6 +918,7 @@ class WindowsSkill(Skill):
         # Позвали второй раз, не дождавшись ответа: прежние громкости
         # перезаписывать нельзя, иначе вернём приглушённые. А вот увести вниз
         # ещё раз — можно и нужно: возврат мог уже начаться.
+        already = bool(self._ducked)
         if not self._ducked:
             self._ducked = plan
 
@@ -934,14 +935,23 @@ class WindowsSkill(Skill):
             target=lambda described: quieter_by(self._ducked[described.pid], cut_db),
             seconds=self._fade_out,
         )
-        self.log.info(
-            "Приглушил на %.0f дБ (громкость системы %.0f%%): %s",
-            cut_db,
-            system * 100,
-            ", ".join(
-                sorted({s.name or str(s.pid) for _, s in sessions if s.pid in self._ducked})
-            ),
+        # На одну команду приглушение зовут дважды: сперва когда позвали по
+        # имени, потом когда ассистент заговорил. Второй раз он ничего не
+        # меняет — цель считается от той же сохранённой громкости, — и в логе
+        # это выглядело как задвоенная строка (жалоба владельца 01.08.2026).
+        # Новость тут только первая: музыка стала тише. Повтор — просто «держу».
+        names = ", ".join(
+            sorted({s.name or str(s.pid) for _, s in sessions if s.pid in self._ducked})
         )
+        if already:
+            self.log.debug("Держу приглушённым: %s", names)
+        else:
+            self.log.info(
+                "Приглушил на %.0f дБ (громкость системы %.0f%%): %s",
+                cut_db,
+                system * 100,
+                names,
+            )
         self._arm_restore_timer()
 
     async def _slide(

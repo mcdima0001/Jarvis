@@ -916,3 +916,43 @@ def test_second_duck_does_not_cut_twice() -> None:
     assert once == twice == pytest.approx(0.1)
     # А вот так было бы, если считать от текущей: −40 дБ вместо −20.
     assert windows.quieter_by(once, 20) == pytest.approx(0.01)
+
+
+async def test_second_duck_is_not_announced_twice(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Приглушение зовут дважды на команду, а новость тут только первая.
+
+    Сперва когда позвали по имени, потом когда ассистент заговорил. Второй раз
+    ничего не меняется — цель считается от той же сохранённой громкости, — и в
+    логе это выглядело задвоенной строкой «Приглушил на 19 дБ». Владелец
+    справедливо спросил, почему она дублируется.
+    """
+    import logging
+
+    sessions = [(object(), windows.SoundSession(pid=7, name="browser.exe", volume=1.0))]
+    monkeypatch.setattr(windows, "sound_sessions", lambda: sessions)
+    monkeypatch.setattr(windows, "system_volume", lambda: 0.5)
+
+    class Ducker(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-duck")
+
+    skill = object.__new__(Ducker)
+    skill._ducked = {}
+    skill._quiet_cut = windows.QUIET_CUT_DB
+    skill._loud_cut = windows.LOUD_CUT_DB
+    skill._fade_out = 0.0
+    skill._slide = _no_slide
+    skill._arm_restore_timer = lambda: None
+
+    with caplog.at_level(logging.INFO, logger="test-windows-duck"):
+        await skill._duck()
+        await skill._duck()
+
+    said = [record for record in caplog.records if "Приглушил" in record.getMessage()]
+    assert len(said) == 1, [record.getMessage() for record in caplog.records]
+
+
+async def _no_slide(targets: Any, *, target: Any, seconds: float) -> bool:
+    """Плавный переход тут ни при чём: проверяется, что сказано в лог."""
+    return True

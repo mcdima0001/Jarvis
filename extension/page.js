@@ -631,8 +631,12 @@ async function jarvisRunPlan(plan) {
     try {
       const media = navigator.mediaSession;
       const data = (media && media.metadata) || null;
+      // Склеиваем только то, что есть: иначе у сайта без исполнителя название
+      // выходит вида «Трек — », а у сайта без обоих — голое тире, которое потом
+      // считается за настоящее название.
+      const parts = [data && data.title, data && data.artist].filter(Boolean);
       return {
-        title: data ? `${data.title || ""} — ${data.artist || ""}`.trim() : "",
+        title: parts.join(" — "),
         state: (media && media.playbackState) || "",
       };
     } catch (error) {
@@ -1024,6 +1028,18 @@ async function jarvisRunPlan(plan) {
         const corrected = suggestion(step);
         if (corrected) {
           return answer("suggest", corrected);
+        }
+      } else if (typeof step.now === "string") {
+        const track = nowPlaying().title;
+        if (track) {
+          return answer("now", track);
+        }
+        // Сайт не заполнил `mediaSession`. Заголовок вкладки — не то же самое,
+        // но пока звук идёт, он обычно называет ровно то, что играет: у ютуба
+        // это имя ролика. Проверка на звук тут обязательна, иначе в ответ
+        // уедет название любой открытой страницы.
+        if (sounding() && document.title) {
+          return answer("now", document.title);
         }
       } else if (typeof step.scroll === "string") {
         const where = scrollPage(step);

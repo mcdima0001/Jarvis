@@ -1300,3 +1300,19 @@ def test_seeking_by_the_slider_works_everywhere() -> None:
 
         assert recipe[0] == {"media": action}, "сам плеер точнее — он первый"
         assert recipe[-1] == {"range": (), "by": direction}
+
+
+def test_asking_what_plays_survives_validation() -> None:
+    """Шаг-вопрос проходит проверку, значение при этом роли не играет."""
+    assert page.validate_plan([{"now": "track"}]) == [{"now": "track"}]
+    assert page.validate_plan([{"now": ""}]) == [{"now": "track"}]
+
+
+def test_what_plays_is_asked_of_the_site_not_of_the_markup() -> None:
+    """«Что играет» спрашивается у `mediaSession`, а не ищется в разметке.
+
+    Поэтому рецепт один на все сайты: `navigator.mediaSession` не зависит ни от
+    вёрстки, ни от того, лежит ли плеер в документе. На Яндекс Музыке его там
+    нет вовсе, а название трека сайт сообщает исправно.
+    """
+    assert page.ACTIONS["playing"] == ({"now": "track"},)
