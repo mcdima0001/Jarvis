@@ -29,9 +29,15 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Container, Mapping, Sequence
 
-from jarvis.core.contracts import ToolResult
+from jarvis.core.contracts import (
+    AssistantReplied,
+    Event,
+    ToolResult,
+    VoiceCommandRecognized,
+    WakeWordDetected,
+)
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.text import romanize, skeleton, squash
 from jarvis.core.tools import tool
@@ -139,6 +145,16 @@ def _touches(part: str, key: str) -> bool:
 #: администратора. Запускать что-то от администратора по такому основанию
 #: нельзя, а отказ отправит фразу дальше, в браузер.
 MAX_PROGRAM_WORDS = 5
+
+#: До какой доли громкости убавлять чужой звук, пока Jarvis слушает команду.
+#: Не в ноль намеренно: полная тишина посреди трека пугает сильнее, чем
+#: приглушение, а для микрофона разница между 20% и нулём уже невелика.
+DUCK_LEVEL = 0.2
+
+#: Через сколько секунд вернуть громкость, если ответа так и не было.
+#: Больше окна ответа (`audio.wake_word.follow_up_s`) плюс запас на
+#: распознавание и саму команду.
+DUCK_TIMEOUT_S = 20.0
 
 
 def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | None:
@@ -577,6 +593,79 @@ def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт то
     return cast(interface, POINTER(IAudioEndpointVolume))
 
 
+# --- приглушение чужого звука ------------------------------------------------
+#
+# Микрофон у владельца встроенный, а музыка играет через колонку с сабом и
+# погромче. Никакой шумодав столько не вытянет: алгоритмы борются за десяток
+# децибел, а просто убавить громкость на время команды — это сразу двадцать,
+# мгновенно и без нагрузки на процессор. Источник шума тут наш собственный, и
+# грех этим не воспользоваться.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SoundSession:
+    """Звуковая сессия приложения: кто звучит и с какой громкостью."""
+
+    pid: int
+    name: str
+    volume: float
+
+
+def plan_ducking(
+    sessions: Sequence[SoundSession], *, own_pids: Container[int], level: float
+) -> dict[int, float]:
+    """Кого приглушить и какая у него сейчас громкость.
+
+    Своя сессия не трогается принципиально: Jarvis отвечает голосом, и
+    приглушённый ответ утонул бы вместе с музыкой. Уже тихие тоже пропускаем —
+    «восстановление» сделало бы их громче, чем было.
+
+    Ключ — номер процесса: у одного приложения бывает несколько сессий, и
+    возвращать их по отдельности незачем — громкость у них общая по смыслу.
+    """
+    plan: dict[int, float] = {}
+    for session in sessions:
+        if session.pid <= 0 or session.pid in own_pids:
+            continue
+        if session.volume <= level:
+            continue
+        plan[session.pid] = max(plan.get(session.pid, 0.0), session.volume)
+    return plan
+
+
+def sound_sessions() -> list[tuple[Any, SoundSession]]:
+    """Звуковые сессии Windows: COM-объект и его описание.
+
+    Возвращаются парами, потому что менять громкость всё равно придётся через
+    COM-объект, а решение принимается по описанию — и его можно проверить
+    тестами на любой машине.
+    """
+    from pycaw.utils import AudioUtilities
+
+    found: list[tuple[Any, SoundSession]] = []
+    for session in AudioUtilities.GetAllSessions():
+        volume = getattr(session, "SimpleAudioVolume", None)
+        if volume is None:
+            # Системные звуки идут сессией без своего регулятора.
+            continue
+        process = getattr(session, "Process", None)
+        pid = int(getattr(session, "ProcessId", 0) or 0)
+        if not pid and process is not None:
+            pid = int(getattr(process, "pid", 0) or 0)
+        name = ""
+        if process is not None:
+            try:
+                name = str(process.name())
+            except Exception:  # noqa: BLE001 — процесс мог умереть между вызовами
+                name = ""
+        try:
+            level = float(volume.GetMasterVolume())
+        except Exception:  # noqa: BLE001 — COM бросает что угодно
+            continue
+        found.append((session, SoundSession(pid=pid, name=name, volume=level)))
+    return found
+
+
 class WindowsSkill(Skill):
     """Запуск программ, блокировка компьютера и громкость."""
 
@@ -608,6 +697,153 @@ class WindowsSkill(Skill):
         }
         self._catalog: dict[str, str] = {}
         self._rebuild()
+        self._setup_ducking()
+
+    def _setup_ducking(self) -> None:
+        """Подписаться на голосовые события, чтобы приглушать чужой звук.
+
+        Политика простая: позвали по имени — музыку убавить, ответили на
+        команду — вернуть. Тонкость одна, и без неё всё разваливается: сразу
+        после имени ассистент говорит «Слушаю, сэр», и это тоже ответ. Значит
+        возвращать громкость можно не на любую реплику, а только на ту, что
+        пришла **после** распознанной команды.
+        """
+        ducking = dict(self.context.setting("ducking", {}))
+        self._duck_level = float(ducking.get("level", DUCK_LEVEL))
+        self._duck_timeout = float(ducking.get("restore_after_s", DUCK_TIMEOUT_S))
+        #: Что приглушили: номер процесса -> прежняя громкость.
+        self._ducked: dict[int, float] = {}
+        #: Ждём команду после имени — значит «Слушаю» громкость не возвращает.
+        self._awaiting_command = False
+        self._duck_timer: asyncio.Task[None] | None = None
+
+        if not bool(ducking.get("enabled", True)):
+            self.log.debug("Приглушение звука выключено в конфиге")
+            return
+        self.context.scope.subscribe(WakeWordDetected.NAME, self._on_wake_word)
+        self.context.scope.subscribe(VoiceCommandRecognized.NAME, self._on_command)
+        self.context.scope.subscribe(AssistantReplied.NAME, self._on_replied)
+
+    async def on_stop(self) -> None:
+        """Вернуть громкость: приглушённая навсегда музыка — худший исход."""
+        await self._restore()
+
+    # --- приглушение -------------------------------------------------------
+
+    async def _on_wake_word(self, event: Event) -> None:
+        """Позвали по имени — убавить всё чужое и ждать команду."""
+        self._awaiting_command = True
+        await self._duck()
+
+    async def _on_command(self, event: Event) -> None:
+        """Команда распознана: следующая реплика вернёт громкость."""
+        self._awaiting_command = False
+
+    async def _on_replied(self, event: Event) -> None:
+        """Ответ прозвучал — вернуть громкость, если это был ответ на команду."""
+        if self._awaiting_command:
+            # Это «Слушаю, сэр»: команда ещё впереди, музыку возвращать рано.
+            return
+        await self._restore()
+
+    async def _duck(self) -> None:
+        """Убавить громкость всем, кроме себя."""
+        if self._ducked:
+            # Позвали второй раз, не дождавшись ответа: прежние громкости
+            # перезаписывать нельзя — вернём приглушённые.
+            return
+        try:
+            sessions = sound_sessions()
+        except Exception as exc:  # noqa: BLE001 — нет pycaw или COM не в духе
+            self.log.debug("Приглушить звук не удалось: %s: %s", type(exc).__name__, exc)
+            return
+
+        plan = plan_ducking(
+            [described for _, described in sessions],
+            own_pids={os.getpid()},
+            level=self._duck_level,
+        )
+        if not plan:
+            return
+
+        for session, described in sessions:
+            if described.pid not in plan:
+                continue
+            try:
+                session.SimpleAudioVolume.SetMasterVolume(self._duck_level, None)
+            except Exception as exc:  # noqa: BLE001 — сессия могла закрыться
+                self.log.debug("Сессия %s не приглушилась: %s", described.name, exc)
+
+        self._ducked = plan
+        self.log.info(
+            "Приглушил на время команды: %s",
+            ", ".join(sorted({s.name or str(s.pid) for _, s in sessions if s.pid in plan})),
+        )
+        self._arm_restore_timer()
+
+    def _arm_restore_timer(self) -> None:
+        """Страховка: вернуть громкость, даже если ответа так и не будет.
+
+        Сценарий обычный — позвали по имени и передумали. Без таймера музыка
+        осталась бы тихой до следующей команды.
+        """
+        if self._duck_timer is not None:
+            self._duck_timer.cancel()
+        self._duck_timer = self.context.scope.spawn(
+            self._restore_later(), name="windows-unduck"
+        )
+
+    async def _restore_later(self) -> None:
+        """Подождать и вернуть громкость."""
+        await asyncio.sleep(self._duck_timeout)
+        # Ссылку снимаем до восстановления: иначе `_restore` отменит задачу,
+        # внутри которой сам же и выполняется.
+        self._duck_timer = None
+        self.log.debug("Ответа не дождался — возвращаю громкость")
+        await self._restore()
+
+    async def _restore(self) -> None:
+        """Вернуть громкость тем, кого приглушали."""
+        if self._duck_timer is not None:
+            self._duck_timer.cancel()
+            self._duck_timer = None
+        self._awaiting_command = False
+        saved, self._ducked = self._ducked, {}
+        if not saved:
+            return
+
+        try:
+            sessions = sound_sessions()
+        except Exception as exc:  # noqa: BLE001 — вернуть громкость важнее причины
+            self.log.warning("Не удалось вернуть громкость: %s: %s", type(exc).__name__, exc)
+            return
+
+        for session, described in sessions:
+            level = saved.get(described.pid)
+            if level is None:
+                continue
+            try:
+                session.SimpleAudioVolume.SetMasterVolume(level, None)
+            except Exception as exc:  # noqa: BLE001 — сессия могла закрыться
+                self.log.debug("Сессия %s не вернулась: %s", described.name, exc)
+        self.log.debug("Громкость вернул: %d приложений", len(saved))
+
+    @tool(routable=False)
+    async def duck_others(self, level: float = DUCK_LEVEL) -> ToolResult:
+        """Приглушить звук всех приложений, кроме самого ассистента.
+
+        :param level: до какой доли громкости убавить, от 0 до 1.
+        """
+        self._duck_level = max(0.0, min(1.0, level))
+        await self._duck()
+        return ToolResult.success(len(self._ducked))
+
+    @tool(routable=False)
+    async def restore_others(self) -> ToolResult:
+        """Вернуть громкость приложениям, которые приглушали."""
+        count = len(self._ducked)
+        await self._restore()
+        return ToolResult.success(count)
 
     def _rebuild(self) -> None:
         """Пересобрать каталог известных программ.
