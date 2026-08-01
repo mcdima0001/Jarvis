@@ -27,6 +27,29 @@ _KOKORO_REPO = (
 _SILERO_REPO = "https://models.silero.ai/models/tts"
 _VOSK_REPO = "https://alphacephei.com/vosk/models"
 
+#: Модель Silero VAD — та же лаборатория, но это не синтез, а детектор речи.
+#: Берётся из репозитория с моделью, лицензия MIT, вес около двух мегабайт.
+_SILERO_VAD_URL = (
+    "https://raw.githubusercontent.com/snakers4/silero-vad/master"
+    "/src/silero_vad/data/silero_vad.onnx"
+)
+
+
+def ensure_vad_model(models_dir: Path) -> Path:
+    """Вернуть путь к модели Silero VAD, скачав её при первом запуске.
+
+    Отдельная функция, а не часть загрузки голосов: VAD к синтезу отношения не
+    имеет, лежит в своём каталоге и нужен раньше — на входе, а не на выходе.
+    """
+    target = models_dir / "silero_vad.onnx"
+    if target.is_file():
+        return target
+
+    logger.info("Скачиваю модель Silero VAD (около 2 МБ)")
+    with httpx.Client() as client:
+        _download(client, _SILERO_VAD_URL, target, timeout=30.0)
+    return target
+
 #: Имя модели Vosk дублировать нельзя — берём то же, что знает движок.
 #: Импорт ленивый: `assets` работает и там, где numpy не установлен.
 def _vosk_model() -> str:
@@ -277,13 +300,18 @@ def _split(spec: str) -> tuple[str, str]:
     return "piper", spec.strip()
 
 
-def _download(client: httpx.Client, url: str, target: Path) -> int:
-    """Скачать файл потоком, показывая прогресс для крупных файлов."""
+def _download(client: httpx.Client, url: str, target: Path, *, timeout: float = 180.0) -> int:
+    """Скачать файл потоком, показывая прогресс для крупных файлов.
+
+    :param timeout: голоса весят сотни мегабайт и ждут долго, но мелкие файлы
+        столько ждать не должны: загрузка модели VAD идёт при старте, и глухая
+        сеть подвесила бы запуск на три минуты.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".part")
     written = 0
 
-    with client.stream("GET", url, follow_redirects=True, timeout=180.0) as response:
+    with client.stream("GET", url, follow_redirects=True, timeout=timeout) as response:
         response.raise_for_status()
         total = int(response.headers.get("content-length", 0))
         with temporary.open("wb") as handle:

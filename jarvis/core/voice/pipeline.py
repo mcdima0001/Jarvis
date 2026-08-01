@@ -7,10 +7,12 @@
 * **Распознавание не блокирует прослушивание.** Whisper работает секунды;
   если ждать его в цикле чтения кадров, следующая фраза потеряется. Поэтому
   фрагменты уходят в очередь, а разбирает их отдельная задача.
-* **Активация проверяется по тексту, а не по звуку.** Распознавание идёт
-  локально и бесплатно, так что дешевле расшифровать фразу и посмотреть, начата
-  ли она с имени, чем держать отдельную модель wake word. Сравнение нечёткое:
-  Whisper пишет то «Джарвис», то «Джарвес», то «Жарвис».
+* **Имя ловится двумя способами сразу, и это не дубль.** По тексту — дёшево:
+  фраза всё равно расшифровывается, остаётся посмотреть, начата ли она с имени
+  (сравнение нечёткое, Whisper пишет то «Джарвис», то «Джарвес», то «Жарвис»).
+  По звуку — своей моделью, если она обучена: она срабатывает **до**
+  распознавания, и только так можно успеть приглушить музыку раньше, чем
+  прозвучит команда. Модель промолчала — остаётся текстовый гейт, и наоборот.
 
 Текстовая команда (``--say``, Telegram, веб) идёт по тому же пути начиная с
 роутера — общий код, одинаковое поведение.
@@ -23,7 +25,14 @@ import difflib
 import logging
 import time
 
-from jarvis.core.audio import VAD, AudioSink, AudioSource, WakeWord, load_sound
+from jarvis.core.audio import (
+    VAD,
+    AlwaysActiveWakeWord,
+    AudioSink,
+    AudioSource,
+    WakeWord,
+    load_sound,
+)
 from jarvis.core.bus import EventBus
 from jarvis.core.config import AudioConfig
 from jarvis.core.contracts import (
@@ -91,6 +100,10 @@ class VoicePipeline:
         #: поднимал модель — просто позже и молча, уже после ответа.
         self.silent = False
         self._follow_up_until = 0.0
+        #: Слушать ли имя по звуку. Признак — не режим из конфига, а то,
+        #: поднялась ли настоящая модель: заглушка в этом слоте отвечает «да»
+        #: на любой кадр, и спрашивать её означало бы срабатывать всегда.
+        self._acoustic = not isinstance(wake_word, AlwaysActiveWakeWord)
         self._speaking = False
         self._mute_until = 0.0
         #: Отклик на распознанную команду: PCM и частота, либо None.
@@ -126,7 +139,9 @@ class VoicePipeline:
             asyncio.create_task(self._consume(), name="voice-recognize"),
         ]
         phrase = self._config.wake_word.phrase
-        if self._config.wake_word.mode == "text":
+        if self._acoustic:
+            logger.info("Слушаю. Имя «%s» ловлю моделью, по звуку", phrase)
+        elif self._config.wake_word.mode in ("text", "acoustic"):
             logger.info("Слушаю. Обращение по имени: «%s»", phrase)
         else:
             logger.info("Слушаю. Реагирую на любую распознанную фразу")
@@ -276,6 +291,9 @@ class VoicePipeline:
                     self._vad.reset()
                     continue
 
+                if self._acoustic and self._wake_word.detect(frame):
+                    self._on_name_heard()
+
                 if self._vad.is_speech(frame):
                     if not speaking:
                         logger.debug("Начало речи")
@@ -304,6 +322,32 @@ class VoicePipeline:
             raise
         except Exception:
             logger.exception("Цикл прослушивания остановлен из-за ошибки")
+
+    def _on_name_heard(self) -> None:
+        """Модель активации услышала имя — ещё до всякого распознавания.
+
+        Ради этого момента она и нужна: событие уходит в шину сразу, и музыку
+        успевают приглушить **до** того, как команда прозвучит. Текстовый гейт
+        такого не может в принципе — он узнаёт имя после Whisper, когда фраза
+        уже записана вместе с фоном.
+
+        Дальше всё идёт по накатанному: открывается то же окно, что и после
+        голого «Джарвис», а имя из расшифровки снимет `_strip_wake`.
+        """
+        self._wake_word.reset()
+        self._follow_up_until = time.time() + self._config.wake_word.follow_up_s
+        logger.info(
+            "Услышал имя (%.2f) — жду команду %.0f с",
+            getattr(self._wake_word, "score", 1.0),
+            self._config.wake_word.follow_up_s,
+        )
+        self._events.emit(
+            WakeWordDetected(
+                source="voice",
+                phrase=self._wake_word.phrase,
+                score=float(getattr(self._wake_word, "score", 1.0)),
+            )
+        )
 
     def _submit(self, audio: bytes) -> None:
         """Отправить фрагмент на распознавание, не блокируя захват.
@@ -454,7 +498,7 @@ class VoicePipeline:
         """
         called, command = self._strip_wake(text)
 
-        if self._config.wake_word.mode != "text":
+        if self._config.wake_word.mode not in ("text", "acoustic"):
             return command if called else text.strip()
 
         if called:

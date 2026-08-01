@@ -753,3 +753,52 @@ def test_guitar_still_found_by_its_own_name() -> None:
 
     assert windows.match_program("гитар", catalog)[0] == "Ample Guitar"
     assert windows.match_program("ампл гитар", catalog)[0] == "Ample Guitar"
+
+
+# --- приглушение чужого звука -----------------------------------------------
+
+
+def _session(pid: int, name: str, volume: float) -> Any:
+    """Описание звуковой сессии для проверок."""
+    return windows.SoundSession(pid=pid, name=name, volume=volume)
+
+
+def test_own_session_is_never_ducked() -> None:
+    """Свой звук не трогаем: иначе ответ утонет вместе с музыкой.
+
+    Ради этого приглушение и делается по сессиям приложений, а не общей
+    громкостью системы — та убавила бы и Jarvis.
+    """
+    sessions = [
+        _session(100, "python.exe", 1.0),
+        _session(200, "browser.exe", 0.8),
+    ]
+
+    plan = windows.plan_ducking(sessions, own_pids={100}, level=0.2)
+
+    assert plan == {200: 0.8}
+
+
+def test_already_quiet_sessions_are_left_alone() -> None:
+    """Тихую сессию приглушать нечего, а «вернуть» значило бы сделать громче."""
+    sessions = [_session(300, "quiet.exe", 0.1), _session(400, "loud.exe", 0.9)]
+
+    plan = windows.plan_ducking(sessions, own_pids=set(), level=0.2)
+
+    assert plan == {400: 0.9}
+
+
+def test_several_sessions_of_one_program_share_a_pid() -> None:
+    """У приложения бывает несколько сессий — запоминаем громче всех звучащую."""
+    sessions = [_session(500, "game.exe", 0.4), _session(500, "game.exe", 0.9)]
+
+    plan = windows.plan_ducking(sessions, own_pids=set(), level=0.2)
+
+    assert plan == {500: 0.9}
+
+
+def test_sessions_without_a_process_are_skipped() -> None:
+    """Системные звуки приходят без номера процесса — их не вернуть обратно."""
+    sessions = [_session(0, "", 1.0)]
+
+    assert windows.plan_ducking(sessions, own_pids=set(), level=0.2) == {}

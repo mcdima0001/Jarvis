@@ -300,9 +300,18 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                 engine=str(_section(audio, "vad").get("engine") or "energy"),
                 threshold=float(_section(audio, "vad").get("threshold", 0.0)),
                 calibrate_seconds=float(_section(audio, "vad").get("calibrate_seconds", 1.0)),
+                models_dir=_resolve(
+                    project_root, _section(audio, "vad").get("models_dir", "models/vad")
+                ),
             ),
             wake_word=WakeWordConfig(
                 mode=str(_section(audio, "wake_word").get("mode") or "text"),
+                model=(
+                    _resolve(project_root, _section(audio, "wake_word")["model"])
+                    if _section(audio, "wake_word").get("model")
+                    else None
+                ),
+                threshold=float(_section(audio, "wake_word").get("threshold", 0.0)),
                 phrases=_wake_phrases(_section(audio, "wake_word")),
                 aliases=tuple(
                     str(a).lower() for a in (_section(audio, "wake_word").get("aliases") or ())
