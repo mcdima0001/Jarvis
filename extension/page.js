@@ -286,24 +286,81 @@ async function jarvisRunPlan(plan) {
    * «пролистай страницу вверх» модель разобрала как перемотку назад — из всего
    * каталога это было самое близкое.
    */
+  //: Запас, ниже которого разница высот — это округление, а не прокрутка.
+  const SCROLL_SLACK = 8;
+
+  /** Сама страница: то, что двигает `window.scrollBy`. */
+  const pageScroller = () => document.scrollingElement || document.documentElement;
+
+  /** Можно ли этот блок прокручивать: своя полоса и есть куда двигаться. */
+  const scrollable = (element) => {
+    if (!element || element.scrollHeight - element.clientHeight < SCROLL_SLACK) {
+      return false;
+    }
+    let style = null;
+    try {
+      style = getComputedStyle(element);
+    } catch (error) {
+      return false;
+    }
+    return style && ["auto", "scroll", "overlay"].includes(style.overflowY);
+  };
+
+  /**
+   * Что на этой странице и есть «страница».
+   *
+   * Обычно — она сама, и тогда всё просто. Но приложение вполне может держать
+   * своё содержимое в блоке со своей полосой прокрутки, а саму страницу
+   * оставить неподвижной: так устроена Яндекс Музыка, и на ней `window.scrollY`
+   * не меняется ни от чего. Живой случай 01.08.2026: «прокрути страницу ниже»
+   * отвечало «не нашёл, чем это сделать», хотя листать было что.
+   *
+   * Поэтому: не двигается страница — ищем самый большой прокручиваемый блок.
+   * Размер тут и есть признак главного: боковое меню со своей полосой всегда
+   * заметно меньше содержимого.
+   */
+  const scroller = () => {
+    const page = pageScroller();
+    if (page && page.scrollHeight - page.clientHeight >= SCROLL_SLACK) {
+      return page;
+    }
+    let best = null;
+    let biggest = 0;
+    for (const element of document.querySelectorAll("*")) {
+      if (!scrollable(element)) {
+        continue;
+      }
+      const box = element.getBoundingClientRect();
+      const size = box.width * box.height;
+      if (size > biggest) {
+        biggest = size;
+        best = element;
+      }
+    }
+    return best;
+  };
+
   const scrollPage = (step) => {
     const where = String(step.scroll || "").toLowerCase();
-    const height = window.innerHeight || 600;
-    const moves = {
-      down: [0, height * 0.9],
-      up: [0, -height * 0.9],
-      top: [0, -1e7],
-      bottom: [0, 1e7],
-    };
-    const move = moves[where];
-    if (!move) {
+    if (!["up", "down", "top", "bottom"].includes(where)) {
       return null;
     }
-    const before = window.scrollY;
-    window.scrollBy({ left: move[0], top: move[1], behavior: "instant" });
-    // Страница могла быть уже в самом низу — тогда листать было нечего, и это
-    // не успех: пусть план идёт дальше, вдруг у сайта своя кнопка.
-    return window.scrollY === before && where !== "top" && where !== "bottom" ? null : where;
+    const target = scroller();
+    if (!target) {
+      return null;
+    }
+    // Листать нечего — это **ответ**, а не отказ: страница просто короткая или
+    // уже в самом низу. Отказ тут читался бы как «команда не работает».
+    const view = target === pageScroller() ? window.innerHeight || target.clientHeight : target.clientHeight;
+    const step_ = (view || 600) * 0.9;
+    if (where === "top") {
+      target.scrollTop = 0;
+    } else if (where === "bottom") {
+      target.scrollTop = target.scrollHeight;
+    } else {
+      target.scrollTop += where === "down" ? step_ : -step_;
+    }
+    return where;
   };
 
   /**

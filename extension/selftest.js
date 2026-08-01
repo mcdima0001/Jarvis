@@ -144,7 +144,7 @@ function player(options) {
  * Страница. Настоящий поиск по селектору тут не нужен: page.js спрашивает
  * либо все плееры, либо все кнопки, либо конкретный `[attr="value"]` и `#id`.
  */
-function makeDocument({ players = [], controls = [], bySelector = {}, fields = [] }) {
+function makeDocument({ players = [], controls = [], bySelector = {}, fields = [], page = null, boxes = [] }) {
   const pool = [...controls, ...Object.values(bySelector)];
   const attribute = /^\[([\w-]+)="(.*)"\]$/;
   const identifier = /^#([\w-]+)$/;
@@ -173,7 +173,9 @@ function makeDocument({ players = [], controls = [], bySelector = {}, fields = [
   return {
     title: "Тестовая страница",
     activeElement: null,
-    querySelectorAll: (selector) => all(selector),
+    // Сама страница: по умолчанию длинная и прокручиваемая, как обычный сайт.
+    scrollingElement: page || { scrollTop: 100, scrollHeight: 5000, clientHeight: 600 },
+    querySelectorAll: (selector) => (selector === "*" ? boxes : all(selector)),
     querySelector: (selector) => all(selector)[0] || null,
   };
 }
@@ -193,7 +195,13 @@ function load(document, navigator = {}) {
         this.scrollY = Math.max(0, Math.min(5000, this.scrollY + shift.top));
       },
     },
-    getComputedStyle: () => ({ visibility: "visible", display: "block", opacity: "1" }),
+    getComputedStyle: (element) => ({
+      visibility: "visible",
+      display: "block",
+      opacity: "1",
+      // Своя полоса прокрутки — свойство конкретного блока, а не всех подряд.
+      overflowY: (element && element.overflowY) || "visible",
+    }),
     // Время тут ни при чём: page.js ждёт, пока сайт запустит плеер, а в
     // подделке он либо запускается сразу, либо не запускается вовсе. Ждать
     // по-настоящему означало бы секунды на каждую проверку.
@@ -602,11 +610,48 @@ check("беззвучный предпросмотр за звук не счит
   assert(result.played === false, "беззвучное видео сошло за успех");
 });
 
-check("страница листается", async () => {
-  const api = load(makeDocument({}));
+check("страница листается вниз", async () => {
+  const document_ = makeDocument({});
+  const api = load(document_);
+
   const result = await api.jarvisRunPlan([{ scroll: "down" }]);
+
   assert(result.done === "scroll", `ожидался scroll, пришло ${result.done}`);
-  assert(result.detail === "down", "направление потерялось");
+  assert(document_.scrollingElement.scrollTop > 100, "страница не сдвинулась");
+});
+
+check("листается внутренний блок, когда сама страница не двигается", async () => {
+  // Живой случай 01.08.2026, Яндекс Музыка: содержимое лежит в блоке со своей
+  // полосой, а сама страница неподвижна — `window.scrollY` не меняется ни от
+  // чего, и шаг считал себя неудавшимся. «Прокрути страницу ниже» отвечало
+  // «не нашёл, чем это сделать», хотя листать было что.
+  const still = { scrollTop: 0, scrollHeight: 600, clientHeight: 600 };
+  const menu = {
+    scrollTop: 0, scrollHeight: 2000, clientHeight: 500, overflowY: "auto",
+    getBoundingClientRect: () => ({ width: 200, height: 500 }),
+  };
+  const main = {
+    scrollTop: 0, scrollHeight: 9000, clientHeight: 700, overflowY: "auto",
+    getBoundingClientRect: () => ({ width: 1200, height: 700 }),
+  };
+  const api = load(makeDocument({ page: still, boxes: [menu, main] }));
+
+  const result = await api.jarvisRunPlan([{ scroll: "down" }]);
+
+  assert(result.done === "scroll", `ожидался scroll, пришло ${result.done}`);
+  assert(main.scrollTop > 0, "содержимое не сдвинулось");
+  assert(menu.scrollTop === 0, "боковое меню трогать не надо — оно меньше");
+});
+
+check("листать нечего — это ответ, а не отказ", async () => {
+  // Короткая страница без прокрутки: отказ тут читался бы как «команда не
+  // работает», хотя всё сработало и двигаться просто некуда.
+  const still = { scrollTop: 0, scrollHeight: 600, clientHeight: 600 };
+  const api = load(makeDocument({ page: { ...still, scrollHeight: 5000 } }));
+
+  const result = await api.jarvisRunPlan([{ scroll: "bottom" }]);
+
+  assert(result.done === "scroll", `ожидался scroll, пришло ${result.done}`);
 });
 
 check("незнакомое направление листания пропускается", async () => {

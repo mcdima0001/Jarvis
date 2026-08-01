@@ -40,6 +40,10 @@ _CHUNK = 512
 #: Сколько ждать открытия записи, прежде чем ответить вызывающему.
 _OPEN_TIMEOUT_S = 3.0
 
+#: Через сколько кусков сверять, не сменилось ли устройство вывода. При 512
+#: сэмплах и 16 кГц это примерно раз в пять секунд.
+_RECHECK_BLOCKS = 160
+
 
 def _prepare_com() -> None:
     """Разрешить потоку работать с COM.
@@ -187,14 +191,8 @@ class LoopbackSource:
         try:
             _prepare_com()
             _quiet_discontinuity_warnings()
-            microphone = self._find()
-            # Два канала, а не один: микрофон слышит стерео сведённым по воздуху,
-            # и среднее ближе к правде, чем один левый канал.
-            with microphone.recorder(samplerate=self._rate, channels=2, blocksize=_CHUNK) as recorder:
-                self._opened.set()
-                while not self._stop.is_set():
-                    block = recorder.record(numframes=_CHUNK)
-                    self._on_audio(numpy.mean(numpy.asarray(block, dtype=numpy.float64), axis=1))
+            while not self._stop.is_set():
+                self._record(self._find())
         except Exception as exc:  # noqa: BLE001
             self._failed = f"{type(exc).__name__}: {exc}"
             logger.warning("Захват опорного сигнала прервался (%s) — AEC выключен", self._failed)
@@ -202,3 +200,44 @@ class LoopbackSource:
             # Разбудить ожидающего в любом случае: молчание тут читалось бы как
             # «ещё открывается» и стоило бы полной паузы на пустом месте.
             self._opened.set()
+
+    def _record(self, microphone: Any) -> None:
+        """Читать с устройства, пока его не сменили и не попросили остановиться."""
+        # Два канала, а не один: микрофон слышит стерео сведённым по воздуху,
+        # и среднее ближе к правде, чем один левый канал.
+        with microphone.recorder(samplerate=self._rate, channels=2, blocksize=_CHUNK) as recorder:
+            self._opened.set()
+            counted = 0
+            while not self._stop.is_set():
+                block = recorder.record(numframes=_CHUNK)
+                self._on_audio(numpy.mean(numpy.asarray(block, dtype=numpy.float64), axis=1))
+                counted += 1
+                if counted >= _RECHECK_BLOCKS:
+                    counted = 0
+                    if self._changed():
+                        return
+
+    def _changed(self) -> bool:
+        """Сменилось ли устройство вывода по умолчанию.
+
+        Случай живой и обидный: копия снимается с того выхода, что был основным
+        в момент запуска, а Windows переключает его сама — воткнули наушники,
+        включили колонку, проснулась гарнитура. Звук после этого идёт мимо нас,
+        опорный сигнал становится **тишиной**, и AEC перестаёт делать что-либо,
+        не сказав ни слова. Так и вышло 01.08.2026: проверка снимала с «Internal
+        Headset», а живой запуск — с «Onboard Speaker», и в итоге «убрано 0.0 дБ».
+
+        Проверяется только в режиме `auto`: если устройство названо в конфиге
+        руками, значит его и просили, а не «то, что сейчас основное».
+        """
+        if self._device:
+            return False
+        try:
+            soundcard = _import_soundcard()
+            now = soundcard.default_speaker().name
+        except Exception:  # noqa: BLE001 — устройство могло исчезнуть совсем
+            return False
+        if now == self._name:
+            return False
+        logger.info("Устройство вывода сменилось на %r — перехожу на него", now)
+        return True

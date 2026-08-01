@@ -85,6 +85,13 @@ _SAFE_LEAD_MS = 60.0
 #: означала бы, что ассистент перестал слышать вовсе.
 _MAX_MIC_DELAY_MS = 900.0
 
+#: Громче этого в микрофоне — значит, в комнате что-то звучит, и пустая опора
+#: подозрительна. Тише — обычная тишина, жаловаться не на что.
+_AUDIBLE_ROOM = 1e-4
+
+#: Сколько терпеть пустую опору при звучащей комнате, прежде чем пожаловаться.
+_SILENCE_ALARM_S = 30.0
+
 #: Сколько стухшей опоры терпим в очереди. Много копить нельзя: старая опора
 #: означает, что эхо мы ищем раньше, чем оно прозвучало.
 _MAX_LAG_S = 0.064
@@ -241,6 +248,8 @@ class EchoCancellingSource:
         self._delay = int(sample_rate * _MIC_DELAY_MS / 1000)
         self._settled = False
         self._rescales = 0
+        self._quiet_since = 0.0
+        self._complained = False
 
     @property
     def service_name(self) -> str:
@@ -363,7 +372,9 @@ class EchoCancellingSource:
         reference = numpy.concatenate(self._seen_reference)
         if float(numpy.mean(reference**2)) < 1e-7:
             self._checked = 0.0  # тишина: попробуем в следующий раз, а не потом
+            self._notice_silence(now, float(numpy.mean(mic**2)))
             return
+        self._quiet_since = 0.0
 
         shift, sure = estimate_delay(mic, reference, sample_rate=self._rate)
         if sure < _SURE_ENOUGH:
@@ -415,6 +426,35 @@ class EchoCancellingSource:
         self._seen_mic.clear()
         self._seen_reference.clear()
         self._history = 0
+
+    def _notice_silence(self, now: float, loudness: float) -> None:
+        """Сказать вслух, если опора пуста, а микрофон при этом что-то слышит.
+
+        Это единственная поломка AEC, которую по логу иначе не отличить от
+        «музыка просто не играла»: обе выглядят как «музыка звучала 0% времени».
+        А случается она запросто — копия снимается с устройства вывода, и стоит
+        Windows сменить основное (наушники, колонка, гарнитура), как звук идёт
+        мимо нас. Живой запуск 01.08.2026: «убрано 0.0 дБ» при полном зале.
+
+        Условие с микрофоном обязательно: в тихой комнате пустая опора — норма,
+        и предупреждать там не о чем.
+        """
+        if loudness < _AUDIBLE_ROOM:
+            self._quiet_since = 0.0
+            return
+        if not self._quiet_since:
+            self._quiet_since = now
+            return
+        if self._complained or now - self._quiet_since < _SILENCE_ALARM_S:
+            return
+        self._complained = True
+        logger.warning(
+            "Опорный сигнал пуст: с %s ничего не играет, хотя микрофон слышит звук. "
+            "Эхоподавление в этом запуске работать не будет — скорее всего, звук идёт "
+            "на другое устройство. Проверь, какое стоит по умолчанию, либо назови нужное "
+            "в audio.aec.reference (список: python -m jarvis --check-aec)",
+            getattr(self._reference, "name", "выбранного выхода") or "выбранного выхода",
+        )
 
     def _tell_once(self, shift: int, sure: float) -> None:
         """Сказать один раз, что сдвиг искать не понадобилось."""

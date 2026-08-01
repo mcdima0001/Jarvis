@@ -14,7 +14,13 @@ import numpy
 import pytest
 
 from jarvis.core.audio.aec import BLOCK, to_float, to_pcm
-from jarvis.core.audio.echo import _KEEP_MS, _MIC_DELAY_MS, EchoCancellingSource, ReferenceTrack
+from jarvis.core.audio.echo import (
+    _KEEP_MS,
+    _MIC_DELAY_MS,
+    _SILENCE_ALARM_S,
+    EchoCancellingSource,
+    ReferenceTrack,
+)
 from jarvis.core.audio.loopback import LoopbackSource
 from jarvis.core.audio.protocol import AudioFrame
 
@@ -287,3 +293,34 @@ def test_missing_soundcard_is_reported_not_raised() -> None:
     assert capture.start() is False
     assert capture.failure, "причина обязана попасть наружу"
     capture.stop()
+
+
+def test_empty_reference_is_reported_when_the_room_is_loud(caplog) -> None:
+    """Опора пуста, а микрофон слышит звук — надо сказать, и один раз.
+
+    Это единственная поломка AEC, которую по логу иначе не отличить от «музыка
+    просто не играла»: обе выглядят как «музыка звучала 0% времени». А случается
+    она запросто — стоит Windows сменить основное устройство вывода, и копия
+    снимается с молчащего выхода. Живой запуск 01.08.2026: «убрано 0.0 дБ».
+    """
+    source = EchoCancellingSource(FakeMicrophone(_noise(BLOCK)), sample_rate=RATE)
+
+    with caplog.at_level("WARNING"):
+        source._notice_silence(100.0, 1.0)
+        assert not caplog.records, "с первого раза жаловаться рано"
+        source._notice_silence(100.0 + _SILENCE_ALARM_S + 1, 1.0)
+        source._notice_silence(100.0 + _SILENCE_ALARM_S + 2, 1.0)
+
+    assert len(caplog.records) == 1, "жалоба должна быть ровно одна"
+    assert "audio.aec.reference" in caplog.records[0].getMessage()
+
+
+def test_silence_in_a_quiet_room_is_not_a_complaint(caplog) -> None:
+    """В тихой комнате пустая опора — норма, и предупреждать не о чем."""
+    source = EchoCancellingSource(FakeMicrophone(_noise(BLOCK)), sample_rate=RATE)
+
+    with caplog.at_level("WARNING"):
+        source._notice_silence(100.0, 0.0)
+        source._notice_silence(100.0 + _SILENCE_ALARM_S + 1, 0.0)
+
+    assert not caplog.records
