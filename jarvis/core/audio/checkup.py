@@ -156,3 +156,93 @@ def check_aec(config: AudioConfig, *, seconds: float = 10.0) -> str:
             f"  * хватает ли длины фильтра: audio.aec.tail_ms, сейчас {config.aec.tail_ms:.0f} мс.",
         ]
     return "\n".join(lines)
+
+
+def _read_wav(path: Any) -> tuple[numpy.ndarray, int]:
+    """Прочитать wav 16 бит. Ничего сложнее нам тут и не нужно."""
+    import wave
+
+    with wave.open(str(path)) as source:
+        rate = source.getframerate()
+        data = source.readframes(source.getnframes())
+    wave_ = numpy.frombuffer(data, dtype=numpy.int16)
+    return wave_, rate
+
+
+def _scores(model: Any, wave_: numpy.ndarray, rate: int) -> list[float]:
+    """Прогнать запись через модель и собрать все её оценки."""
+    from .protocol import AudioFrame
+
+    model.reset()
+    out: list[float] = []
+    step = rate // 10
+    for at in range(0, len(wave_) - step, step):
+        piece = wave_[at : at + step]
+        model.detect(AudioFrame(data=piece.tobytes(), sample_rate=rate))
+        out.append(model.score)
+    return out
+
+
+def check_wakeword(model_path: Any, spoken: Any, background: Any = None) -> str:
+    """Проверить обученную модель активации на своих записях.
+
+    Урок Silero тут главный: **отрицательный пример не доказывает ничего**.
+    Модель, которая молчит всегда, на тишине и на музыке ведёт себя ровно как
+    исправная — и выглядит прекрасно, пока не позовёшь. Поэтому меряется прежде
+    всего попадание на записях своего голоса, а ложные срабатывания — вторым.
+
+    :param model_path: файл `.onnx` после обучения.
+    :param spoken: каталог с записями, где имя **произнесено** (`my_voice`).
+    :param background: каталог с тем, где имени нет: своя музыка, разговоры.
+    """
+    from pathlib import Path
+
+    from .wakeword import OpenWakeWord
+
+    lines = ["Проверка модели активации", "=" * 25, ""]
+    model_file = Path(str(model_path))
+    if not model_file.exists():
+        return f"Нет файла модели: {model_file}"
+
+    # Порог ставим в ноль: нам нужны сами оценки, а не готовое «да/нет».
+    model = OpenWakeWord(model_file, phrase="джарвис", sample_rate=16000, threshold=0.01)
+
+    said = sorted(Path(str(spoken)).glob("*.wav")) if spoken else []
+    if not said:
+        return f"Нет записей в {spoken} — проверять нечего. Их делает record_samples.py"
+    lines.append(f"Записей с именем: {len(said)}")
+
+    peaks = []
+    for path in said:
+        wave_, rate = _read_wav(path)
+        scores = _scores(model, wave_, rate)
+        peaks.append(max(scores) if scores else 0.0)
+
+    quiet_peaks: list[float] = []
+    hours = 0.0
+    if background:
+        others = sorted(Path(str(background)).glob("*.wav"))
+        lines.append(f"Записей без имени: {len(others)}")
+        for path in others:
+            wave_, rate = _read_wav(path)
+            hours += len(wave_) / rate / 3600
+            quiet_peaks.extend(_scores(model, wave_, rate))
+
+    lines += ["", f"{'порог':>6} {'попал':>8} {'ложных':>9}"]
+    for threshold in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
+        hit = sum(1 for value in peaks if value >= threshold) / len(peaks)
+        false = sum(1 for value in quiet_peaks if value >= threshold)
+        per_hour = f"{false / hours:.1f}/час" if hours > 0.01 else "—"
+        lines.append(f"{threshold:>6.1f} {hit * 100:>7.0f}% {per_hour:>9}")
+
+    best = sorted(peaks)[len(peaks) // 20] if len(peaks) >= 20 else min(peaks)
+    lines += [
+        "",
+        f"Слабейшие записи набирают около {best:.2f} — ниже этого порог опускать "
+        f"незачем, выше {max(peaks):.2f} он бесполезен.",
+        "",
+        "Выбирай порог по правому столбцу: одно ложное срабатывание в пять часов",
+        "терпимо, одно в десять минут — нет. Попадание ниже 80% означает, что",
+        "звать придётся дважды, и это хуже ложных.",
+    ]
+    return "\n".join(lines)
