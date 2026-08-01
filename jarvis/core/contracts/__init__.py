@@ -6,6 +6,7 @@
 """
 
 from .events import (
+    AnnouncementRequested,
     AssistantReplied,
     AssistantSpeaking,
     Event,
@@ -27,6 +28,7 @@ from .intent import Intent, Utterance, detect_language, parse_number
 from .results import ToolResult
 
 __all__ = [
+    "AnnouncementRequested",
     "AssistantReplied",
     "AssistantSpeaking",
     "Event",

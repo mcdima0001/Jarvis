@@ -24,6 +24,7 @@ import asyncio
 import difflib
 import logging
 import time
+from typing import Any
 
 from jarvis.core.audio import (
     VAD,
@@ -36,6 +37,7 @@ from jarvis.core.audio import (
 from jarvis.core.bus import EventBus
 from jarvis.core.config import AudioConfig
 from jarvis.core.contracts import (
+    AnnouncementRequested,
     AssistantReplied,
     AssistantSpeaking,
     ToolResult,
@@ -117,6 +119,13 @@ class VoicePipeline:
         self._activation: tuple[bytes, int] | None = None
         #: Ссылку держим, чтобы задачу не собрал сборщик мусора на полпути.
         self._sound_task: asyncio.Task[None] | None = None
+        #: Говорим по одной реплике за раз. Пока ответы шли только на команды,
+        #: очередь получалась сама собой; напоминание же срабатывает когда
+        #: угодно, в том числе посреди ответа, — и две реплики полезли бы в
+        #: динамик одновременно.
+        self._voice = asyncio.Lock()
+        #: Подписка на просьбы что-нибудь произнести; снимается при остановке.
+        self._announcements: Any = None
 
     @property
     def service_name(self) -> str:
@@ -145,6 +154,11 @@ class VoicePipeline:
             asyncio.create_task(self._listen(), name="voice-listen"),
             asyncio.create_task(self._consume(), name="voice-recognize"),
         ]
+        # Кто-то может захотеть заговорить без вопроса — например напоминание.
+        # Произносить обязаны мы: только тут микрофон глохнет на время речи.
+        self._announcements = self._events.subscribe(
+            AnnouncementRequested.NAME, self._announce
+        )
         phrase = self._config.wake_word.phrase
         if self._acoustic:
             logger.info("Слушаю. Имя «%s» ловлю моделью, по звуку", phrase)
@@ -155,6 +169,9 @@ class VoicePipeline:
 
     async def stop(self) -> None:
         """Остановить прослушивание и разбор."""
+        if self._announcements is not None:
+            self._announcements.unsubscribe()
+            self._announcements = None
         if self._sound_task is not None:
             self._sound_task.cancel()
         for task in self._tasks:
@@ -172,6 +189,16 @@ class VoicePipeline:
         это синтез и секунды.
         """
         await self._say(self._persona.line(situation, language), language=language)
+
+    async def _announce(self, event: AnnouncementRequested) -> None:
+        """Произнести то, о чём попросил скилл.
+
+        Единственная точка, где реплика приходит не в ответ на команду.
+        Микрофон при этом глохнет так же, как на любой другой речи, — иначе
+        ассистент услышит собственное напоминание и, попав в окно ответа,
+        честно попробует выполнить его как команду.
+        """
+        await self._say(event.text, language=event.language)
 
     # --- общий путь для голоса и текста ------------------------------------
 
@@ -211,6 +238,14 @@ class VoicePipeline:
         """
         if not text:
             return
+        # По одной реплике за раз. Ответ на команду и сработавшее напоминание
+        # приходят из разных мест и запросто совпадают по времени; без очереди
+        # они полезли бы в динамик вместе, а микрофон разглох бы посреди первой.
+        async with self._voice:
+            await self._speak(text, language=language)
+
+    async def _speak(self, text: str, *, language: str | None = None) -> None:
+        """Собственно озвучка — вызывается только из `_say`, под замком."""
         # Что именно сказал ассистент, по логу иначе не восстановить: в нём
         # видно команду и её результат, а произнесённой фразы — нет. А разбирать
         # приходится как раз расхождение между ними.

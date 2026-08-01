@@ -1093,3 +1093,71 @@ def test_expired_deaf_mode_restores_hearing(
 
     clock[0] += 31 * 60
     assert pipe._extract_command("джарвис, включи свет") == "включи свет"
+
+
+# --- реплика без вопроса ----------------------------------------------------
+
+
+async def test_announcement_is_spoken_by_the_pipeline(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Скилл просит — конвейер произносит.
+
+    Прямо в синтез скиллу ходить нельзя: тогда микрофон не заглохнет, и
+    ассистент услышит собственное напоминание — а в открытом окне ответа ещё и
+    выполнит его как команду.
+    """
+    from jarvis.core.contracts import AnnouncementRequested
+
+    tts = RecordingTTS()
+    pipe = _pipeline(registry, events, tts=tts)
+    await pipe.start()
+    try:
+        events.emit(AnnouncementRequested(source="reminders", text="Напоминание: хлеб."))
+        await asyncio.sleep(0.05)
+    finally:
+        await pipe.stop()
+
+    assert tts.said == ["Напоминание: хлеб."]
+    assert pipe._mute_until > time.time(), "микрофон обязан глохнуть и на такую реплику"
+
+
+async def test_announcement_stops_with_the_pipeline(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Остановленный конвейер ничего не произносит: подписка снимается."""
+    from jarvis.core.contracts import AnnouncementRequested
+
+    tts = RecordingTTS()
+    pipe = _pipeline(registry, events, tts=tts)
+    await pipe.start()
+    await pipe.stop()
+
+    events.emit(AnnouncementRequested(source="reminders", text="Уже поздно."))
+    await asyncio.sleep(0.05)
+
+    assert tts.said == []
+
+
+async def test_two_replies_do_not_overlap(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Ответ на команду и сработавшее напоминание не лезут в динамик вместе.
+
+    Пока реплики шли только в ответ на команды, очередь получалась сама собой.
+    Напоминание же срабатывает когда угодно — в том числе посреди ответа.
+    """
+    order: list[str] = []
+
+    class Slow(NullTTS):
+        """Синтез, у которого речь занимает время, как у настоящего."""
+
+        async def say(self, text: str, *, language: str | None = None) -> None:
+            order.append(f"начал {text}")
+            await asyncio.sleep(0.05)
+            order.append(f"кончил {text}")
+
+    pipe = _pipeline(registry, events, tts=Slow())
+    await asyncio.gather(pipe._say("первая"), pipe._say("вторая"))
+
+    assert order == ["начал первая", "кончил первая", "начал вторая", "кончил вторая"]
