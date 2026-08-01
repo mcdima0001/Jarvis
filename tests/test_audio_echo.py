@@ -14,7 +14,7 @@ import numpy
 import pytest
 
 from jarvis.core.audio.aec import BLOCK, to_float, to_pcm
-from jarvis.core.audio.echo import _MIC_DELAY_MS, EchoCancellingSource, ReferenceTrack
+from jarvis.core.audio.echo import _KEEP_MS, _MIC_DELAY_MS, EchoCancellingSource, ReferenceTrack
 from jarvis.core.audio.loopback import LoopbackSource
 from jarvis.core.audio.protocol import AudioFrame
 
@@ -204,6 +204,37 @@ async def test_missing_capture_is_not_a_failure() -> None:
     await source.stop()
 
     assert (microphone.started, microphone.stopped) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_microphone_is_held_back_when_the_reference_lags() -> None:
+    """Опора отстаёт сильнее начальной задержки — микрофон придерживают сильнее.
+
+    Ровно этот случай встретился на живой машине 01.08.2026: петлевой захват
+    отдавал звук на 205 мс позже микрофона (пересчёт частоты, буферы WASAPI),
+    начальной задержки в 200 мс не хватало впритык, и AEC убирал 0.8 дБ вместо
+    двадцати. Двигать опору вперёд тут бесполезно — тех сэмплов ещё нет, — так
+    что придерживать надо микрофон, и подобрать это можно только измерением.
+    """
+    samples = 30 * RATE
+    late = int(RATE * 0.3)
+    music = _noise(samples, seed=11)
+    echo = numpy.convolve(music, numpy.array([0.0] * 160 + [0.6, 0.3, -0.2, 0.1]))[:samples]
+    # Опорный поток отдаёт то, что прозвучало 300 мс назад.
+    delayed = numpy.concatenate((numpy.zeros(late), music))[:samples]
+    source = EchoCancellingSource(
+        FakeMicrophone(echo), sample_rate=RATE, residual=False, high_pass_hz=0.0
+    )
+
+    out = await _drain(source, delayed)
+
+    grown = source._delay
+    assert grown > DELAY, f"задержка микрофона осталась прежней: {grown}"
+    assert grown >= late + int(RATE * _KEEP_MS / 1000) - BLOCK, "придержали недостаточно"
+
+    was = float(numpy.mean(echo[20 * RATE : 28 * RATE] ** 2))
+    left = float(numpy.mean(out[grown + 20 * RATE : grown + 28 * RATE] ** 2))
+    assert 10.0 * numpy.log10(was / left) > 15.0, "после правки эхо обязано уйти"
 
 
 def test_missing_soundcard_is_reported_not_raised() -> None:

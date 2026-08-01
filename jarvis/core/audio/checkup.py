@@ -20,7 +20,7 @@ import numpy
 from jarvis.core.config import AudioConfig
 
 from .aec import BLOCK, EchoCanceller, estimate_delay, to_float
-from .echo import _KEEP_MS, _MIC_DELAY_MS
+from .echo import _KEEP_MS, _MAX_MIC_DELAY_MS
 
 
 def _mono(block: Any) -> numpy.ndarray:
@@ -103,9 +103,12 @@ def check_aec(config: AudioConfig, *, seconds: float = 10.0) -> str:
     if sure < 0.5:
         lines.append("  Уверенности мало: похоже, в микрофон эта музыка не попадает вовсе.")
 
-    # Прогон в тех же условиях, в каких работает конвейер: микрофон придержан,
-    # опора идёт впереди. Иначе замер показал бы не то, что будет вживую.
-    delay = int(rate * _MIC_DELAY_MS / 1000)
+    # Прогон в тех же условиях, в каких работает конвейер: микрофон придержан
+    # ровно на столько, чтобы опора шла впереди на `_KEEP_MS`. Именно это и
+    # подбирает `_realign` на живом запуске, и брать тут какое-то своё число
+    # значило бы мерить не то, что будет работать.
+    delay = min(int(rate * (_KEEP_MS / 1000)) - shift, int(rate * _MAX_MIC_DELAY_MS / 1000))
+    delay = max(delay, 0)
     aligned_mic = numpy.concatenate((numpy.zeros(delay), mic))[:size]
     aec = EchoCanceller(sample_rate=rate, tail_ms=config.aec.tail_ms, residual=config.aec.residual)
     out = [
@@ -129,6 +132,10 @@ def check_aec(config: AudioConfig, *, seconds: float = 10.0) -> str:
         f"Музыка звучала: {stats.active * 100:.0f}% времени",
         "",
     ]
+    lines.append(
+        f"Микрофон придержан на {delay * 1000 // rate} мс — столько нужно, чтобы опора "
+        f"шла впереди на {_KEEP_MS:.0f} мс. Столько же подберёт и живой запуск."
+    )
     if erle > 12:
         lines.append("Это хороший результат: музыка станет заметно тише ещё до распознавания.")
     elif erle > 5:
@@ -138,16 +145,14 @@ def check_aec(config: AudioConfig, *, seconds: float = 10.0) -> str:
         )
     else:
         lines += [
-            "Почти ничего. По порядку, что смотреть:",
-            f"  * сдвиг {shift * 1000 // rate} мс — если он больше {_MIC_DELAY_MS:.0f} мс "
-            f"или отрицательный, потоки разъезжаются;",
+            "Почти ничего. Выравнивание при этом учтено, так что дело не в нём. "
+            "Что смотреть дальше:",
             "  * выключены ли «улучшения звука» у микрофона в параметрах Windows — "
-            "автоусиление и шумодав драйвера меняют сигнал непредсказуемо, "
-            "и вычитать после них нечего;",
+            "автоусиление и шумодав драйвера меняют сигнал непредсказуемо и "
+            "нелинейно, а после такой обработки вычитать уже нечего. "
+            "Это самая частая причина;",
+            "  * не слишком ли громко: на большой громкости колонка искажает, и "
+            "часть эха линейным вычитанием не описывается вовсе;",
             f"  * хватает ли длины фильтра: audio.aec.tail_ms, сейчас {config.aec.tail_ms:.0f} мс.",
         ]
-    lines.append(
-        f"Для справки: конвейер придерживает микрофон на {_MIC_DELAY_MS:.0f} мс "
-        f"и держит опору впереди на {_KEEP_MS:.0f} мс."
-    )
     return "\n".join(lines)
