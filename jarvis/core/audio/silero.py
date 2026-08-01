@@ -12,11 +12,17 @@ Silero отвечает на другой вопрос: **речь ли это**
 доходят вовсе. Модель весит два мегабайта и считает кадр за доли миллисекунды,
 то есть платы за это никакой.
 
-Тонкость реализации одна: модель принимает ровно 512 сэмплов на 16 кГц, а кадр
-у нас 30 мс, то есть 480. Пересобирать кадры приходится внутри — менять
-`audio.frame_ms` под чужую модель неправильно: это настройка захвата, а не
-детектора. Поэтому решение живёт между вызовами: часть кадров вывод не даёт, и
-`is_speech` отвечает тем, что модель сказала в последний раз.
+Тонкостей реализации две, и обе про формат входа.
+
+Первая безобидная: модель берёт 512 сэмплов на 16 кГц, а кадр у нас 30 мс, то
+есть 480. Пересобирать кадры приходится внутри — менять `audio.frame_ms` под
+чужую модель неправильно: это настройка захвата, а не детектора. Поэтому
+решение живёт между вызовами: часть кадров вывода не даёт, и `is_speech`
+отвечает тем, что модель сказала в последний раз.
+
+Вторая стоила разбора: к куску обязан быть приклеен **хвост предыдущего**
+(`CONTEXT_SAMPLES`). Забудешь — модель не ругается, а тихо отвечает «речи нет»
+на что угодно, и ассистент перестаёт слышать вообще.
 """
 
 from __future__ import annotations
@@ -34,6 +40,15 @@ logger = logging.getLogger(__name__)
 
 #: Сколько сэмплов модель берёт за раз. Значение не наше — так обучена сеть.
 CHUNK_SAMPLES: dict[int, int] = {16000: 512, 8000: 256}
+
+#: Сколько сэмплов **предыдущего** куска подаётся вместе с текущим.
+#:
+#: Это не оптимизация и не сглаживание, а часть контракта модели, и стоила она
+#: целого разбора. Пятая версия Silero обучена на входе «контекст + кусок», но в
+#: ONNX размер входа объявлен как [None, None]: подашь ровно 512 сэмплов — она
+#: молча примет их и вернёт вероятность речи **около нуля на любом звуке**. Ни
+#: ошибки, ни предупреждения; со стороны выглядит как «ассистент оглох».
+CONTEXT_SAMPLES: dict[int, int] = {16000: 64, 8000: 32}
 
 #: Порог по умолчанию, если в конфиге ноль (там ноль означает «на твоё
 #: усмотрение»: у энергетического это калибровка по фону, здесь — обычный порог).
@@ -56,6 +71,7 @@ class SileroVAD:
         threshold: float = DEFAULT_THRESHOLD,
     ) -> None:
         self._chunk = CHUNK_SAMPLES.get(sample_rate)
+        self._context_size = CONTEXT_SAMPLES.get(sample_rate, 0)
         if self._chunk is None:
             raise AudioError(
                 f"Silero VAD работает на 16 или 8 кГц, а в конфиге {sample_rate}. "
@@ -86,6 +102,7 @@ class SileroVAD:
         self._buffer = bytearray()
         self._speaking = False
         self._state: Any = None
+        self._context: Any = None
         self._numpy = self._import_numpy()
         self.reset()
         logger.info(
@@ -133,8 +150,11 @@ class SileroVAD:
         samples = array.array("h")
         samples.frombytes(chunk)
         wave = numpy.array(samples, dtype=numpy.float32) / 32768.0
+        # Кусок подаётся вместе с хвостом предыдущего — см. CONTEXT_SAMPLES.
+        window = numpy.concatenate((self._context, wave))
+        self._context = wave[-self._context_size :] if self._context_size else wave[:0]
 
-        feed: dict[str, Any] = {"input": wave.reshape(1, -1)}
+        feed: dict[str, Any] = {"input": window.reshape(1, -1)}
         if "sr" in self._inputs:
             feed["sr"] = numpy.array(self._sample_rate, dtype=numpy.int64)
         if "state" in self._inputs:
@@ -153,6 +173,7 @@ class SileroVAD:
         numpy = self._numpy
         self._buffer.clear()
         self._speaking = False
+        self._context = numpy.zeros(self._context_size, dtype=numpy.float32)
         if "state" in self._inputs:
             self._state = numpy.zeros((2, 1, 128), dtype=numpy.float32)
         else:

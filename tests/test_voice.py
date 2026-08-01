@@ -726,7 +726,10 @@ class _FakeSession:
 
     def run(self, _outputs, feed):  # type: ignore[no-untyped-def]
         """Вернуть очередную вероятность и то же состояние."""
-        assert feed["input"].shape == (1, 512), "модель принимает ровно 512 сэмплов"
+        assert feed["input"].shape == (1, 512 + 64), (
+            "к куску обязан быть приклеен контекст предыдущего: без него "
+            "модель молча отвечает «речи нет» на любой звук"
+        )
         index = min(self.calls, len(self._probabilities) - 1)
         self.calls += 1
         return [[[self._probabilities[index]]], feed["state"]]
@@ -905,3 +908,33 @@ def test_stub_wake_word_is_never_asked(registry: ToolRegistry, events: LocalEven
     pipe = _pipeline(registry, events, mode="acoustic")
 
     assert not pipe._acoustic
+
+
+def test_silero_feeds_the_previous_tail_with_every_chunk(monkeypatch, tmp_path) -> None:
+    """Кусок подаётся вместе с хвостом предыдущего — 64 сэмпла на 16 кГц.
+
+    Это часть контракта модели, а не сглаживание, и цена ошибки высокая: вход
+    в ONNX объявлен как [None, None], поэтому ровно 512 сэмплов она **молча**
+    принимает и возвращает вероятность около нуля на любом звуке. Ни ошибки,
+    ни предупреждения — ассистент просто перестаёт слышать.
+    """
+    vad, session = _silero(monkeypatch, tmp_path, [0.9])
+
+    vad.is_speech(_chunk_frame())
+    vad.is_speech(_chunk_frame())
+
+    assert session.calls == 2, "проверка формы входа внутри модели должна пройти дважды"
+
+
+def test_silero_drops_the_tail_between_phrases(monkeypatch, tmp_path) -> None:
+    """Контекст обнуляется вместе с остальным состоянием.
+
+    Иначе первый кусок новой фразы приезжал бы с хвостом предыдущей — а между
+    ними бывает и минута тишины, и собственная реплика ассистента.
+    """
+    vad, _ = _silero(monkeypatch, tmp_path, [0.9])
+
+    vad.is_speech(_chunk_frame())
+    vad.reset()
+
+    assert not vad._context.any(), "хвост прошлой фразы не переживает reset"
