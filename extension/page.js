@@ -314,6 +314,68 @@ async function jarvisRunPlan(plan) {
    * ставится через родной сеттер, иначе React с Vue его не замечают: они
    * следят за свойством, а не за атрибутом.
    */
+  /**
+   * Присвоить значение полю так, чтобы сайт это заметил.
+   *
+   * Простое `field.value = …` React и Vue **пропускают**: они следят за родным
+   * сеттером прототипа, а присваивание свойству экземпляра его обходит. Нужен
+   * именно тот сеттер, который перекрыт фреймворком.
+   */
+  const setValue = (field, value) => {
+    try {
+      const proto =
+        typeof HTMLTextAreaElement !== "undefined" && field instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement
+          : HTMLInputElement;
+      const own = Object.getOwnPropertyDescriptor(proto.prototype, "value");
+      if (own && own.set) {
+        own.set.call(field, value);
+        return;
+      }
+    } catch (error) {
+      // Прототипа под рукой нет — присвоим напрямую, хуже не будет.
+    }
+    field.value = value;
+  };
+
+  /**
+   * Сдвинуть ползунок сайта: перемотка и громкость там, где плеера нет.
+   *
+   * Это не запасной вариант, а **единственный** для целого класса сайтов.
+   * Яндекс Музыка играет через `new Audio()`, не вставленный в документ, —
+   * `document.querySelectorAll("video, audio")` не находит его никогда, и всё,
+   * что опирается на плеер, там мертво. Зато полоса перемотки у них — обычный
+   * `input[type="range"]`, и в нём есть **всё нужное**: `value` это текущая
+   * секунда, `max` — длительность.
+   *
+   * Поэтому шаг не «нажми куда-то», а «прибавь столько-то»: сайт сам знает,
+   * где сейчас трек, а нам остаётся арифметика.
+   */
+  const slide = (step) => {
+    const found = bySelector(step.range);
+    if (!found) {
+      return null;
+    }
+    const input = found.element;
+    const by = Number(step.by || 0);
+    const max = Number(input.max);
+    const min = Number(input.min || 0);
+    if (!by || !Number.isFinite(max) || !(max > min)) {
+      return null;
+    }
+    const now = Number(input.value || 0) || 0;
+    const target = Math.max(min, Math.min(max, now + by));
+    setValue(input, String(target));
+    for (const name of ["input", "change"]) {
+      try {
+        input.dispatchEvent(new Event(name, { bubbles: true }));
+      } catch (error) {
+        // Событие не прошло — значение всё равно на месте.
+      }
+    }
+    return { detail: `${Math.round(target)} из ${Math.round(max)}`, selector: found.selector };
+  };
+
   const typeInto = (step) => {
     const FIELDS =
       'input[type="search"], input[type="text"], input:not([type]), textarea, ' +
@@ -355,23 +417,7 @@ async function jarvisRunPlan(plan) {
     if (field.isContentEditable) {
       field.textContent = text;
     } else {
-      let assigned = false;
-      try {
-        const proto =
-          typeof HTMLTextAreaElement !== "undefined" && field instanceof HTMLTextAreaElement
-            ? HTMLTextAreaElement
-            : HTMLInputElement;
-        const value = Object.getOwnPropertyDescriptor(proto.prototype, "value");
-        if (value && value.set) {
-          value.set.call(field, text);
-          assigned = true;
-        }
-      } catch (error) {
-        assigned = false;
-      }
-      if (!assigned) {
-        field.value = text;
-      }
+      setValue(field, text);
     }
     for (const name of ["input", "change"]) {
       try {
@@ -868,6 +914,11 @@ async function jarvisRunPlan(plan) {
         const where = scrollPage(step);
         if (where) {
           return answer("scroll", where);
+        }
+      } else if (Array.isArray(step.range)) {
+        const moved = slide(step);
+        if (moved) {
+          return answer("range", moved.detail, moved.selector);
         }
       } else if (typeof step.type === "string") {
         const typed = typeInto(step);

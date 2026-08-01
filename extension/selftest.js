@@ -1004,3 +1004,40 @@ check("не сработало ничего — говорим, что слыш�
   assert(result.done === null, "перематывать было нечем");
   assert(String(result.heard).includes("плееров 0"), result.heard);
 });
+
+check("перемотка ползунком, когда плеера в разметке нет", async () => {
+  // Яндекс Музыка играет через `new Audio()`, не вставленный в документ:
+  // querySelectorAll его не находит никогда. Зато полоса перемотки — обычный
+  // input[type="range"], и в нём есть всё: value это секунда, max — длина.
+  const slider = field();
+  slider.max = "194";
+  slider.value = "183";
+  slider.getAttribute = (name) => (name === "aria-label" ? "Таймкод" : null);
+  const api = load(makeDocument({ players: [], bySelector: { '[aria-label="Таймкод"]': slider } }));
+
+  const result = await api.jarvisRunPlan([{ range: ['[aria-label="Таймкод"]'], by: 10 }]);
+
+  assert(result.done === "range", `ожидался range, пришло ${result.done}`);
+  assert(slider.value === "193", `ожидалось 193, стало ${slider.value}`);
+  assert(slider.events.includes("input"), "сайт не узнает о сдвиге без события input");
+});
+
+check("перемотка не уезжает за края трека", async () => {
+  const slider = field();
+  slider.id = "seek";
+  slider.max = "194";
+  slider.value = "190";
+  const api = load(makeDocument({ players: [], bySelector: { "#seek": slider } }));
+
+  await api.jarvisRunPlan([{ range: ["#seek"], by: 30 }]);
+
+  assert(slider.value === "194", `конец трека — это конец: ${slider.value}`);
+});
+
+check("нет ползунка — шаг не срабатывает", async () => {
+  const api = load(makeDocument({ players: [] }));
+
+  const result = await api.jarvisRunPlan([{ range: ["#seek"], by: 10 }]);
+
+  assert(result.done === null, "нечего было двигать");
+});

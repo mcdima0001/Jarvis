@@ -1236,3 +1236,42 @@ async def test_channel_is_looked_up_through_site_search(loaded, monkeypatch) -> 
     assert not [plan for plan in plans if any("item" in step for step in plan)]
     assert "ytd-channel-renderer a#main-link" in plans[-1][0]["click"]
     await manager.stop()
+
+
+def test_seek_slider_survives_validation() -> None:
+    """Шаг `range` проходит проверку вместе с числом, на которое двигать."""
+    plan = page.validate_plan([{"range": ['[aria-label="Управление таймкодом"]'], "by": 1}])
+
+    assert plan == [{"range": ['[aria-label="Управление таймкодом"]'], "by": 1.0}]
+
+
+def test_seek_without_a_number_is_meaningless() -> None:
+    """Ползунок без величины двигать некуда — шаг отбрасывается."""
+    assert page.validate_plan([{"range": ["#seek"]}]) == []
+    assert page.validate_plan([{"range": ["#seek"], "by": 0}]) == []
+
+
+def test_recipe_says_direction_and_command_says_how_much() -> None:
+    """В рецепте у ползунка направление, а секунды подставляет команда.
+
+    Иначе один и тот же селектор пришлось бы дублировать под «на 15 секунд»,
+    «на 30» и «на минуту» — а он у сайта один.
+    """
+    plan = page.with_amount(
+        [{"range": ["#seek"], "by": -1}], seconds=30, step=0.1
+    )
+
+    assert plan == [{"range": ["#seek"], "by": -30.0}]
+
+
+def test_yandex_music_seeks_by_the_slider_first() -> None:
+    """У Яндекс Музыки перемотка идёт ползунком, а плеер остаётся запасным.
+
+    Плеера в разметке нет вовсе: сайт играет через `new Audio()`, не
+    вставленный в документ. Общий способ там мёртв, поэтому рецепт сайта
+    обязан стоять первым.
+    """
+    recipe = page.SITE_RECIPES["music.yandex.ru"]["forward"]
+
+    assert "range" in recipe[0], "ползунок должен пробоваться первым"
+    assert recipe[-1] == {"media": "forward"}, "общий способ остаётся запасным"

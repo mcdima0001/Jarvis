@@ -64,7 +64,7 @@ MEDIA_ACTIONS = frozenset(
 
 #: Глаголы шага. Список закрытый: чего тут нет, того странице не отправить.
 #: У `type` и `scroll` значение — строка, у остальных — список.
-STEP_VERBS = ("media", "label", "click", "item", "type", "scroll", "suggest")
+STEP_VERBS = ("media", "label", "click", "item", "type", "scroll", "suggest", "range")
 
 #: Куда листать страницу. Тоже закрытый список — это данные, не код.
 SCROLL_WAYS = frozenset({"up", "down", "top", "bottom"})
@@ -228,6 +228,25 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
         "play": ({"media": "play"}, {"click": ['[data-test-id="PLAY_BUTTON"]']}),
         "pause": ({"media": "pause"}, {"click": ['[data-test-id="PAUSE_BUTTON"]']}),
         "like": ({"click": ['[data-test-id="LIKE_BUTTON"]']},),
+        # Перемотка. Плеера в разметке нет вовсе — Яндекс играет через
+        # `new Audio()`, не вставленный в документ, — поэтому общий способ
+        # («подвинуть время у <audio>») тут мёртв, а кнопки перемотки у сайта
+        # не бывает. Зато полоса перемотки — обычный `input[type="range"]`, и в
+        # нём есть всё: `value` это текущая секунда, `max` — длительность.
+        # Видно по сохранённой странице: `max="194"`, `value="183"`, подпись
+        # «Управление таймкодом» — при длительности трека 3:14.
+        #
+        # Число в `by` — направление; сколько секунд, подставит `with_amount`.
+        "forward": (
+            {"range": ['[aria-label="Управление таймкодом"]'], "by": 1},
+            {"media": "forward"},
+        ),
+        "back": (
+            {"range": ['[aria-label="Управление таймкодом"]'], "by": -1},
+            {"media": "back"},
+        ),
+        # Тем же ползунком меняется и громкость самого сайта, но её мы трогаем
+        # через `media`: там 0..1, и шаг у команды свой.
         # Верхний результат выдачи. Селектор **вложенный**, и это принципиально:
         # `PlayButtonWithCover_playButton` сам по себе встречается на странице
         # 38 раз, и первым из них идёт кнопка в **боковом меню** — по
@@ -654,6 +673,13 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 avoid = _strings(step.get("avoid", ()), limit=MAX_AVOID)
                 if avoid:
                     clean["avoid"] = avoid
+            if verb == "range":
+                # На сколько сдвинуть ползунок. Без числа шаг бессмыслен:
+                # «поставь на ноль» никто не просил.
+                by = step.get("by")
+                if not isinstance(by, (int, float)) or isinstance(by, bool) or not by:
+                    continue
+                clean["by"] = float(by)
 
         if clean not in plan:
             plan.append(clean)
@@ -708,7 +734,13 @@ def without_rejected(
 
 
 def with_amount(plan: Sequence[Mapping[str, Any]], *, seconds: float, step: float) -> list[dict]:
-    """Подставить в медиа-шаги, на сколько перематывать и насколько менять звук."""
+    """Подставить в шаги, на сколько перематывать и насколько менять звук.
+
+    У шага `range` число в рецепте — это **направление**: `+1` вперёд, `-1`
+    назад. Сколько именно секунд, рецепт знать не может — это аргумент команды,
+    и подставляется он здесь. Так один и тот же селектор ползунка служит и
+    «перемотай на 30 секунд», и «отмотай на минуту».
+    """
     result: list[dict[str, Any]] = []
     for item in plan:
         clean = dict(item)
@@ -716,6 +748,8 @@ def with_amount(plan: Sequence[Mapping[str, Any]], *, seconds: float, step: floa
             clean["seconds"] = float(seconds)
         if clean.get("media") in ("louder", "quieter") and step > 0:
             clean["amount"] = float(step)
+        if "range" in clean and seconds > 0 and clean.get("by"):
+            clean["by"] = float(clean["by"]) * seconds
         result.append(clean)
     return result
 
