@@ -66,6 +66,10 @@ function element(options) {
       if (options.starts) {
         options.starts.paused = false;
       }
+      // А сайт при этом сообщает системе, что пошёл другой трек.
+      if (options.onPress) {
+        options.onPress();
+      }
     },
   };
   children.forEach((child) => {
@@ -175,10 +179,11 @@ function makeDocument({ players = [], controls = [], bySelector = {}, fields = [
 }
 
 /** Загрузить page.js в чистом окружении с поддельной страницей. */
-function load(document) {
+function load(document, navigator = {}) {
   const source = fs.readFileSync(path.join(__dirname, "page.js"), "utf8");
   const sandbox = {
     document,
+    navigator,
     location: { href: "https://example.com/track" },
     // Прокрутка: столько, сколько нужно шагу `scroll`.
     window: {
@@ -949,3 +954,40 @@ function assert(condition, message) {
   console.log(failed ? `\nпровалено: ${failed}` : `\nвсё сошлось: ${checks.length}`);
   process.exit(failed ? 1 : 0);
 })();
+
+check("сайт сам сказал, что играет — верим ему, а не разметке", async () => {
+  // Живой случай 01.08.2026: на Яндекс Музыке трек включался, а ответ был
+  // «включить не получилось». Плеер сайта в разметке не находится вовсе, и всё,
+  // что опирается на <audio>, обречено молчать. Зато сайт сообщает системе
+  // название трека — тем же путём, каким оно попадает во всплывашку Windows.
+  // Этот источник от разметки не зависит, и верить надо ему.
+  const media = { metadata: { title: "Старый трек", artist: "Кто-то" }, playbackState: "playing" };
+  const play = element({
+    attributes: { "aria-label": "Воспроизведение" },
+    onPress: () => {
+      media.metadata = { title: "Levitating", artist: "Dua Lipa" };
+    },
+  });
+  const row = element({ attributes: { "aria-label": "Трек Levitating" }, children: [play] });
+  const api = load(makeDocument({ controls: [row], players: [] }), { mediaSession: media });
+
+  const result = await api.jarvisRunPlan([
+    { item: ["levitating"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === true, "сменившееся название — это и есть «включилось»");
+});
+
+check("название не менялось — значит не включилось", async () => {
+  const media = { metadata: { title: "Старый трек", artist: "Кто-то" }, playbackState: "playing" };
+  const play = element({ attributes: { "aria-label": "Воспроизведение" } });
+  const row = element({ attributes: { "aria-label": "Трек Levitating" }, children: [play] });
+  const api = load(makeDocument({ controls: [row], players: [] }), { mediaSession: media });
+
+  const result = await api.jarvisRunPlan([
+    { item: ["levitating"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.played === false, "играет то же самое — успехом это не считается");
+  assert(String(result.heard).includes("Старый трек"), "в лог уходит то, что слышали");
+});

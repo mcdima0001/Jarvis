@@ -319,9 +319,14 @@ stt:
   # Сюда же дописываются названия, которые Whisper коверкает: «GitHub» он
   # слышал как «Geed Hub», «Geat Hub» и «гитхап», и никакое нечёткое сравнение
   # такое не вытянет. Лечится именно здесь — на слое распознавания.
+  # Сюда же дописываются **названия групп и треков**, которые слушаешь:
+  # «Аскорбинку» Whisper слышал как «о скорбинках» и «Ask Karbin» — два
+  # разных написания за минуту, и ни одно не ищется. Чинить это подбором на
+  # стороне сайта бесполезно: в поиск уезжает то, что услышали.
   initial_prompt:
     ru: "Джарвис, ассистент студии. Steam, OBS, XLR, ESP32, GitHub, YouTube,
-         Google, Яндекс, Telegram, Twitch, Soundpad, FL Studio."
+         Google, Яндекс, Telegram, Twitch, Soundpad, FL Studio.
+         Музыка: Аскорбинка, Лололошка."
     en: "Jarvis, the studio assistant. Steam, OBS, XLR, ESP32, GitHub, YouTube,
          Google, Yandex, Telegram, Twitch, Soundpad, FL Studio."
 

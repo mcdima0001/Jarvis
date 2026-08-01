@@ -1914,7 +1914,14 @@ class PageSkill(Skill):
         """
         detail = str(result.get("detail", "")).strip()
         asked = action.split(":", 1)[1] if ":" in action else action
-        self.log.info("Нажал %r, но звука так и нет: %s", detail, result.get("url", ""))
+        # Что именно слышала страница — иначе «не заиграло» и «заиграло, но мы
+        # не увидели» в логе неразличимы, а это две совсем разные болезни.
+        self.log.info(
+            "Нажал %r, но звука так и нет (%s): %s",
+            detail,
+            result.get("heard", "нечего сказать"),
+            result.get("url", ""),
+        )
         self._log_nearby(result)
         return ToolResult.failure(
             f"нашёл {detail!r}, но воспроизведение не началось",

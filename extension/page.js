@@ -450,7 +450,34 @@ async function jarvisRunPlan(plan) {
   const sounding = () =>
     Array.from(document.querySelectorAll("video, audio")).some(
       (item) => !item.paused && !item.ended && !item.muted,
-    );
+    ) || nowPlaying().state === "playing";
+
+  /**
+   * Что сайт сам сообщает системе о текущем треке.
+   *
+   * Это тот же источник, из которого Windows рисует всплывашку при нажатии на
+   * кнопку «play» на клавиатуре, и он **надёжнее плееров в разметке**. Причина
+   * простая: `document.querySelectorAll("video, audio")` находит не всё. Плеер
+   * бывает спрятан в теневом дереве, живёт в служебном кадре или создаётся
+   * заново на каждый трек — и тогда список пуст, `sounding()` всегда ложь, а
+   * «включить не получилось» звучит при играющей музыке. Ровно это и было
+   * поймано в логе 01.08.2026: нажатие проходило, трек играл, ответ был отказом.
+   *
+   * Название трека вдобавок отвечает на вопрос, на который состояние плеера не
+   * отвечает вовсе: **сменился ли трек**. Другое название — значит пошёл новый.
+   */
+  const nowPlaying = () => {
+    try {
+      const media = navigator.mediaSession;
+      const data = (media && media.metadata) || null;
+      return {
+        title: data ? `${data.title || ""} — ${data.artist || ""}`.trim() : "",
+        state: (media && media.playbackState) || "",
+      };
+    } catch (error) {
+      return { title: "", state: "" };
+    }
+  };
 
   /**
    * Слепок состояния плееров: по нему видно, **сменилось ли** то, что играет.
@@ -465,7 +492,14 @@ async function jarvisRunPlan(plan) {
    * длительность (у другого трека она другая) и время воспроизведения (у нового
    * трека оно сбрасывается к началу, то есть идёт назад).
    */
-  const snapshot = () =>
+  const snapshot = () => ({
+    // Название текущего трека по версии самого сайта. Живёт отдельно от
+    // разметки и переживает и перерисовку, и пересоздание плеера.
+    now: nowPlaying(),
+    players: playerStates(),
+  });
+
+  const playerStates = () =>
     Array.from(document.querySelectorAll("video, audio")).map((item) => ({
       src: item.currentSrc || item.src || "",
       quiet: Boolean(item.paused || item.ended || item.muted),
@@ -480,15 +514,20 @@ async function jarvisRunPlan(plan) {
     if (!sounding()) {
       return false;
     }
-    if (!Array.isArray(before)) {
+    if (!before || !Array.isArray(before.players)) {
       return true;
     }
+    // Название сменилось — сайт сам сказал, что пошёл другой трек. Этому
+    // признаку верим сразу: он не зависит от того, нашли ли мы плеер.
     const now = snapshot();
-    if (now.length !== before.length) {
+    if (now.now.title && now.now.title !== before.now.title) {
       return true;
     }
-    return now.some((item, index) => {
-      const was = before[index];
+    if (now.players.length !== before.players.length) {
+      return true;
+    }
+    return now.players.some((item, index) => {
+      const was = before.players[index];
       if (!was) {
         return true;
       }
@@ -519,6 +558,17 @@ async function jarvisRunPlan(plan) {
       await new Promise((done) => setTimeout(done, 100));
     }
     return started();
+  };
+
+  /** Чем закончилось дело с точки зрения звука — строкой для лога. */
+  const heardNow = (before) => {
+    const now = snapshot();
+    const track = now.now.title || "название не сообщается";
+    const was = before && before.now ? before.now.title : "";
+    return (
+      `плееров ${now.players.length}, состояние «${now.now.state || "не сообщается"}», ` +
+      `трек «${track}»${was && was !== track ? ` (было «${was}»)` : ""}`
+    );
   };
 
   /** Подписи, которыми называют остановку. Кнопка с такой — уже играет. */
@@ -747,8 +797,13 @@ async function jarvisRunPlan(plan) {
     }
     const played = await awaitSound(400, before);
     // Звука так и нет — расскажем, что было рядом. По этому списку в логе
-    // пишется точный рецепт сайта, без угадывания.
-    return played ? { detail, played } : { detail, played, buttons: listOf(nearby) };
+    // пишется точный рецепт сайта, без угадывания. Плюс **что мы вообще
+    // слышали**: сколько плееров нашлось в разметке и что сайт сообщил о
+    // текущем треке. Без этих двух чисел «не заиграло» неотличимо от «заиграло,
+    // но мы не увидели» — а разница между ними и есть вся разница.
+    return played
+      ? { detail, played }
+      : { detail, played, buttons: listOf(nearby), heard: heardNow(before) };
   };
 
   /** Первый видимый элемент по списку селекторов — вместе с самим селектором. */
@@ -818,6 +873,11 @@ async function jarvisRunPlan(plan) {
             // Нажали, но звука нет: пусть Jarvis скажет об этом честно, а не
             // отчитается «включаю» в тишину.
             reply.played = done.played;
+          }
+          if (done.heard) {
+            // Что при этом слышала сама страница — в лог. Без этого «не
+            // заиграло» неотличимо от «заиграло, но мы не увидели».
+            reply.heard = done.heard;
           }
           return reply;
         }
