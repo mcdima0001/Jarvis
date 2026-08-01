@@ -802,3 +802,20 @@ def test_sessions_without_a_process_are_skipped() -> None:
     sessions = [_session(0, "", 1.0)]
 
     assert windows.plan_ducking(sessions, own_pids=set(), level=0.2) == {}
+
+
+def test_volume_returns_only_after_the_reply_was_spoken() -> None:
+    """На одну команду событие «ответил» приходит дважды, и первое — рано.
+
+    Диспетчер шлёт своё, как только инструмент вернул текст; голосовой конвейер —
+    когда текст отзвучал. Живой случай из лога: «Отвечаю: Нашёл о скорбинках, но
+    включить не получилось» и «Громкость вернул» стоят в **одной секунде**, то
+    есть музыка возвращалась в начале фразы и ответа было не слышно.
+    """
+    assert not windows.restores_volume("dispatcher", awaiting_command=False)
+    assert windows.restores_volume("voice", awaiting_command=False)
+
+
+def test_the_listening_reply_does_not_return_the_volume() -> None:
+    """«Слушаю, сэр» — тоже произнесённая реплика, но команда ещё впереди."""
+    assert not windows.restores_volume("voice", awaiting_command=True)
