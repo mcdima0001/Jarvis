@@ -82,7 +82,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--try-voice",
         metavar="ГОЛОС",
         nargs="+",
-        help="послушать голоса и выбрать: имена через пробел либо jarvis / ru / en / clone",
+        help="послушать голоса и выбрать: имена через пробел либо набор — "
+        "jarvis / ru / en / female / male / clone",
+    )
+    parser.add_argument(
+        "--voice-text",
+        metavar="ФРАЗА",
+        help="что произносить при прослушивании вместо образца. Без цифр и "
+        "латиницы: синтез тут зовётся напрямую, без нормализации",
     )
     parser.add_argument(
         "--make-reference",
@@ -176,7 +183,7 @@ def _run_utility(args: argparse.Namespace, config: JarvisConfig) -> int | None:
         make_reference(args.make_reference, config.tts.models_dir)
         return 0
     if args.try_voice:
-        preview_voices(args.try_voice, config.tts.models_dir)
+        preview_voices(args.try_voice, config.tts.models_dir, text=args.voice_text)
         return 0
     return None
 

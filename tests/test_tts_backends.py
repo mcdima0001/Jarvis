@@ -305,3 +305,65 @@ def test_reference_text_matches_voice_language() -> None:
     assert _is_russian("edge", "ru-RU-DmitryNeural")
     assert not _is_russian("kokoro", "bm_george")
     assert not _is_russian("edge", "en-GB-RyanNeural")
+
+
+# --- наборы голосов для прослушивания ---------------------------------------
+
+
+def test_female_group_is_built_from_notes_not_by_hand() -> None:
+    """Набор женских голосов берётся из описаний, а не пишется рядом списком.
+
+    Список рядом разъехался бы при первом же добавленном голосе, и разъехался
+    бы молча. Вывести пол из имени нельзя: ни «баю», ни «ксению», ни «lessac»
+    никакая закономерность не выдаёт.
+    """
+    from jarvis.core.assets import GROUPS, VOICE_NOTES
+
+    female = GROUPS["female"]
+    assert female, "набор пуст"
+    assert all("женский" in VOICE_NOTES[spec] for spec in female)
+    # И наоборот: ни один женский голос мимо набора не проехал.
+    assert len(female) == sum(1 for note in VOICE_NOTES.values() if "женский" in note)
+    assert set(female).isdisjoint(GROUPS["male"]), "голос не бывает и тем и другим"
+
+
+def test_russian_female_voices_come_first() -> None:
+    """Русские первыми: их и выбирают, а английские тут для сравнения."""
+    from jarvis.core.assets import GROUPS
+
+    female = GROUPS["female"]
+    russian = [spec for spec in female if spec.split(":")[0] in ("vosk", "silero")
+               or "ru" in spec.split(":")[1][:3]]
+    assert female[0] in russian
+    # Vosk впереди не случайно: этот движок владелец выбрал на слух.
+    assert female[0].startswith("vosk:")
+
+
+def test_sample_phrases_fit_the_narrowest_alphabet() -> None:
+    """Фразы для прослушивания обязаны укладываться в алфавит движка.
+
+    Прослушивание зовёт синтез **напрямую**, минуя `normalize_for_speech`, а у
+    модели Vosk в алфавите 63 символа: цифра или латинская буква роняет её с
+    `KeyError`. Проверка ровно об этом — и она нужна, потому что фразу правят
+    руками, а падение видно только на живой машине.
+    """
+    import re
+
+    from jarvis.core.assets import GROUP_SAMPLE, SAMPLE_TEXT
+
+    russian = [SAMPLE_TEXT["ru"]] + [group["ru"] for group in GROUP_SAMPLE.values()]
+    for phrase in russian:
+        assert not re.search(r"[0-9a-zA-Z]", phrase), f"цифры или латиница: {phrase!r}"
+        assert not set(phrase) - set(
+            "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ .,!?:-"
+        ), f"посторонний символ: {phrase!r}"
+
+
+def test_group_sample_replaces_the_jarvis_line() -> None:
+    """У женского набора своя фраза: голос, который Джарвисом не будет, на
+    реплике про игровой режим не оценить — слышишь роль, а не тембр."""
+    from jarvis.core.assets import GROUP_SAMPLE, SAMPLE_TEXT
+
+    assert "female" in GROUP_SAMPLE
+    assert GROUP_SAMPLE["female"]["ru"] != SAMPLE_TEXT["ru"]
+    assert "игровой режим" not in GROUP_SAMPLE["female"]["ru"]

@@ -265,6 +265,31 @@ def make_reference(source: str, models_dir: Path) -> Path:
 
 
 #: Подборки для быстрого прослушивания.
+#: В каком порядке предлагать движки на прослушивании. Это не вкусовщина, а
+#: итог отбора: Vosk выбран владельцем, Edge проиграл по задержке, Silero и
+#: Piper отбракованы на слух.
+ENGINE_ORDER = {"vosk": 0, "kokoro": 0, "edge": 1, "silero": 2, "piper": 3}
+
+
+def _marked(mark: str) -> tuple[str, ...]:
+    """Голоса, у которых это слово стоит в описании, русские первыми.
+
+    Список берётся из `VOICE_NOTES`, а не пишется рядом руками: иначе он
+    разъедется при первом же добавленном голосе, и разъедется молча. Признак
+    пола по имени не выведешь — «баю», «ксению» и «lessac» никакая
+    закономерность не выдаёт.
+    """
+    def place(spec: str) -> tuple[int, int]:
+        engine, _, voice = spec.partition(":")
+        # Русские первыми — их и выбирают; внутри языка порядок по тому, как
+        # движки показали себя на слух: Vosk лучший, Piper последний.
+        return (0 if _is_russian(engine, voice) else 1, ENGINE_ORDER.get(engine, 9))
+
+    return tuple(sorted(
+        (spec for spec, note in VOICE_NOTES.items() if mark in note), key=place
+    ))
+
+
 GROUPS: dict[str, tuple[str, ...]] = {
     "jarvis": ("kokoro:bm_george", "kokoro:bm_daniel", "kokoro:bm_lewis", "kokoro:bm_fable"),
     "en": tuple(f"kokoro:{v}" for v in KOKORO_VOICES)
@@ -282,13 +307,34 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "kokoro": tuple(f"kokoro:{v}" for v in KOKORO_VOICES),
     "silero": tuple(f"silero:{v}" for v in SILERO_VOICES),
     "piper": tuple(f"piper:{v}" for v in PIPER_VOICES),
+    # Женские — отдельным набором, а не вперемешку с русскими. Голос Джарвиса
+    # выбран и закрыт (`vosk:male_1`), а эти слушают под другую задачу, и
+    # мешать одно с другим значит переслушивать уже отобранное.
+    "female": _marked("женский"),
+    "male": _marked("мужской"),
 }
 
 #: Что произносить при прослушивании.
+#:
+#: Цифр и латиницы тут нет намеренно: прослушивание зовёт синтез **напрямую**,
+#: минуя `normalize_for_speech`, а у модели Vosk в алфавите 63 символа —
+#: посторонний роняет её с `KeyError`.
 SAMPLE_TEXT = {
     "ru": "Добрый вечер. В студии двадцать два градуса. Включить игровой режим?",
     "en": "Good evening, sir. The studio is at twenty two degrees. "
     "Shall I switch to game mode?",
+}
+
+#: Своя фраза для набора. Голос Джарвиса слушают его же словами — так слышно,
+#: как он зазвучит на деле. А голос, который Джарвисом не будет, на реплике про
+#: игровой режим оценить невозможно: слышишь роль, а не тембр.
+GROUP_SAMPLE: dict[str, dict[str, str]] = {
+    "female": {
+        "ru": "Привет. Сегодня всё спокойно: дела идут по плану, ничего не горит. "
+        "Хотите, расскажу подробнее?",
+        "en": "Hello. Everything is calm today, nothing is on fire. "
+        "Would you like the details?",
+    },
 }
 
 
@@ -433,8 +479,12 @@ def preview_voices(names: list[str], models_dir: Path, *, text: str | None = Non
         ) from exc
 
     expanded: list[str] = []
+    samples: dict[str, str] = {}
     for name in names:
         expanded.extend(GROUPS.get(name, (name,)))
+        # У набора бывает своя фраза: голос, который Джарвисом не будет, на
+        # реплике про игровой режим не оценить — слышишь роль, а не тембр.
+        samples.update(GROUP_SAMPLE.get(name, {}))
 
     backends: dict[str, object] = {}
     for spec in expanded:
@@ -457,7 +507,7 @@ def preview_voices(names: list[str], models_dir: Path, *, text: str | None = Non
         backends[engine] = backend
 
         for language in languages:
-            sample = text or SAMPLE_TEXT[language]
+            sample = text or samples.get(language) or SAMPLE_TEXT[language]
             print(f"  {sample}")
             try:
                 audio, rate = backend.synthesize(sample, voice, language)  # type: ignore[attr-defined]
