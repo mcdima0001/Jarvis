@@ -50,6 +50,35 @@ def ensure_vad_model(models_dir: Path) -> Path:
         _download(client, _SILERO_VAD_URL, target, timeout=30.0)
     return target
 
+
+#: Русская модель распознавания для активации по имени. Маленькая намеренно:
+#: словарь ей оставляют из одного слова, и большая тут ничего не добавит, зато
+#: будет занимать память постоянно — детектор слушает всегда.
+WAKEWORD_MODEL = "vosk-model-small-ru-0.22"
+
+
+def ensure_wakeword_model(models_dir: Path, name: str = WAKEWORD_MODEL) -> Path:
+    """Вернуть каталог модели активации, скачав её при первом запуске.
+
+    Своя функция рядом с `ensure_vad_model`, и по той же причине: активация к
+    синтезу отношения не имеет и живёт в своём каталоге. Модель приезжает
+    архивом, поэтому после скачивания её распаковывают, а архив удаляют — он
+    весит столько же, сколько распакованное.
+    """
+    target = models_dir / name
+    if target.is_dir():
+        return target
+
+    models_dir.mkdir(parents=True, exist_ok=True)
+    archive = models_dir / f"{name}.zip"
+    logger.info("Скачиваю модель активации %s (около 45 МБ)", name)
+    with httpx.Client() as client:
+        _download(client, f"{_VOSK_REPO}/{name}.zip", archive)
+    with zipfile.ZipFile(archive) as bundle:
+        bundle.extractall(models_dir)
+    archive.unlink(missing_ok=True)
+    return target
+
 #: Имя модели Vosk дублировать нельзя — берём то же, что знает движок.
 #: Импорт ленивый: `assets` работает и там, где numpy не установлен.
 def _vosk_model() -> str:

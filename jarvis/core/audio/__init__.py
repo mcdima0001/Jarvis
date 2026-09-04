@@ -83,30 +83,72 @@ def _build_wake_word(config: AudioConfig) -> WakeWord:
     """
     if config.wake_word.mode != "acoustic":
         return AlwaysActiveWakeWord(config.wake_word.phrase)
-    if config.wake_word.model is None:
-        logger.warning(
-            "Режим активации acoustic, но модель не указана "
-            "(audio.wake_word.model) — слушаю имя по тексту. "
-            "Как обучить модель: docs/wakeword.md"
-        )
-        return AlwaysActiveWakeWord(config.wake_word.phrase)
 
     try:
-        from .wakeword import OpenWakeWord
-
-        return OpenWakeWord(
-            config.wake_word.model,
-            phrase=config.wake_word.phrase,
-            sample_rate=config.sample_rate,
-            threshold=config.wake_word.threshold,
+        if config.wake_word.engine == "openwakeword":
+            return _open_wake_word(config)
+        if config.wake_word.engine == "vosk":
+            return _vosk_wake_word(config)
+        logger.warning(
+            "Неизвестный движок активации %r — слушаю имя по тексту. "
+            "Доступны: vosk, openwakeword",
+            config.wake_word.engine,
         )
-    except Exception as exc:  # noqa: BLE001 — нет модели или пакета
+    except Exception as exc:  # noqa: BLE001 — нет модели, сети или пакета
         logger.warning(
             "Активация по звуку не поднялась (%s: %s) — слушаю имя по тексту",
             type(exc).__name__,
             exc,
         )
-        return AlwaysActiveWakeWord(config.wake_word.phrase)
+    return AlwaysActiveWakeWord(config.wake_word.phrase)
+
+
+def _vosk_wake_word(config: AudioConfig) -> WakeWord:
+    """Активация распознаванием со словарём из одного слова.
+
+    Модель качается сама при первом запуске, как у Silero VAD: обучать нечего,
+    а требовать ручного скачивания ради 45 МБ значит держать режим выключенным
+    у всех, кто не дочитал документацию.
+    """
+    from jarvis.core.assets import ensure_wakeword_model
+
+    from .wakeword import VoskWakeWord
+
+    model = config.wake_word.model or ensure_wakeword_model(config.wake_word.models_dir)
+    # Алиасы сюда **не идут**, и это измерено, а не решено из общих
+    # соображений. Они придуманы для ошибок Whisper — «жаркость», «дживс», —
+    # то есть описывают, как имя выглядит в расшифровке. Декодер же слышит
+    # звук напрямую, и лишние похожие слова в словаре только расширяют ему
+    # выбор: с алиасами «turn on the music» стало срабатывать как имя, а без
+    # них тот же файл даёт чистое «[unk]».
+    return VoskWakeWord(
+        model,
+        phrases=config.wake_word.phrases,
+        sample_rate=config.sample_rate,
+    )
+
+
+def _open_wake_word(config: AudioConfig) -> WakeWord:
+    """Активация своей обученной моделью.
+
+    Готовой модели на «Джарвис» тут не бывает: `hey_jarvis` из набора
+    openWakeWord на русское произношение не отзывается (замер — в докстринге
+    `wakeword.py`). Поэтому без файла модели режим не поднимается вовсе.
+    """
+    from .wakeword import OpenWakeWord
+
+    if config.wake_word.model is None:
+        raise AudioError(
+            "Для openwakeword нужна своя обученная модель (audio.wake_word.model). "
+            "Как её обучить — docs/wakeword.md. Готовая под русское имя не подходит; "
+            "проще оставить engine: vosk."
+        )
+    return OpenWakeWord(
+        config.wake_word.model,
+        phrase=config.wake_word.phrase,
+        sample_rate=config.sample_rate,
+        threshold=config.wake_word.threshold,
+    )
 
 
 def build_audio(config: AudioConfig) -> AudioStack:

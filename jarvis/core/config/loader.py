@@ -313,6 +313,11 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                     if _section(audio, "wake_word").get("model")
                     else None
                 ),
+                engine=str(_section(audio, "wake_word").get("engine") or "vosk"),
+                models_dir=_resolve(
+                    project_root,
+                    _section(audio, "wake_word").get("models_dir") or "models/wakeword",
+                ),
                 threshold=float(_section(audio, "wake_word").get("threshold", 0.0)),
                 phrases=_wake_phrases(_section(audio, "wake_word")),
                 aliases=tuple(
