@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import AsyncIterator
 
 import numpy
@@ -302,18 +303,31 @@ async def test_microphone_is_held_back_when_the_reference_lags(
     assert 10.0 * numpy.log10(was / left) > 15.0, "после правки эхо обязано уйти"
 
 
-def test_missing_soundcard_is_reported_not_raised() -> None:
+def test_missing_soundcard_is_reported_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
     """Нет пакета для петлевого захвата — это отказ с причиной, а не падение.
 
-    Проверка идёт ровно на той машине, где `soundcard` не установлен: на
-    сервере. Ассистент без AEC работает хуже, а упавший из-за звуковой
-    библиотеки не работает вовсе.
+    Ассистент без AEC работает хуже, а упавший из-за звуковой библиотеки не
+    работает вовсе.
+
+    **Отсутствие пакета подделывается, а не берётся с машины.** Сперва тест
+    полагался на то, что `soundcard` не установлен — на сервере это так. У
+    владельца пакет стоит, и там тест не просто краснел: он **открывал живой
+    петлевой захват** и не закрывал его, после чего `soundcard` до конца
+    прогона сыпал в вывод «data discontinuity in recording». Проверка,
+    отвечающая на разных машинах по-разному, не проверяет ничего.
+
+    `None` в `sys.modules` — это ровно «модуля нет»: импорт по такому ключу
+    бросает `ImportError`, как будто пакет не установлен.
     """
+    monkeypatch.setitem(sys.modules, "soundcard", None)
+    monkeypatch.setitem(sys.modules, "soundcard.mediafoundation", None)
+
     heard: list[numpy.ndarray] = []
     capture = LoopbackSource(sample_rate=RATE, device=None, on_audio=heard.append)
 
     assert capture.start() is False
     assert capture.failure, "причина обязана попасть наружу"
+    assert not heard, "без пакета читать нечего"
     capture.stop()
 
 
