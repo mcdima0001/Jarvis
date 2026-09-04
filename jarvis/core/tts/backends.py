@@ -92,17 +92,23 @@ class PiperBackend:
         return "piper"
 
     def prepare(self, voice: str, language: str) -> None:
-        """Загрузить голос из файла."""
+        """Загрузить голос из файла.
+
+        Файл проверяется **до** импорта пакета: смотреть на диск можно и без
+        него, а сказать «скачай голос» полезнее, чем `ModuleNotFoundError` —
+        без модели пакет всё равно бесполезен. Заодно ответ перестаёт зависеть
+        от того, что установлено на конкретной машине.
+        """
         if voice in self._voices:
             return
-        from piper import PiperVoice
-
         path = self._dir / f"{voice}.onnx"
         if not path.is_file():
             raise FileNotFoundError(
                 f"Голос Piper не найден: {path}. "
                 f"Скачай: python -m jarvis --download-voice piper:{voice}"
             )
+        from piper import PiperVoice
+
         self._voices[voice] = PiperVoice.load(str(path))
 
     def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
@@ -155,13 +161,14 @@ class KokoroBackend:
         """Загрузить модель (общую для всех голосов)."""
         if self._model is not None:
             return
-        from kokoro_onnx import Kokoro
-
+        # Сперва диск, потом импорт — см. `PiperBackend.prepare`.
         if not self.model_path.is_file() or not self.voices_path.is_file():
             raise FileNotFoundError(
                 f"Модель Kokoro не найдена в {self._dir}. "
                 f"Скачай: python -m jarvis --download-voice kokoro:{voice}"
             )
+        from kokoro_onnx import Kokoro
+
         self._model = Kokoro(str(self.model_path), str(self.voices_path))
 
     def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
@@ -201,14 +208,16 @@ class SileroBackend:
         """Загрузить пакет моделей нужного языка."""
         if language in self._models:
             return
-        import torch
-
+        # Сперва диск, потом импорт — см. `PiperBackend.prepare`. Здесь это
+        # ещё и заметно быстрее: torch поднимается секундами.
         path = self.pack_path(language)
         if not path.is_file():
             raise FileNotFoundError(
                 f"Модель Silero не найдена: {path}. "
                 f"Скачай: python -m jarvis --download-voice silero:{voice}"
             )
+        import torch
+
         model = torch.package.PackageImporter(str(path)).load_pickle("tts_models", "model")
         model.to(torch.device("cpu"))
         self._models[language] = model
@@ -261,14 +270,15 @@ class VoskBackend:
         """Загрузить модель — она одна на всех дикторов."""
         if self._synth is not None:
             return
-        from vosk_tts import Model, Synth
-
+        # Сперва диск, потом импорт — см. `PiperBackend.prepare`.
         path = self._dir / VOSK_MODEL
         if not (path / "model.onnx").is_file():
             raise FileNotFoundError(
                 f"Модель Vosk не найдена: {path}. "
                 f"Скачай: python -m jarvis --download-voice vosk:male_0"
             )
+        from vosk_tts import Model, Synth
+
         model = Model(model_path=str(path))
         self._speakers = dict(model.config.get("speaker_id_map", {}))
         self._rate = int(model.config.get("audio", {}).get("sample_rate", 22050))

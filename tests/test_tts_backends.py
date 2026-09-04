@@ -166,12 +166,30 @@ def test_vosk_speaker_by_name_and_number(tmp_path: Path) -> None:
         backend._speaker_id("male_9")
 
 
-def test_vosk_reports_missing_model(tmp_path: Path) -> None:
-    """Без скачанной модели движок объясняет, что делать."""
-    backend = build_backend("vosk", tmp_path)
+@pytest.mark.parametrize(
+    ("engine", "voice"),
+    [("vosk", "male_0"), ("piper", "ru_RU-denis-medium"), ("kokoro", "bm_george"),
+     ("silero", "eugene")],
+)
+def test_backend_reports_missing_model_before_missing_package(
+    engine: str, voice: str, tmp_path: Path
+) -> None:
+    """Без скачанной модели движок объясняет, что делать, — на любой машине.
+
+    Проверка файла идёт **до** импорта пакета, и это не порядок ради порядка.
+    Во-первых, «скачай модель» полезнее, чем `ModuleNotFoundError`: без модели
+    пакет всё равно бесполезен, а качать всё равно придётся. Во-вторых, иначе
+    ответ движка зависит от того, что установлено на конкретной машине, — и
+    ровно на этом тест про Vosk проходил у владельца (пакет стоит) и падал бы
+    в CI, где необязательных зависимостей нет вовсе.
+
+    Смотреть на диск можно без всякого пакета, поэтому проверка тут честная
+    везде: и там, где движок установлен, и там, где его нет.
+    """
+    backend = build_backend(engine, tmp_path)
 
     with pytest.raises(FileNotFoundError, match="download-voice"):
-        backend.prepare("male_0", "ru")
+        backend.prepare(voice, "ru")
 
 
 # --- загрузка голосов -------------------------------------------------------

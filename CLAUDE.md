@@ -32,7 +32,7 @@
 
 ```bash
 cd /root/Jarvis
-.venv/bin/python -m pytest -q            # 746 тестов, меньше тридцати секунд
+.venv/bin/python -m pytest -q            # 749 тестов, около двадцати секунд
 .venv/bin/python -m jarvis --check       # отчёт о сборке, ~6 с, без моделей
 ```
 
@@ -225,7 +225,7 @@ skills/             плагины (см. skills/README.md); browser/page — п
                     reminders/ — часы: напоминания и таймеры
 extension/          расширение браузера (см. extension/README.md)
 config/config.yaml  все настройки
-tests/              746 тестов на швы архитектуры
+tests/              749 тестов на швы архитектуры
 docs/lessons.md     журнал граблей: читать перед правкой подсистемы
 ```
 
