@@ -1,5 +1,7 @@
 # 🤖 Jarvis
 
+[![тесты](https://github.com/mcdima0001/Jarvis/actions/workflows/tests.yml/badge.svg)](https://github.com/mcdima0001/Jarvis/actions/workflows/tests.yml)
+
 Голосовой помощник, который живёт на твоём компьютере и слушается голоса.
 Говоришь «Джарвис, поставь на паузу» — музыка останавливается. «Джарвис, какая
 погода» — отвечает вслух. Никаких колонок, подписок и облаков: всё крутится
