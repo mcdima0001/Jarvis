@@ -40,7 +40,7 @@ from jarvis.core.contracts import (
     WakeWordDetected,
 )
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import romanize, skeleton, squash
+from jarvis.core.text import closeness, romanize, skeleton, squash, touches
 from jarvis.core.tools import tool
 
 #: Встроенные средства Windows: в меню «Пуск» лежат не все.
@@ -75,6 +75,10 @@ _SKIP_SHORTCUT = re.compile(
 
 #: Имя процесса для taskkill: только то, что не может оказаться чем-то иным.
 _PROCESS_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}\.exe$")
+
+#: Насколько сопоставимы должны быть длины при нечётком сравнении: короткое
+#: «окно» иначе находит «блокнот» с похожестью 0.73.
+_BALANCE = 0.7
 
 #: Насколько похожими должны быть названия, чтобы счесть их одним и тем же.
 #: Порог низкий: транслитерация огрубляет слова, «влс» против «vlc» даёт всего
@@ -130,14 +134,6 @@ def _skeletons(text: str) -> set[str]:
     found = {skeleton(text)} | {skeleton(word) for word in _significant_words(text)}
     # Костяк из одной буквы совпадёт с чем угодно.
     return {item for item in found if len(item) >= 2}
-
-
-def _touches(part: str, key: str) -> bool:
-    """Совпадают ли слова краем — началом или концом."""
-    if len(part) < 3 or len(key) < 3:
-        return False
-    short, long = sorted((part, key), key=len)
-    return long.startswith(short) or long.endswith(short)
 
 
 #: Сколько слов может быть в названии программы. Длинная фраза программой не
@@ -219,7 +215,7 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     contained = [
         (name, target)
         for name, target, keys, _ in prepared
-        if any(_touches(part, key) for key in keys for part in wanted)
+        if any(touches(part, key) for key in keys for part in wanted)
     ]
     if contained:
         return min(contained, key=lambda item: len(item[0]))
@@ -249,9 +245,7 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
             for part in wanted:
                 # Сравнивать имеет смысл слова сопоставимой длины: короткое
                 # «окно» иначе находит «блокнот» с похожестью 0.73.
-                if min(len(part), len(key)) / max(len(part), len(key)) < 0.7:
-                    continue
-                ratio = difflib.SequenceMatcher(None, part, key).ratio()
+                ratio = closeness(part, key, balance=_BALANCE)
                 if ratio >= _SIMILARITY and (best is None or ratio > best[0]):
                     best = (ratio, name, target)
     return (best[1], best[2]) if best else None

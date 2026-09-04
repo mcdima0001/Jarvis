@@ -60,8 +60,25 @@ def squash(text: str) -> str:
 
 
 def romanize(text: str) -> str:
-    """Записать кириллицу латиницей для сравнения названий."""
-    return "".join(CYRILLIC_TO_LATIN.get(char, char) for char in text)
+    """Записать кириллицу латиницей для сравнения названий.
+
+    Регистр сохраняется, и заглавные переводятся наравне со строчными. Сперва в
+    словаре лежали только строчные, а заглавная буква оставалась кириллицей —
+    получалась смесь алфавитов, в которой не было толку ни одному потребителю:
+    «Настя Ко» превращалась в «Нastya Кo», «МаршалТех» в «МarshalТeh». Хуже
+    того, английский голос получал на чтение «Дzharvis» — то есть спотыкался
+    ровно на имени.
+    """
+    letters = []
+    for char in text:
+        lowered = char.lower()
+        latin = CYRILLIC_TO_LATIN.get(lowered)
+        if latin is None:
+            letters.append(char)
+        else:
+            # «Ж» — это «Zh», а не «ZH»: заглавная только первая буква.
+            letters.append(latin if char == lowered else latin.capitalize())
+    return "".join(letters)
 
 
 def skeleton(text: str) -> str:

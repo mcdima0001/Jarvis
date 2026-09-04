@@ -38,7 +38,7 @@ from typing import Any, ClassVar, Sequence
 
 from jarvis.core.contracts import Event, ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import romanize, skeleton, squash
+from jarvis.core.text import best_match, squash, starts
 from jarvis.core.tools import tool
 
 #: Насколько похожим должно быть услышанное имя чата, чтобы считаться тем же.
@@ -63,23 +63,8 @@ class TelegramMessageReceived(Event):
     chat: str
     text: str
 
-#: Гласные на конце — по ним и различаются падежи: «маме», «мама», «маму».
-_ENDINGS = "аеёиоуыэюяaeiouy"
-
 #: Сколько слов может занимать имя адресата в начале фразы.
 _MAX_NAME_WORDS = 5
-
-def _forms(text: str) -> set[str]:
-    """Как одно и то же имя может выглядеть: падеж, алфавит, разделители.
-
-    «Маме» и «Мама» — одно имя в разных падежах, «саша» и «Sasha» — в разных
-    алфавитах, «Настя Ко» и «настяко» — с разделителем и без. Сравнивать
-    поштучно каждый случай значит писать одно и то же четыре раза.
-    """
-    tight = squash(text)
-    latin = squash(romanize(text))
-    forms = {tight, tight.rstrip(_ENDINGS), latin, latin.rstrip(_ENDINGS)}
-    return {form for form in forms if len(form) >= MIN_PREFIX}
 
 def match_chat(query: str, names: Sequence[str]) -> str | None:
     """Найти чат по услышанному имени.
@@ -91,34 +76,16 @@ def match_chat(query: str, names: Sequence[str]) -> str | None:
 
     :return: имя чата, либо ``None``, если уверенности нет.
     """
-    wanted = _forms(query)
-    if not wanted:
-        return None
-
-    known = {name: _forms(name) for name in names}
-    for name, forms in known.items():
-        if wanted & forms:
-            return name
-
-    starts = [
-        name
-        for name, forms in known.items()
-        if any(form.startswith(part) for form in forms for part in wanted)
-    ]
-    if starts:
-        # Побеждает самое короткое: «мама» — это «Мама», а не «Мама Юли».
-        return min(starts, key=len)
-
-    sounds = skeleton(query)
-    if len(sounds) >= 4:
-        for name in names:
-            if skeleton(name) == sounds:
-                return name
-
-    tight = squash(query)
-    keys = {squash(name): name for name in names}
-    close = difflib.get_close_matches(tight, list(keys), n=1, cutoff=SIMILARITY)
-    return keys[close[0]] if close else None
+    return best_match(
+        query,
+        names,
+        similarity=SIMILARITY,
+        # Началом, а не любым краем: «Настя» находит «Настя Ко», а вот совпадение
+        # концом означало бы, что «Ко» находит её же — фамилия адресата слишком
+        # слабое основание, чтобы писать человеку.
+        edges=starts,
+        least=MIN_PREFIX,
+    )
 
 def split_request(spoken: str, names: Sequence[str]) -> tuple[str, str]:
     """Разделить «напиши маме буду через час» на адресата и текст.

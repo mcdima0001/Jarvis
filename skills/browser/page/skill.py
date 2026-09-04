@@ -37,7 +37,6 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import re
 import time
 from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
@@ -45,7 +44,7 @@ from urllib.parse import urlsplit
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import romanize, skeleton, squash
+from jarvis.core.text import closeness, romanize, shared_word, skeleton, sounds_alike, squash
 from jarvis.core.tools import tool
 
 #: Что умеет сам плеер, без единой кнопки сайта.
@@ -465,9 +464,6 @@ LEARNABLE = frozenset(
 #: Порог невысокий: «Копировать ссылку» против «скопировать» — это одно и то же.
 _LIKENESS = 0.6
 
-#: Слова названия — по ним ищется общее слово у подписи и просьбы.
-_WORDS = re.compile(r"[^\W_]+", re.UNICODE)
-
 
 def learnable(action: str) -> bool:
     """Можно ли для этого действия спрашивать у модели, что нажать."""
@@ -482,21 +478,24 @@ def resembles(name: str, wanted: str) -> bool:
     YouTube на «нажми кнопку скопировать» она выбрала «Ещё» — и это ушло в
     память. Поэтому её выбор проверяется: «Копировать ссылку» на «скопировать»
     похоже, «Ещё» — нет.
+
+    Лестница та же, что у названий программ и чатов (`core/text/matching.py`),
+    только вопрос другой: не «который из списка», а «этот ли». Поэтому вхождение
+    берётся любым куском, а не краем: подпись кнопки — не название, слово внутри
+    неё стоит где угодно.
     """
     left, right = squash(name), squash(wanted)
     if not left or not right:
         return False
     if left in right or right in left:
         return True
-    if skeleton(name) and skeleton(name) == skeleton(wanted):
+    if sounds_alike(name, wanted, least=1):
         return True
     # Общее длинное слово — тоже родство: «логотип YouTube» и «YouTube Главная»
     # говорят про одно и то же, хотя целиком не похожи.
-    words = {squash(word) for word in _WORDS.findall(name.lower())}
-    asked = {squash(word) for word in _WORDS.findall(wanted.lower())}
-    if {word for word in words & asked if len(word) >= 4}:
+    if shared_word(name, wanted):
         return True
-    return difflib.SequenceMatcher(None, left, right).ratio() >= _LIKENESS
+    return closeness(left, right) >= _LIKENESS
 
 
 _LEARN_SYSTEM = (

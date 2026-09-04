@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import re
 import secrets
@@ -35,7 +34,7 @@ from urllib.parse import quote_plus, urlsplit
 from jarvis.core.contracts import ToolResult
 from jarvis.core.net import WebSocketServer
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import romanize, skeleton, squash
+from jarvis.core.text import best_match, romanize, skeleton, squash, starts, stem
 from jarvis.core.tools import tool
 
 #: Поисковые системы: куда подставить запрос.
@@ -170,16 +169,8 @@ def clean_spoken(text: str) -> str:
 #: Костяк короче этого совпадёт со слишком многим: у «YouTube» он равен «tb».
 _MIN_SKELETON = 5
 
-#: Гласные на конце: по ним и различаются падежи — «почта», «почту», «почте».
-_ENDINGS = "аеёиоуыэюяaeiouy"
-
 #: Насколько похожим должно быть название, чтобы считаться тем же сайтом.
 _SIMILARITY = 0.8
-
-
-def _stem(text: str) -> str:
-    """Отбросить окончание, чтобы падеж перестал мешать сравнению."""
-    return text.rstrip(_ENDINGS)
 
 
 def safe_url(url: str) -> str | None:
@@ -207,39 +198,28 @@ def site_url(name: str, sites: dict[str, str]) -> str | None:
     if known:
         return safe_url(known)
 
-    # Названия склоняют: «на ютубе», «в гитхабе», «открой почту». И пишут
-    # по-разному: сравниваем сжатые формы, где разделителей нет вовсе.
-    stem = _stem(squash(text))
-    if len(stem) >= _MIN_PREFIX:
-        stems = {_stem(squash(spoken)): url for spoken, url in sites.items()}
+    # Дальше — общая лестница: названия склоняют («на ютубе», «открой почту»),
+    # пишут по-разному («Яндекс.Музыка» против «яндекс музыка») и разными
+    # алфавитами («МаршалТех» в конфиге против «MarshallTech» в расшифровке).
+    # Она же ловит глухие на конце: «гитхаб» Whisper слышит как «гитхап».
+    match = best_match(
+        text,
+        sites,
+        # Порог высокий: сайт открывается молча, и промахнуться тут неприятнее,
+        # чем переспросить.
+        similarity=_SIMILARITY,
         # Побеждает самое длинное подходящее название. «Яндекс музыку»
         # начинается с «яндекс», и без этого правила открывался поиск вместо
         # музыки — какая запись попадётся в словаре первой, такая и выигрывала.
-        matches = [
-            other
-            for other in stems
-            if len(other) >= _MIN_PREFIX
-            and (stem.startswith(other) or other.startswith(stem))
-        ]
-        if matches:
-            return safe_url(stems[max(matches, key=len)])
-
-        # Whisper путает звонкие с глухими на конце: «гитхаб» слышится как
-        # «гитхап», «твич» — как «твитч». Порог высокий: сайт открывается
-        # молча, и промахнуться тут неприятнее, чем переспросить.
-        close = difflib.get_close_matches(stem, list(stems), n=1, cutoff=_SIMILARITY)
-        if close:
-            return safe_url(stems[close[0]])
-
-        # Название могли записать другим алфавитом, чем услышал Whisper:
-        # «МаршалТех» в конфиге против «MarshallTech» в расшифровке. Согласный
-        # костяк у обоих одинаковый; короткие костяки не берём — «tb» от
-        # «YouTube» совпал бы со слишком многим.
-        sounds = skeleton(text)
-        if len(sounds) >= _MIN_SKELETON:
-            for spoken, url in sites.items():
-                if skeleton(spoken) == sounds:
-                    return safe_url(url)
+        prefer=lambda spoken: -len(spoken),
+        # Только началом: хвост названия несёт смысл. Совпадение концом
+        # означало бы, что «музыка» подходит к любому музыкальному сайту.
+        edges=starts,
+        least=_MIN_PREFIX,
+        least_skeleton=_MIN_SKELETON,
+    )
+    if match is not None:
+        return safe_url(sites[match])
 
     if "://" in text:
         return safe_url(text)
@@ -346,13 +326,13 @@ def internal_page(name: str) -> tuple[str, ...]:
     if text in INTERNAL_PAGES:
         return INTERNAL_PAGES[text]
 
-    stem = _stem(text)
-    if len(stem) < _MIN_PREFIX:
+    base = stem(text)
+    if len(base) < _MIN_PREFIX:
         return ()
     matches = [
         page
         for page in INTERNAL_PAGES
-        if _stem(page).startswith(stem) or stem.startswith(_stem(page))
+        if stem(page).startswith(base) or base.startswith(stem(page))
     ]
     return INTERNAL_PAGES[max(matches, key=len)] if matches else ()
 
@@ -409,8 +389,8 @@ def tabs_by_title(
     if len(wanted) < 3:
         return []
 
-    stem = _stem(wanted)
-    tight = _stem(squash(wanted))
+    base = stem(wanted)
+    tight = stem(squash(wanted))
     # То же самое латиницей: «апи кей» произнесено по-русски, а на вкладке
     # написано «API Key». Костяк тут не поможет — он слишком короткий.
     # Окончание не отбрасываем: в латинской записи «y» и «e» на конце — часть
@@ -424,8 +404,8 @@ def tabs_by_title(
     for tab in by_proximity(tabs, current):
         title = str(tab.get("title", "")).lower()
         page = page_title(title)
-        words = {_stem(word) for word in _WORD.findall(page)}
-        matched = wanted in title or (len(stem) >= _MIN_PREFIX and stem in words)
+        words = {stem(word) for word in _WORD.findall(page)}
+        matched = wanted in title or (len(base) >= _MIN_PREFIX and base in words)
         # Сжатая форма ищется как кусок заголовка, поэтому порог выше: по
         # четырём буквам подряд совпадёт слишком многое.
         if not matched and len(tight) >= _MIN_PREFIX + 2:

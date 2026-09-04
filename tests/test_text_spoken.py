@@ -34,6 +34,20 @@ def test_cyrillic_written_in_latin() -> None:
     assert romanize("джарвис") == "dzharvis"
 
 
+def test_capitals_are_transliterated_too() -> None:
+    """Заглавная буква — та же буква, а не повод оставить её кириллицей.
+
+    Сперва в словаре лежали только строчные, и на выходе получалась смесь
+    алфавитов, бесполезная всем: «Настя Ко» превращалась в «Нastya Кo», а
+    английский голос получал на чтение «Дzharvis» — то есть спотыкался ровно
+    на имени ассистента. Регистр при этом сохраняется, и «Ж» — это «Zh», а не
+    «ZH»: заглавной остаётся только первая буква.
+    """
+    assert romanize("Джарвис") == "Dzharvis"
+    assert romanize("Настя Ко") == "Nastya Ko"
+    assert romanize("Жора") == "Zhora"
+
+
 @pytest.mark.parametrize(
     "heard, written",
     [
