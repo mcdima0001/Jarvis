@@ -169,80 +169,116 @@ def _read_wav(path: Any) -> tuple[numpy.ndarray, int]:
     return wave_, rate
 
 
-def _scores(model: Any, wave_: numpy.ndarray, rate: int) -> list[float]:
-    """Прогнать запись через модель и собрать все её оценки."""
-    from .protocol import AudioFrame
+def check_wakeword(config: Any, spoken: Any, background: Any = None) -> str:
+    """Проверить активацию по имени на своих записях.
 
-    model.reset()
-    out: list[float] = []
-    step = rate // 10
-    for at in range(0, len(wave_) - step, step):
-        piece = wave_[at : at + step]
-        model.detect(AudioFrame(data=piece.tobytes(), sample_rate=rate))
-        out.append(model.score)
-    return out
-
-
-def check_wakeword(model_path: Any, spoken: Any, background: Any = None) -> str:
-    """Проверить обученную модель активации на своих записях.
+    Проверяется **собранный по конфигу детектор**, а не отдельно взятая модель:
+    в бою работать будет именно он — со своим движком, словарём и выдержкой.
+    Поэтому и режим, и движок берутся из `config.yaml`, как при живом запуске.
 
     Урок Silero тут главный: **отрицательный пример не доказывает ничего**.
-    Модель, которая молчит всегда, на тишине и на музыке ведёт себя ровно как
-    исправная — и выглядит прекрасно, пока не позовёшь. Поэтому меряется прежде
+    Детектор, который молчит всегда, на тишине и на музыке ведёт себя ровно как
+    исправный — и выглядит прекрасно, пока не позовёшь. Поэтому меряется прежде
     всего попадание на записях своего голоса, а ложные срабатывания — вторым.
 
-    :param model_path: файл `.onnx` после обучения.
-    :param spoken: каталог с записями, где имя **произнесено** (`my_voice`).
+    :param config: секция ``audio`` из конфига.
+    :param spoken: каталог с записями, где имя **произнесено**.
     :param background: каталог с тем, где имени нет: своя музыка, разговоры.
     """
     from pathlib import Path
 
-    from .wakeword import OpenWakeWord
+    from . import _build_wake_word
+    from .null import AlwaysActiveWakeWord
 
-    lines = ["Проверка модели активации", "=" * 25, ""]
-    model_file = Path(str(model_path))
-    if not model_file.exists():
-        return f"Нет файла модели: {model_file}"
+    detector = _build_wake_word(config)
+    if isinstance(detector, AlwaysActiveWakeWord):
+        return (
+            "Активация по звуку не поднялась — проверять нечего. Причина в "
+            "предупреждении выше: либо audio.wake_word.mode не acoustic, либо "
+            "не встал движок. Подробности — docs/wakeword.md."
+        )
 
-    # Порог ставим в ноль: нам нужны сами оценки, а не готовое «да/нет».
-    model = OpenWakeWord(model_file, phrase="джарвис", sample_rate=16000, threshold=0.01)
+    lines = [
+        "Проверка активации по имени",
+        "=" * 27,
+        "",
+        f"Движок: {type(detector).__name__}, имя: {detector.phrase}",
+    ]
 
     said = sorted(Path(str(spoken)).glob("*.wav")) if spoken else []
     if not said:
         return f"Нет записей в {spoken} — проверять нечего. Их делает record_samples.py"
-    lines.append(f"Записей с именем: {len(said)}")
 
-    peaks = []
+    heard: list[tuple[str, float]] = []
+    missed: list[str] = []
     for path in said:
-        wave_, rate = _read_wav(path)
-        scores = _scores(model, wave_, rate)
-        peaks.append(max(scores) if scores else 0.0)
+        at = _first_hit(detector, path, config)
+        if at is None:
+            missed.append(path.name)
+        else:
+            heard.append((path.name, at))
 
-    quiet_peaks: list[float] = []
-    hours = 0.0
+    share = len(heard) / len(said) * 100
+    lines += ["", f"Записей с именем: {len(said)}, узнано {len(heard)} ({share:.0f}%)"]
+    if heard:
+        delays = [at for _, at in heard]
+        lines.append(
+            f"Срабатывает за {min(delays):.2f}–{max(delays):.2f} с от начала записи"
+        )
+    for name in missed:
+        lines.append(f"  не услышал: {name}")
+
     if background:
         others = sorted(Path(str(background)).glob("*.wav"))
-        lines.append(f"Записей без имени: {len(others)}")
+        hours = 0.0
+        false = 0
         for path in others:
             wave_, rate = _read_wav(path)
             hours += len(wave_) / rate / 3600
-            quiet_peaks.extend(_scores(model, wave_, rate))
+            if _first_hit(detector, path, config) is not None:
+                false += 1
+        lines += ["", f"Записей без имени: {len(others)}, ложных срабатываний {false}"]
+        if hours > 0.01:
+            lines.append(f"Это {false / hours:.1f} в час на {hours:.1f} ч фона")
 
-    lines += ["", f"{'порог':>6} {'попал':>8} {'ложных':>9}"]
-    for threshold in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
-        hit = sum(1 for value in peaks if value >= threshold) / len(peaks)
-        false = sum(1 for value in quiet_peaks if value >= threshold)
-        per_hour = f"{false / hours:.1f}/час" if hours > 0.01 else "—"
-        lines.append(f"{threshold:>6.1f} {hit * 100:>7.0f}% {per_hour:>9}")
-
-    best = sorted(peaks)[len(peaks) // 20] if len(peaks) >= 20 else min(peaks)
     lines += [
         "",
-        f"Слабейшие записи набирают около {best:.2f} — ниже этого порог опускать "
-        f"незачем, выше {max(peaks):.2f} он бесполезен.",
-        "",
-        "Выбирай порог по правому столбцу: одно ложное срабатывание в пять часов",
-        "терпимо, одно в десять минут — нет. Попадание ниже 80% означает, что",
-        "звать придётся дважды, и это хуже ложных.",
+        "Попадание ниже 80% означает, что звать придётся дважды, и это хуже",
+        "ложных: одно ложное срабатывание в пять часов терпимо, одно в десять",
+        "минут — нет. Мало попаданий у vosk — проверь, что имя есть в словаре",
+        "модели; много ложных — смотри HOLD_MS в wakeword.py.",
     ]
     return "\n".join(lines)
+
+
+def _first_hit(detector: Any, path: Any, config: Any) -> float | None:
+    """На какой секунде записи детектор услышал имя. ``None`` — не услышал.
+
+    Кадры нарезаются той же длины, что приходит с микрофона: выдержка считается
+    в миллисекундах, но кадр всё равно неделим, и мерить надо на живой длине.
+    """
+    from .protocol import AudioFrame
+
+    wave_, rate = _read_wav(path)
+    if rate != config.sample_rate:
+        wave_, rate = _resampled(path, config.sample_rate)
+
+    detector.reset()
+    step = max(1, int(rate * config.frame_ms / 1000))
+    for at in range(0, len(wave_) - step, step):
+        frame = AudioFrame(data=wave_[at : at + step].tobytes(), sample_rate=rate)
+        if detector.detect(frame):
+            return (at + step) / rate
+    return None
+
+
+def _resampled(path: Any, rate: int) -> tuple[numpy.ndarray, int]:
+    """Привести запись к нужной частоте.
+
+    Отбрасывать сэмплы нельзя — алиасинг рушит и распознавание, и активацию, —
+    поэтому берётся тот же честный ресемплер, что и у Whisper.
+    """
+    from faster_whisper.audio import decode_audio
+
+    audio = decode_audio(str(path), sampling_rate=rate)
+    return (numpy.clip(audio, -1.0, 1.0) * 32767).astype(numpy.int16), rate

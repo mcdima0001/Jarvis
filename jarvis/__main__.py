@@ -67,9 +67,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--check-wakeword",
         nargs="+",
-        metavar=("МОДЕЛЬ", "ЗАПИСИ"),
-        help="проверить обученную модель активации: файл .onnx, каталог со своими "
-        "записями и (необязательно) каталог с фоном без имени",
+        metavar=("ЗАПИСИ", "ФОН"),
+        help="проверить активацию по имени: каталог со своими записями и "
+        "(необязательно) каталог с фоном, где имени нет. Движок берётся из "
+        "конфига — проверяется то, что и будет работать",
     )
     parser.add_argument(
         "--download-voice",
@@ -171,7 +172,7 @@ def _run_utility(args: argparse.Namespace, config: JarvisConfig) -> int | None:
         from jarvis.core.audio.checkup import check_wakeword
 
         given = list(args.check_wakeword)
-        print(check_wakeword(*(given + [None] * (3 - len(given)))[:3]))
+        print(check_wakeword(config.audio, *(given + [None] * (2 - len(given)))[:2]))
         return 0
     if args.download_voice is not None:
         if not args.download_voice:
