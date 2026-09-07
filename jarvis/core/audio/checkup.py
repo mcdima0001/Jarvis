@@ -103,6 +103,8 @@ def check_aec(config: AudioConfig, *, seconds: float = 10.0) -> str:
     if sure < 0.5:
         lines.append("  Уверенности мало: похоже, в микрофон эта музыка не попадает вовсе.")
 
+    lines += _drift_report(mic, played, rate)
+
     # Прогон в тех же условиях, в каких работает конвейер: микрофон придержан
     # ровно на столько, чтобы опора шла впереди на `_KEEP_MS`. Именно это и
     # подбирает `_realign` на живом запуске, и брать тут какое-то своё число
@@ -156,6 +158,106 @@ def check_aec(config: AudioConfig, *, seconds: float = 10.0) -> str:
             f"  * хватает ли длины фильтра: audio.aec.tail_ms, сейчас {config.aec.tail_ms:.0f} мс.",
         ]
     return "\n".join(lines)
+
+
+#: На сколько окон резать запись, чтобы увидеть дрейф. Восемь — чтобы отличить
+#: равномерный уезд от разового скачка и увидеть, **где** тот случился: по двум
+#: точкам прямую проводит что угодно, включая случайный промах корреляции.
+_DRIFT_WINDOWS = 8
+
+
+def _drift_report(mic: numpy.ndarray, played: numpy.ndarray, rate: int) -> list[str]:
+    """Проверить, уезжают ли потоки друг от друга по ходу записи.
+
+    **Главный вопрос всего AEC, и мерить его надо именно так.** Прежний замер
+    (`_tell_rates` в `echo.py`) делил число сэмплов на время по часам — и дал
+    28.08.2026 «микрофон 16277 Гц» при номинале 16000, то есть +1.7%. Столько
+    не врёт ни один кварц: делились разъехавшиеся моменты старта и остановки
+    двух потоков, а не частоты.
+
+    Здесь сдвиг ищется в нескольких окнах подряд. Если тракт правда уезжает,
+    сдвиг растёт **равномерно**, и наклон этой прямой и есть дрейф; окно
+    записи при этом общее, и когда какой поток открылся, роли не играет.
+    """
+    seconds = len(mic) / rate
+    if seconds < 8.0:
+        return ["", "Записи мало, чтобы говорить о дрейфе — нужно секунд десять."]
+
+    span = int(len(mic) / _DRIFT_WINDOWS)
+    points: list[tuple[float, float, float]] = []
+    for index in range(_DRIFT_WINDOWS):
+        at = index * span
+        piece_mic = mic[at : at + span]
+        piece_played = played[at : at + span]
+        if min(len(piece_mic), len(piece_played)) < span // 2:
+            continue
+        # Предел шире обычного: если дрейф есть, к концу записи сдвиг уедет
+        # дальше, чем рабочие 500 мс, и упёрся бы в потолок поиска.
+        shift, sure = estimate_delay(
+            piece_mic, piece_played, sample_rate=rate, max_ms=2000.0
+        )
+        points.append(((at + span / 2) / rate, shift * 1000 / rate, sure))
+
+    lines = ["", "Сдвиг по ходу записи (так виден дрейф):"]
+    for at, shift_ms, sure in points:
+        mark = "" if sure >= 0.3 else "   ← уверенности мало, точка не в счёт"
+        lines.append(f"  {at:5.1f} с   {shift_ms:+8.1f} мс   (уверенность {sure:.2f}){mark}")
+
+    solid = [(at, shift_ms) for at, shift_ms, sure in points if sure >= 0.3]
+    if len(solid) < 3:
+        lines.append("")
+        lines.append(
+            "Точек с уверенным сдвигом мало — про дрейф сказать нечего. Обычно "
+            "это значит, что музыка в микрофон почти не попадает."
+        )
+        return lines
+
+    times = numpy.array([at for at, _ in solid])
+    shifts = numpy.array([shift_ms for _, shift_ms in solid])
+
+    # Наклон берётся по медиане приращений, а не прямой через все точки.
+    # Первый же живой замер (07.09.2026) показал, почему: четыре окна подряд
+    # дали -477 мс с разбросом в одну миллисекунду, пятое -17 мс, и прямая
+    # через всё это объявила дрейф +15 мс/с — которого нет. Один выброс
+    # утаскивает прямую целиком, а медиана его не замечает.
+    steps = numpy.diff(shifts) / numpy.diff(times)
+    slope = float(numpy.median(steps))
+    percent = slope / 10.0  # мс за секунду -> проценты
+    spread = float(numpy.max(shifts) - numpy.min(shifts))
+    jumps = [
+        (times[index + 1], float(steps[index] * (times[index + 1] - times[index])))
+        for index in range(len(steps))
+        if abs(steps[index] - slope) > 5.0
+    ]
+
+    lines += [
+        "",
+        f"Дрейф: {slope:+.2f} мс/с ({percent:+.3f}%), разброс за запись {spread:.0f} мс",
+    ]
+    for at, size in jumps:
+        lines.append(
+            f"  Скачок к {at:.0f}-й секунде: {size:+.0f} мс разом — это не дрейф, "
+            f"а разрыв в одном из потоков"
+        )
+    if abs(slope) < 0.05:
+        lines.append(
+            "Потоки идут в такт — с эхоподавлением дрейф не воюет. Если оно всё "
+            "равно ничего не убирает, причина не здесь."
+        )
+    elif abs(slope) < 0.5:
+        lines.append(
+            "Дрейф есть, но небольшой: выравнивание съезжает за минуты, а не за "
+            "секунды. `_realign` такое догоняет."
+        )
+    else:
+        lines.append(
+            "Дрейф большой: тракт уезжает быстрее, чем фильтр успевает подстроиться, "
+            "и подтверждение замеров по двум подряд (`_AGREE_MS`) не сработает "
+            "никогда. Лечится либо подрезкой опоры по частоте, либо съёмом копии "
+            "с другого звена — виртуальные устройства (Voicemeeter) идут по своему "
+            "тактовому генератору."
+        )
+    return lines
 
 
 def _read_wav(path: Any) -> tuple[numpy.ndarray, int]:

@@ -61,8 +61,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--check-aec",
-        action="store_true",
-        help="проверить эхоподавление: снять микрофон и то, что играет, и отчитаться",
+        nargs="?",
+        const=30.0,
+        type=float,
+        metavar="СЕКУНД",
+        help="проверить эхоподавление: снять микрофон и то, что играет, и "
+        "отчитаться. По умолчанию слушает 30 с — меньше не хватает, чтобы "
+        "увидеть дрейф между потоками",
     )
     parser.add_argument(
         "--check-wakeword",
@@ -163,10 +168,10 @@ def _run_utility(args: argparse.Namespace, config: JarvisConfig) -> int | None:
     if args.devices:
         print(list_devices())
         return 0
-    if args.check_aec:
+    if args.check_aec is not None:
         from jarvis.core.audio.checkup import check_aec
 
-        print(check_aec(config.audio))
+        print(check_aec(config.audio, seconds=args.check_aec))
         return 0
     if args.check_wakeword:
         from jarvis.core.audio.checkup import check_wakeword
