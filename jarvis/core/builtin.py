@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.llm import LLMService
@@ -77,6 +77,23 @@ def _language(code: str | None) -> str:
     return short if short in _DIALOG_SYSTEM else "ru"
 
 
+def _stt_spending(stt: Any) -> tuple[int, float]:
+    """Сколько запросов и секунд звука ушло в облачное распознавание.
+
+    Спрашиваем **бережно**: распознавателей несколько, и счёт есть только у
+    облачного. У местной модели платить не за что, у заглушки — тем более, и
+    требовать от них этот метод значило бы тащить тариф в контракт STT.
+    """
+    spent = getattr(stt, "spent", None)
+    if spent is None:
+        # Пара «облако + запасное»: счёт живёт у основного.
+        spent = getattr(getattr(stt, "_primary", None), "spent", None)
+    if not spent:
+        return 0, 0.0
+    calls, seconds = spent
+    return int(calls), float(seconds)
+
+
 class CoreTools:
     """Инструменты, которые ядро регистрирует само."""
 
@@ -91,8 +108,13 @@ class CoreTools:
         learner: "LearnedResolver | None" = None,
         modes: Modes | None = None,
         situation: Situation | None = None,
+        stt: Any = None,
     ) -> None:
         self._llm = llm
+        #: Распознавание — только чтобы показать его расход. Облачное считает
+        #: секунды звука, и они должны быть видны там же, где токены: лимит
+        #: иначе кончится незаметно, посреди вечера.
+        self._stt = stt
         self._memory = memory
         self._registry = registry
         self._skills = skills
@@ -520,6 +542,22 @@ class CoreTools:
     async def spending(self) -> ToolResult:
         """Показать расход токенов с момента запуска."""
         report = self._llm.spending
+        heard, seconds = _stt_spending(self._stt)
+
+        said = {
+            "ru": f"С запуска: {report.calls} запросов к модели, "
+                  f"{report.total_tokens} токенов."
+            if report.calls
+            else "Модель ещё ни разу не вызывалась.",
+            "en": f"Since start: {report.calls} model calls, "
+                  f"{report.total_tokens} tokens."
+            if report.calls
+            else "The model hasn't been called yet.",
+        }
+        if heard:
+            said["ru"] += f" Распознавание: {seconds:.0f} секунд звука."
+            said["en"] += f" Speech: {seconds:.0f} seconds of audio."
+
         return ToolResult.success(
             {
                 "calls": report.calls,
@@ -527,15 +565,8 @@ class CoreTools:
                 "completion_tokens": report.completion_tokens,
                 "cost": round(report.cost, 5),
                 "by_task": dict(report.by_task),
+                "stt_calls": heard,
+                "stt_seconds": round(seconds, 1),
             },
-            speech={
-                "ru": f"С запуска: {report.calls} запросов к модели, "
-                      f"{report.total_tokens} токенов."
-                if report.calls
-                else "Модель ещё ни разу не вызывалась.",
-                "en": f"Since start: {report.calls} model calls, "
-                      f"{report.total_tokens} tokens."
-                if report.calls
-                else "The model hasn't been called yet.",
-            },
+            speech=said,
         )

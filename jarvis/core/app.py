@@ -195,6 +195,7 @@ class JarvisApp:
             learner=learner,
             modes=modes,
             situation=situation,
+            stt=stt,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)

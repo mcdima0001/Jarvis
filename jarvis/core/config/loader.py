@@ -259,6 +259,9 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
         llm=_build_llm(_section(data, "llm")),
         stt=STTConfig(
             engine=str(stt.get("engine", "faster-whisper")),
+            fallback=str(stt.get("fallback") or ""),
+            api_key=str(stt.get("api_key") or ""),
+            timeout=float(stt.get("timeout", 10.0)),
             model=str(stt.get("model", "base")),
             device=str(stt.get("device", "auto")),
             compute_type=str(stt.get("compute_type", "int8")),
