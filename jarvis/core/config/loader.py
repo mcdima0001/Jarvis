@@ -279,6 +279,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             engine=str(tts.get("engine", "piper")),
             voices=_voices(tts),
             default_language=str(tts.get("default_language", "ru")),
+            fallback=str(tts.get("fallback") or ""),
             models_dir=_resolve(project_root, tts.get("models_dir", "models/piper")),
             length_scale=float(tts.get("length_scale", 1.0)),
             sample_rate=int(tts.get("sample_rate", 22050)),

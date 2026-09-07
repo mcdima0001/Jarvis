@@ -184,6 +184,11 @@ class TTSConfig:
     voices: Mapping[str, str] = field(default_factory=dict)
     #: Язык, на котором говорим, если он не указан явно.
     default_language: str = "ru"
+    #: Запасной голос: им говорим, когда основной отказал. Нужен прежде всего
+    #: облачному синтезу — без сети ассистент иначе онемеет и не сможет даже
+    #: сказать, что случилось. Указывается как ``движок:голос`` и обязан быть
+    #: среди `voices`, иначе не загрузится при старте.
+    fallback: str = ""
     models_dir: Path = Path("models/piper")
     length_scale: float = 1.0
     sample_rate: int = 22050

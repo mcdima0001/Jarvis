@@ -13,7 +13,13 @@ Piper легче всех. Поэтому в конфиге пишется ``д�
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
+
+#: Сколько не трогать основной голос после отказа. Реплики звучат десятки раз
+#: за вечер, и ждать таймаут облака на каждой значит превратить обрыв связи в
+#: «ассистент задумывается перед каждым словом».
+RETRY_AFTER_S = 60.0
 
 from jarvis.core.audio import AudioSink
 from jarvis.core.config import TTSConfig
@@ -41,6 +47,9 @@ class CompositeTTS:
         self._sink = sink
         self._backends: dict[str, SpeechBackend] = {}
         self._loaded: set[tuple[str, str]] = set()
+        #: До какого момента не трогать основной голос после отказа.
+        self._blocked_until = 0.0
+        self._spare_language = self._find_spare_language()
 
     @property
     def service_name(self) -> str:
@@ -51,6 +60,29 @@ class CompositeTTS:
     def ready(self) -> bool:
         """Загружен ли хотя бы один голос."""
         return bool(self._loaded)
+
+    def _find_spare_language(self) -> str:
+        """На каком языке говорит запасной голос.
+
+        Ищется среди `tts.voices`: запасной обязан быть там же, иначе он не
+        загрузится при старте и в нужный момент окажется таким же недоступным,
+        как основной. Не нашёлся — предупреждаем сразу, при сборке, а не в
+        момент отказа, когда сказать об этом будет уже нечем.
+        """
+        if not self._config.fallback:
+            return ""
+        wanted = parse_voice(self._config.fallback, default_engine=self._config.engine)
+        for language in self._config.voices:
+            if parse_voice(
+                self._config.voices[language], default_engine=self._config.engine
+            ) == wanted:
+                return language
+        logger.warning(
+            "Запасной голос %r не указан ни для одного языка в tts.voices — "
+            "он не загрузится при старте, и откат работать не будет",
+            self._config.fallback,
+        )
+        return self._config.default_language
 
     def resolve(self, language: str | None) -> tuple[str, str, str]:
         """Подобрать язык, движок и голос.
@@ -95,7 +127,23 @@ class CompositeTTS:
                 "Не задан ни один голос. Пропиши tts.voices в config.yaml, "
                 "список: python -m jarvis --download-voice"
             )
-        await self._ensure(code, engine, voice)
+        try:
+            await self._ensure(code, engine, voice)
+        except Exception as exc:  # noqa: BLE001 — облако, сеть, кончился тариф
+            # С облачным основным голосом это не редкость: нет сети — нет и
+            # голоса. Падать тут нельзя, пока есть чем говорить: ассистент без
+            # синтеза работает хуже, а не запустившийся не работает вовсе.
+            if self._spare(engine, voice) is None:
+                raise
+            self._blocked_until = time.monotonic() + RETRY_AFTER_S
+            logger.warning(
+                "Основной голос %s:%s не поднялся (%s: %s) — говорю запасным %s",
+                engine,
+                voice,
+                type(exc).__name__,
+                exc,
+                self._config.fallback,
+            )
 
         for language in self._config.voices:
             other_code, other_engine, other_voice = self.resolve(language)
@@ -132,6 +180,38 @@ class CompositeTTS:
             return Speech(audio=b"", sample_rate=self._config.sample_rate, text=text)
 
         code, engine, voice = self.resolve(language)
+        spare = self._spare(engine, voice)
+        if spare is not None and time.monotonic() < self._blocked_until:
+            # Основной голос недавно отказал — не ждём его таймаут на каждой
+            # реплике, сразу говорим запасным.
+            return await self._speak(text, *spare)
+
+        try:
+            return await self._speak(text, code, engine, voice)
+        except Exception as exc:  # noqa: BLE001 — облако, сеть, кончился тариф
+            if spare is None:
+                raise
+            self._blocked_until = time.monotonic() + RETRY_AFTER_S
+            logger.warning(
+                "Голос %s:%s не отозвался (%s: %s) — перехожу на запасной %s:%s на %.0f с",
+                engine,
+                voice,
+                type(exc).__name__,
+                exc,
+                spare[1],
+                spare[2],
+                RETRY_AFTER_S,
+            )
+            return await self._speak(text, *spare)
+
+    async def _speak(self, text: str, code: str, engine: str, voice: str) -> Speech:
+        """Синтезировать конкретным голосом.
+
+        Язык здесь — язык **голоса**, а не вопроса, и от него зависит подготовка
+        текста: английский голос кириллицу читает как кашу, поэтому
+        `normalize_for_speech` переводит её латиницей. На запасном голосе это и
+        спасает: русская реплика звучит с акцентом, но разборчиво.
+        """
         await self._ensure(code, engine, voice)
 
         # Чужой алфавит движок читает как кашу, поэтому текст готовим здесь,
@@ -144,6 +224,23 @@ class CompositeTTS:
             self._backend(engine).synthesize, spoken, voice, code
         )
         return Speech(audio=audio, sample_rate=rate, text=text, language=code)
+
+    def _spare(self, engine: str, voice: str) -> tuple[str, str, str] | None:
+        """Запасной голос, если он задан и не совпадает с основным.
+
+        Язык берётся из `tts.voices`: там этот голос уже прописан под свой язык,
+        и гадать не нужно. Не прописан — откат не работает, о чём сказано при
+        сборке: молчащий запасной хуже отсутствующего, потому что о нём думают,
+        что он есть.
+        """
+        if not self._config.fallback:
+            return None
+        spare_engine, spare_voice = parse_voice(
+            self._config.fallback, default_engine=self._config.engine
+        )
+        if (spare_engine, spare_voice) == (engine, voice):
+            return None
+        return self._spare_language, spare_engine, spare_voice
 
     async def say(self, text: str, *, language: str | None = None) -> None:
         """Синтезировать и отправить в аудиовыход."""
