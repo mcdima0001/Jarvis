@@ -140,3 +140,18 @@ def test_backend_is_built_by_name() -> None:
 
     assert isinstance(backend, FishBackend)
     assert backend.engine == "fish"
+
+
+def test_engine_is_registered_for_config_records() -> None:
+    """Движок обязан быть в списке известных, иначе голос уедет к чужому.
+
+    `parse_voice` сверяется с закрытым списком `BACKENDS`, и незнакомый
+    префикс молча заменяется движком по умолчанию. Так `fish:<id>` при первом
+    же включении заговорил голосом Piper: предупреждение в логе было, но одной
+    строкой среди сотни при запуске, и заметить его удалось только потому, что
+    разбор проверялся руками.
+    """
+    from jarvis.core.tts.backends import BACKENDS, parse_voice
+
+    assert "fish" in BACKENDS
+    assert parse_voice("fish:abc123") == ("fish", "abc123")

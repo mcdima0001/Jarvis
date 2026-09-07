@@ -475,7 +475,12 @@ class EdgeBackend:
 
 
 #: Известные движки.
-BACKENDS = ("piper", "kokoro", "silero", "vosk", "xtts", "edge")
+#: Движки, которые можно назвать в записи ``движок:голос``. Список закрытый и
+#: **обязателен к пополнению**: движок, которого тут нет, `parse_voice` не
+#: узнаёт и молча уводит голос к движку по умолчанию. Ровно так новый `fish`
+#: сперва и заговорил голосом Piper — предупреждение в логе было, но одно
+#: среди сотни строк запуска.
+BACKENDS = ("piper", "kokoro", "silero", "vosk", "xtts", "edge", "fish")
 
 
 def parse_voice(spec: str, *, default_engine: str = "piper") -> tuple[str, str]:
