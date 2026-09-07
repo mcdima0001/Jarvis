@@ -283,6 +283,9 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             length_scale=float(tts.get("length_scale", 1.0)),
             sample_rate=int(tts.get("sample_rate", 22050)),
             device=str(tts.get("device", "auto")),
+            api_key=str(tts.get("api_key") or ""),
+            model=str(tts.get("model") or "s2.1-pro-free"),
+            timeout=float(tts.get("timeout", 30.0)),
             pronounce={str(k): str(v) for k, v in (tts.get("pronounce") or {}).items()},
         ),
         audio=AudioConfig(

@@ -70,6 +70,9 @@ class CompositeTTS:
                 self._config.models_dir,
                 length_scale=self._config.length_scale,
                 device=self._config.device,
+                api_key=self._config.api_key,
+                model=self._config.model,
+                timeout=self._config.timeout,
             )
             self._backends[engine] = backend
         return backend

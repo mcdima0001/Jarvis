@@ -493,12 +493,139 @@ def parse_voice(spec: str, *, default_engine: str = "piper") -> tuple[str, str]:
     return default_engine, spec.strip()
 
 
+def _read_wav(data: bytes) -> tuple[bytes, int]:
+    """Достать из WAV кадры и частоту.
+
+    Формат самоописателен, поэтому частоту не задаём и не проверяем: что
+    сервис прислал, то и играем. Ошибиться в ней — значит получить голос
+    бурундука, и молчаливо такое лечится плохо.
+    """
+    import io
+    import wave
+
+    with wave.open(io.BytesIO(data)) as handle:
+        return handle.readframes(handle.getnframes()), handle.getframerate()
+
+
+class FishBackend:
+    """Fish Audio: облачный синтез, пока местный голос грузится полторы минуты.
+
+    Взят не за качество — русский `vosk:male_1` владельца устраивает («имба»), —
+    а за **время запуска**. Vosk поднимает модель на 750 МБ полторы минуты, и
+    платится это на каждом запуске: во время работы над проектом их десятки за
+    вечер, и ожидание складывается в часы. Облаку грузить нечего.
+
+    Поэтому это **временная замена, а не решение**: закончится работа над
+    голосом — в конфиге меняется одна строка `tts.voices`, и всё возвращается на
+    местный движок. Ради этого Fish и сделан обычным бэкендом, наравне с
+    остальными: никаких особых путей, которые потом придётся выпутывать.
+
+    Чем платим: интернетом на каждую реплику и тем, что произнесённое уходит
+    на сторону сервиса. Для команд студии это не секреты, но знать стоит.
+
+    **Модель называется в заголовке, а не в теле запроса.** Их же
+    документация предупреждает: запрос, который будто игнорирует выбор модели, —
+    это обычно тот, где значение положили в JSON.
+    """
+
+    #: Куда обращаться.
+    _URL = "https://api.fish.audio/v1/tts"
+
+    #: Что просить. `wav` самоописателен: частота и разрядность приезжают
+    #: вместе со звуком, и подгонять их руками не нужно — ровно как с
+    #: распознаванием, где тем же приёмом убран целый класс ошибок.
+    _FORMAT = "wav"
+
+    #: Частота из тех, что сервис умеет. 24 кГц — как у Kokoro, звучит чисто и
+    #: весит вдвое меньше 48-ми.
+    _SAMPLE_RATE = 24000
+
+    def __init__(
+        self, *, api_key: str, model: str = "s2.1-pro-free", timeout: float = 30.0
+    ) -> None:
+        self._key = api_key
+        self._model = model
+        self._timeout = timeout
+        self._client: Any = None
+
+    @property
+    def engine(self) -> str:
+        """Имя движка."""
+        return "fish"
+
+    def prepare(self, voice: str, language: str) -> None:
+        """Проверить, что есть чем ходить в сеть и чем представиться.
+
+        Модель не грузится — она на стороне сервиса. Ключ проверяется здесь,
+        потому что `prepare` зовётся при запуске: без ключа лучше отказаться
+        сразу и откатиться на местный голос, чем молчать в ответ на первую
+        реплику.
+        """
+        if not self._key:
+            raise RuntimeError(
+                "Fish Audio без ключа. Задай JARVIS_FISH_KEY в .env "
+                "либо верни местный голос в tts.voices."
+            )
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(
+                headers={
+                    "Authorization": f"Bearer {self._key}",
+                    # Модель — заголовком. В теле её просто не заметят.
+                    "model": self._model,
+                    "Content-Type": "application/json",
+                },
+                timeout=self._timeout,
+            )
+
+    def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
+        """Синтезировать реплику.
+
+        Метод синхронный намеренно: его и так зовут из рабочего потока
+        (`BlockingWorker`), и городить вокруг сетевого запроса asyncio значило
+        бы усложнять ради того, что уже сделано снаружи.
+        """
+        import httpx
+
+        self.prepare(voice, language)
+        payload: dict[str, Any] = {
+            "text": text,
+            "format": self._FORMAT,
+            "sample_rate": self._SAMPLE_RATE,
+            # Реплику ждёт человек, а не файл на диске: низкая задержка важнее
+            # ровности потока.
+            "latency": "low",
+            "normalize": True,
+        }
+        # Голос — идентификатор из библиотеки Fish. Пусто означает «голос по
+        # умолчанию»: так можно послушать сервис, ещё не выбрав ничего.
+        if voice:
+            payload["reference_id"] = voice
+
+        try:
+            response = self._client.post(self._URL, json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:200]
+            raise RuntimeError(
+                f"Fish Audio вернул {exc.response.status_code}: {detail}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Сеть недоступна при обращении к Fish Audio: {exc}") from exc
+
+        return _read_wav(response.content)
+
+
 def build_backend(
     engine: str,
     models_dir: Path,
     *,
     length_scale: float = 1.0,
     device: str = "auto",
+    api_key: str = "",
+    model: str = "",
+    timeout: float = 30.0,
 ) -> SpeechBackend:
     """Создать движок по имени."""
     if engine == "kokoro":
@@ -513,4 +640,6 @@ def build_backend(
         return XttsBackend(models_dir / "xtts", device=device)
     if engine == "edge":
         return EdgeBackend(length_scale=length_scale)
+    if engine == "fish":
+        return FishBackend(api_key=api_key, model=model, timeout=timeout)
     return PiperBackend(models_dir / "piper", length_scale=length_scale)

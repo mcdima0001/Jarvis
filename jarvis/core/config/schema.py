@@ -189,6 +189,13 @@ class TTSConfig:
     sample_rate: int = 22050
     #: Где считать тяжёлым движкам: ``auto`` | ``cpu`` | ``cuda``.
     device: str = "auto"
+    #: Ключ облачного синтеза (Fish Audio). В конфиге — только ссылка на ${VAR}.
+    api_key: str = ""
+    #: Имя облачной модели. У Fish она называется **заголовком** запроса,
+    #: а не полем тела: положенную в тело они молча игнорируют.
+    model: str = "s2.1-pro-free"
+    #: Сколько ждать облако. Реплику ждёт человек, а не файл на диске.
+    timeout: float = 30.0
     #: Как читать чужие названия: ``{"OBS": "О-Би-Эс"}``. Дополняет
     #: встроенный словарь в `jarvis.core.tts.normalize`.
     pronounce: Mapping[str, str] = field(default_factory=dict)
