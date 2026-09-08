@@ -56,6 +56,14 @@ NEVER_LEARN = frozenset({"core.chat", "core.forget_last"})
 MIN_TEMPLATE_WORDS = 2
 MIN_TEMPLATE_LETTERS = 8
 
+#: Две подстановки подряд, между которыми нет ни одного слова.
+#:
+#: Такой шаблон делит услышанное наугад: границы между значениями в нём нет, и
+#: регулярное выражение режет там, где придётся. В живой памяти владельца лежал
+#: ровно такой — «напиши, напиши, {text}, {request}», выведенный из
+#: исковерканной фразы. Вреда он не принёс только потому, что не совпал ни разу.
+_ADJACENT = re.compile(r"\{[^{}]+\}[\s,.:;–—-]*\{[^{}]+\}")
+
 #: Короче этого фраза не запоминается: «да», «нет», «ок» ничего не значат.
 MIN_UTTERANCE = 6
 
@@ -99,6 +107,9 @@ def generalize(utterance: str, arguments: Mapping[str, Any]) -> tuple[str, dict[
         if (
             literal_words(candidate) >= MIN_TEMPLATE_WORDS
             and specificity(candidate) >= MIN_TEMPLATE_LETTERS
+            # Между подстановками обязано быть слово: иначе шаблон режет
+            # услышанное наугад, потому что границы значений в нём нет.
+            and not _ADJACENT.search(candidate)
         ):
             key = candidate
             stored[name] = f"{{{name}}}"

@@ -12,8 +12,10 @@ Piper легче всех. Поэтому в конфиге пишется ``д�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from contextlib import suppress
 from typing import Any
 
 #: Сколько не трогать основной голос после отказа. Реплики звучат десятки раз
@@ -49,6 +51,11 @@ class CompositeTTS:
         self._loaded: set[tuple[str, str]] = set()
         #: До какого момента не трогать основной голос после отказа.
         self._blocked_until = 0.0
+        #: Фоновый прогрев остальных голосов.
+        self._warmup: asyncio.Task[None] | None = None
+        #: Замок загрузки: фоновый прогрев и живая реплика не должны грузить
+        #: один и тот же голос дважды.
+        self._loading = asyncio.Lock()
         self._spare_language = self._find_spare_language()
 
     @property
@@ -120,6 +127,16 @@ class CompositeTTS:
 
         Голос языка по умолчанию обязателен, остальные — нет: без английской
         модели разумнее работать по-русски, чем не запуститься совсем.
+
+        **Остальные греются в фоне.** Ждать их при запуске незачем: на первой
+        реплике нужен один голос, а прочие — английский, запасной — понадобятся
+        когда-нибудь потом или не понадобятся вовсе. Раньше здесь ждали всех, и
+        это стоило секунд на каждом запуске: местный Kokoro поднимается
+        три-четыре секунды, а с ним и тяжёлые движки, если их включат.
+
+        Фоновая загрузка не гонка: `_ensure` держит замок, поэтому реплика,
+        пришедшая раньше времени, просто дождётся своего голоса, а не начнёт
+        грузить его второй раз.
         """
         code, engine, voice = self.resolve(self._config.default_language)
         if not voice:
@@ -145,34 +162,63 @@ class CompositeTTS:
                 self._config.fallback,
             )
 
-        for language in self._config.voices:
-            other_code, other_engine, other_voice = self.resolve(language)
+        rest = [self.resolve(language) for language in self._config.voices]
+        if self._config.fallback:
+            spare = self._spare(engine, voice)
+            if spare is not None:
+                rest.append(spare)
+        pending = [item for item in rest if (item[1], item[2]) not in self._loaded]
+        if pending:
+            self._warmup = asyncio.create_task(self._warm(pending))
+
+    async def _warm(self, voices: list[tuple[str, str, str]]) -> None:
+        """Прогреть голоса, не задерживая запуск.
+
+        Сбой одного голоса не рушит ни запуск, ни остальные: без английской
+        модели разумнее работать по-русски, чем не работать вовсе.
+        """
+        for code, engine, voice in voices:
             try:
-                await self._ensure(other_code, other_engine, other_voice)
+                await self._ensure(code, engine, voice)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001 — один голос не рушит запуск
                 logger.warning(
                     "Голос %s:%s для языка %s не загрузился (%s): "
                     "на этом языке синтеза не будет",
-                    other_engine,
-                    other_voice,
-                    other_code,
+                    engine,
+                    voice,
+                    code,
                     exc,
                 )
 
     async def stop(self) -> None:
-        """Освободить модели."""
+        """Освободить модели и погасить недогретое."""
+        if self._warmup is not None:
+            self._warmup.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._warmup
+            self._warmup = None
         self._backends.clear()
         self._loaded.clear()
 
     async def _ensure(self, language: str, engine: str, voice: str) -> None:
-        """Подготовить голос, если он ещё не загружен."""
+        """Подготовить голос, если он ещё не загружен.
+
+        Под замком: прогрев идёт в фоне, и реплика может прийти ровно тогда,
+        когда нужный голос ещё грузится. Без замка он начал бы грузиться второй
+        раз — на слабой машине это удвоенное ожидание там, где и одного много.
+        """
         key = (engine, voice)
         if key in self._loaded:
             return
-        logger.info("Загружаю голос %s:%s для языка %s", engine, voice, language)
-        await self._worker.run(self._backend(engine).prepare, voice, language)
-        self._loaded.add(key)
-        logger.info("Голос %s:%s готов", engine, voice)
+        async with self._loading:
+            if key in self._loaded:
+                return
+            logger.info("Загружаю голос %s:%s для языка %s", engine, voice, language)
+            await self._worker.run(self._backend(engine).prepare, voice, language)
+            self._loaded.add(key)
+            logger.info("Голос %s:%s готов", engine, voice)
 
     async def synthesize(self, text: str, *, language: str | None = None) -> Speech:
         """Синтезировать речь, не блокируя event loop."""

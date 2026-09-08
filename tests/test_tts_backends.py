@@ -195,11 +195,15 @@ def test_backend_reports_missing_model_before_missing_package(
 # --- загрузка голосов -------------------------------------------------------
 
 
-async def test_all_configured_voices_loaded_at_start(tmp_path: Path) -> None:
-    """Голоса всех языков греются при запуске, а не в середине разговора.
+async def test_all_configured_voices_are_warmed_up(tmp_path: Path) -> None:
+    """Голоса всех языков греются сами, а не в середине разговора.
 
     Тяжёлый движок иначе подвешивает первую же реплику своего языка на минуты,
     и со стороны это неотличимо от поломки.
+
+    Ждёт запуск только голос языка по умолчанию — он нужен первой же репликой.
+    Остальные догреваются **в фоне**: на старте они не нужны никому, а секунды
+    на каждом запуске стоят дорого, когда запусков за вечер десятки.
     """
     config = TTSConfig(
         voices={"ru": "piper:ru_RU-denis-medium", "en": "piper:en_US-ryan-high"},
@@ -226,6 +230,9 @@ async def test_all_configured_voices_loaded_at_start(tmp_path: Path) -> None:
     await worker.start()
     try:
         await tts.start()
+        assert prepared == [("ru", "ru_RU-denis-medium")], "запуск ждал лишний голос"
+        # Фоновый прогрев доводит дело до конца сам.
+        await tts._warmup
     finally:
         await worker.stop()
 
