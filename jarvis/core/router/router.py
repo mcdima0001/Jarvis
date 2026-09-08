@@ -40,11 +40,20 @@ class Router:
         """Имена резолверов в порядке обхода."""
         return tuple(resolver.name for resolver in self._resolvers)
 
-    async def route(self, utterance: Utterance) -> Intent | None:
-        """Разобрать реплику. Возвращает `None`, если никто не справился."""
-        last_index = len(self._resolvers) - 1
+    async def route(
+        self, utterance: Utterance, *, without: frozenset[str] = frozenset()
+    ) -> Intent | None:
+        """Разобрать реплику. Возвращает `None`, если никто не справился.
 
-        for index, resolver in enumerate(self._resolvers):
+        :param without: имена резолверов, которых пропустить. Нужно там, где
+            разбор — **проверка гипотезы**, а не выполнение команды: цепочка из
+            двух команд через «и» сперва убеждается, что обе половины вообще
+            похожи на команды, и платить за это обращением к модели нельзя.
+        """
+        resolvers = [item for item in self._resolvers if item.name not in without]
+        last_index = len(resolvers) - 1
+
+        for index, resolver in enumerate(resolvers):
             try:
                 intent = await resolver.resolve(utterance)
             except Exception:
