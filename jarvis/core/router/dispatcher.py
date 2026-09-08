@@ -70,6 +70,16 @@ class Dispatcher:
         #: единственный уместный: он один знает и намерение, и чем всё кончилось.
         self._situation = situation
 
+    async def forget_unknown(self) -> tuple[str, ...]:
+        """Вычистить выученное, ведущее на исчезнувшие инструменты.
+
+        Зовётся из `JarvisApp.start` после загрузки скиллов: до неё реестр
+        неполон, и уборка снесла бы живые записи.
+        """
+        if self._learner is None:
+            return ()
+        return await self._learner.forget_unknown()
+
     def _remember(self, utterance: Utterance, tool: str, ok: bool) -> None:
         """Отметить команду в обстановке для следующего разбора."""
         if self._situation is not None:

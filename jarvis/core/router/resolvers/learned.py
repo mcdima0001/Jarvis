@@ -30,10 +30,13 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jarvis.core.contracts import Intent, Utterance
 from jarvis.core.memory import DocumentStore
+
+if TYPE_CHECKING:  # только для типов — цикла импорта не создаём
+    from jarvis.core.tools import ToolRegistry
 
 from ..templates import PLACEHOLDER, compile_template, literal_words, specificity
 
@@ -55,6 +58,18 @@ MIN_TEMPLATE_LETTERS = 8
 
 #: Короче этого фраза не запоминается: «да», «нет», «ок» ничего не значат.
 MIN_UTTERANCE = 6
+
+#: Сколько формулировок держать в памяти.
+#:
+#: Предел нужен не ради места на диске, а потому что **память копит ошибки
+#: распознавания**. Живой пример из `commands.json`: «как варить порч» и «как
+#: варить порчи» — две записи об одном и том же, «рамка 40» и «ромокость 70» —
+#: две записи про громкость. Каждая пригодится ровно один раз: в следующий раз
+#: Whisper исковеркает фразу иначе.
+#:
+#: Двести — с большим запасом: живой словарь команд у человека куда меньше, а
+#: всё сверх того как раз и есть случайный мусор.
+LEARNED_LIMIT = 200
 
 
 def normalize(text: str) -> str:
@@ -121,10 +136,15 @@ class LearnedResolver:
         *,
         section: str = SECTION,
         enabled: bool = True,
+        registry: "ToolRegistry | None" = None,
     ) -> None:
         self._store = store
         self._section = section
         self._enabled = enabled
+        #: Чем проверять, что выученный инструмент ещё существует. Скиллы
+        #: удаляют и переименовывают, а память об их командах остаётся — и
+        #: тогда выученное **ломает** разбор вместо того, чтобы ускорять его.
+        self._registry = registry
         #: ``None`` — из памяти ещё не читали.
         self._known: dict[str, dict[str, Any]] | None = None
         #: Что записали последним: это и отменяет «не сохраняй в память».
@@ -200,11 +220,33 @@ class LearnedResolver:
             if entry is None:
                 return None
 
+        tool_name = str(entry["tool"])
+        if not self._alive(tool_name):
+            # Инструмента больше нет: скилл удалили, переименовали или он сейчас
+            # перезагружается. Промолчать тут обязательно — иначе диспетчер
+            # получит несуществующее имя, ответит «не понял команду», и фраза
+            # **никогда** не дойдёт до модели: выученное стоит раньше неё.
+            logger.info(
+                "Выученная формулировка %r ведёт на исчезнувший %s — "
+                "пропускаю и иду дальше по цепочке",
+                key,
+                tool_name,
+            )
+            return None
+
         logger.info(
             "Формулировка %r уже выучена — %s без обращения к модели",
             utterance.text,
             entry["tool"],
         )
+        # Отметка пользы: по ней решается, что вытеснить, когда память
+        # переполнится. Пишется только в памяти процесса — ради счётчика лезть
+        # на диск на каждой команде незачем, на диск он попадёт при ближайшей
+        # записи.
+        entry["hits"] = int(entry.get("hits") or 0) + 1
+        entry["at"] = time.time()
+        known[key] = entry
+
         # Отменять просят последнее сделанное, а не последнее выученное: чаще
         # всего мимо бьёт как раз то, что выучено вчера и повторилось сегодня.
         self._last = key
@@ -218,6 +260,62 @@ class LearnedResolver:
             resolver=self.name,
             utterance=utterance.text,
         )
+
+    def _alive(self, tool: str) -> bool:
+        """Существует ли ещё этот инструмент.
+
+        Без реестра (в тестах, в отладке) считаем, что да: проверять нечем, а
+        отказываться от выученного на этом основании было бы хуже.
+        """
+        return self._registry is None or self._registry.has(tool)
+
+    async def forget_unknown(self) -> tuple[str, ...]:
+        """Вычистить записи, ведущие на исчезнувшие инструменты.
+
+        Зовётся один раз, **после загрузки всех скиллов**: до неё реестр
+        неполон, и уборка снесла бы живое. Отдельно от `resolve` намеренно —
+        там задача не потерять команду, а здесь прибраться, и смешивать их
+        опасно: скилл во время перезагрузки на секунду исчезает из реестра.
+
+        Живой пример, ради которого это и написано: скилл `youtube` удалён
+        30.07.2026, а «включи видео …» осталось выученным на
+        `youtube.play_video` — и фраза отвечала «не понял команду» полтора
+        месяца.
+        """
+        if self._registry is None:
+            return ()
+        known = await self._load()
+        dead = [key for key, entry in known.items() if self._is_dead(entry)]
+        if not dead:
+            return ()
+
+        data = {key: value for key, value in known.items() if key not in dead}
+        try:
+            await self._store.write(self._section, data)
+        except Exception as exc:  # noqa: BLE001 — уборка не важнее работы
+            logger.warning("Не смог вычистить выученное: %s", exc)
+            return ()
+
+        self._known = data
+        logger.info(
+            "Выученное почищено: %d формулировк(и) вели на исчезнувшие инструменты",
+            len(dead),
+        )
+        return tuple(dead)
+
+    def _is_dead(self, entry: Mapping[str, Any]) -> bool:
+        """Ведёт ли запись в пустоту.
+
+        Мёртвой считается и запись «эти слова — не про это», если инструмента,
+        который отвергли, больше нет: смысл отказа пропал вместе со скиллом, а
+        место в памяти он занимает.
+        """
+        assert self._registry is not None
+        tool = str(entry.get("tool") or "")
+        if tool:
+            return not self._registry.has(tool)
+        rejected = [str(name) for name in (entry.get("rejected") or ()) if name]
+        return bool(rejected) and not any(self._registry.has(name) for name in rejected)
 
     def _match(
         self, known: Mapping[str, Mapping[str, Any]], text: str
@@ -281,13 +379,22 @@ class LearnedResolver:
             # до модели в обход выученного. Записывать нечего.
             return ""
 
+        entry["at"] = time.time()
+        known[key] = entry
+        dropped = self._evict(known)
+
         try:
-            await self._store.set(self._section, key, entry)
+            if dropped:
+                # Вытеснение меняет несколько записей разом, поэтому пишем
+                # раздел целиком: точечная запись оставила бы выброшенное на
+                # диске до следующего перезапуска.
+                await self._store.write(self._section, known)
+            else:
+                await self._store.set(self._section, key, entry)
         except Exception as exc:  # noqa: BLE001 — не записалось, но команда выполнена
             logger.warning("Не смог запомнить формулировку %r: %s", key, exc)
+            known.pop(key, None)
             return ""
-
-        known[key] = entry
         self._last = key
         self._last_at = time.time()
         logger.info(
@@ -297,6 +404,33 @@ class LearnedResolver:
             f" {arguments}" if arguments else "",
         )
         return key
+
+    def _evict(self, known: dict[str, dict[str, Any]]) -> tuple[str, ...]:
+        """Выбросить самое бесполезное, если записей стало слишком много.
+
+        Бесполезное — то, что ни разу не пригодилось, а из равных по пользе —
+        самое старое. Это ровно портрет ошибки распознавания: она попадает в
+        память один раз и больше не повторяется никогда, потому что в следующий
+        раз Whisper исковеркает фразу по-другому.
+
+        :return: что выбросили.
+        """
+        if len(known) <= LEARNED_LIMIT:
+            return ()
+
+        order = sorted(
+            known,
+            key=lambda key: (int(known[key].get("hits") or 0), float(known[key].get("at") or 0.0)),
+        )
+        dropped = tuple(order[: len(known) - LEARNED_LIMIT])
+        for key in dropped:
+            known.pop(key, None)
+        logger.info(
+            "Выученного стало больше %d — забыл %d самых бесполезных формулировок",
+            LEARNED_LIMIT,
+            len(dropped),
+        )
+        return dropped
 
     async def rejected_for(self, utterance: str) -> tuple[str, ...]:
         """Инструменты, которые для этой просьбы уже оказались не теми.

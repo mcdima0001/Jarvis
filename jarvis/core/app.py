@@ -163,6 +163,10 @@ class JarvisApp:
             memory.documents,
             section=config.router.learned_section,
             enabled=config.router.learn_commands,
+            # Реестр — чтобы не предлагать команды исчезнувших скиллов: память
+            # переживает удаление скилла, и без проверки выученное начинает
+            # ломать разбор вместо того, чтобы его ускорять.
+            registry=registry,
         )
 
         router = Router(
@@ -273,6 +277,10 @@ class JarvisApp:
         self.pipeline.silent = not voice
         await self.runner.start_all(without=skip)
         self.models_loaded = ears and voice
+
+        # Уборка выученного — только теперь, когда все скиллы загружены и
+        # реестр полон. Раньше она снесла бы живые записи.
+        await self.dispatcher.forget_unknown()
 
         gaps = self.skills.missing_requirements()
         for skill, missing in gaps.items():

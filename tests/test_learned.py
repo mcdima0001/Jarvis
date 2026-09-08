@@ -476,3 +476,116 @@ async def test_tool_without_apply_is_named_in_the_log(
 
     assert "legacy.forget_last" in caplog.text
     assert "apply" in caplog.text
+
+# --- что делать с тем, чего больше нет --------------------------------------
+
+
+class _Registry:
+    """Реестр-пустышка: знает ровно перечисленные инструменты."""
+
+    def __init__(self, *names: str) -> None:
+        self._names = set(names)
+
+    def has(self, name: str) -> bool:
+        return name in self._names
+
+
+async def test_vanished_tool_is_not_offered(store) -> None:
+    """Выученное на исчезнувший инструмент обязано молчать.
+
+    Живой случай: скилл `youtube` удалён 30.07.2026, а «включи видео …» осталось
+    выученным на `youtube.play_video`. Резолвер стоит **до** модели и отвечал
+    уверенно — диспетчер получал несуществующее имя и говорил «не понял
+    команду». Фраза не доходила до модели полтора месяца.
+    """
+    await store.set(
+        "commands", "включи видео погоду", {"tool": "youtube.play_video", "arguments": {}}
+    )
+    learner = LearnedResolver(store, registry=_Registry("page.play_item"))
+
+    assert await learner.resolve(Utterance(text="включи видео погоду")) is None
+
+
+async def test_living_tool_is_still_offered(store) -> None:
+    """Проверка не должна мешать работать тому, что на месте."""
+    await store.set(
+        "commands", "включи видео погоду", {"tool": "page.play_item", "arguments": {}}
+    )
+    learner = LearnedResolver(store, registry=_Registry("page.play_item"))
+
+    intent = await learner.resolve(Utterance(text="включи видео погоду"))
+
+    assert intent is not None and intent.tool == "page.play_item"
+
+
+async def test_cleanup_removes_dead_records(store) -> None:
+    """Уборка выносит и выученное, и отвергнутое, если инструмента нет.
+
+    Смысл записи «эти слова — не про это» пропадает вместе со скиллом, а место
+    она занимает.
+    """
+    await store.set("commands", "живое", {"tool": "page.play_item"})
+    await store.set("commands", "мёртвое", {"tool": "youtube.play_video"})
+    await store.set("commands", "отказ", {"rejected": ["esp32.set_mode"]})
+    learner = LearnedResolver(store, registry=_Registry("page.play_item"))
+
+    dropped = await learner.forget_unknown()
+
+    assert set(dropped) == {"мёртвое", "отказ"}
+    assert set(await store.read("commands")) == {"живое"}
+
+
+async def test_cleanup_without_a_registry_touches_nothing(store) -> None:
+    """Проверять нечем — значит и убирать нечего.
+
+    Иначе в тестах и отладке уборка вынесла бы всё подряд.
+    """
+    await store.set("commands", "живое", {"tool": "page.play_item"})
+    learner = LearnedResolver(store)
+
+    assert await learner.forget_unknown() == ()
+    assert set(await store.read("commands")) == {"живое"}
+
+
+# --- рост памяти ------------------------------------------------------------
+
+
+async def test_useless_records_are_pushed_out(store) -> None:
+    """Память не растёт бесконечно: бесполезное вытесняется.
+
+    Ошибка распознавания попадает в память один раз и больше не повторяется —
+    в следующий раз Whisper исковеркает фразу иначе. Так «как варить порч» и
+    «как варить порчи» становятся двумя записями об одном и том же.
+    """
+    from jarvis.core.router.resolvers.learned import LEARNED_LIMIT
+
+    learner = LearnedResolver(store)
+    # Одна запись пригождалась, остальные — нет.
+    await store.set(
+        "commands", "нужное", {"tool": "page.play_item", "hits": 9, "at": 1.0}
+    )
+    for number in range(LEARNED_LIMIT):
+        await store.set(
+            "commands", f"мусор {number}", {"tool": "page.play_item", "at": 2.0}
+        )
+
+    await learner.remember(
+        "свежая формулировка", Intent(tool="page.pause", arguments={})
+    )
+
+    stored = await store.read("commands")
+    assert len(stored) <= LEARNED_LIMIT
+    assert "нужное" in stored, "выбросили запись, которая пригождалась"
+    assert "свежая формулировка" in stored
+
+
+async def test_hits_are_counted_on_use(store) -> None:
+    """Пригодилась — значит не мусор, и это надо отметить."""
+    await store.set("commands", "включи блюз", {"tool": "page.play_item"})
+    learner = LearnedResolver(store)
+
+    await learner.resolve(Utterance(text="включи блюз"))
+    await learner.resolve(Utterance(text="включи блюз"))
+
+    known = await learner._load()
+    assert known["включи блюз"]["hits"] == 2
