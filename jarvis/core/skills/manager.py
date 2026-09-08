@@ -102,6 +102,27 @@ class SkillManager:
         """Имена загруженных скиллов."""
         return tuple(sorted(self._records))
 
+    def find(self, spoken: str) -> str | None:
+        """Найти загруженный скилл по услышанному названию.
+
+        Имена вслух объявляют сами скиллы (`SkillMeta.spoken`), а сопоставление
+        идёт общей лестницей: «телеграм» узнаётся транслитерацией даже без
+        словаря, а «браузер» — только потому, что скилл сам так назвался.
+
+        :return: настоящее имя скилла либо ``None``, если не узнали.
+        """
+        from jarvis.core.text import best_match
+
+        # Одно и то же имя приходит в разных падежах («переподключи страницу»),
+        # поэтому лестница, а не поиск по словарю. Порог невысокий: список
+        # короткий, десяток названий, и спутать в нём нечего.
+        names: dict[str, str] = {}
+        for name, record in self._records.items():
+            for spelling in record.instance.meta.names:
+                names[spelling] = name
+        found = best_match(spoken, names, similarity=0.7)
+        return names.get(found) if found else None
+
     @property
     def versions(self) -> dict[str, str]:
         """Имя скилла -> его версия. Для одной строки в логе о том, что запущено."""

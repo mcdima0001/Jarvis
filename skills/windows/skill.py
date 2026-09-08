@@ -777,6 +777,7 @@ class WindowsSkill(Skill):
         description="Управление компьютером студии",
         version="0.2.0",
         platforms=("windows",),
+        spoken=("система", "виндовс", "компьютер", "windows"),
     )
 
     async def on_setup(self) -> None:

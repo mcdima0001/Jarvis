@@ -643,6 +643,7 @@ class BrowserSkill(Skill):
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
         version="0.1.0",
+        spoken=("браузер", "browser"),
     )
 
     async def on_setup(self) -> None:

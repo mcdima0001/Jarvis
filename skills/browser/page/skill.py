@@ -932,6 +932,7 @@ class PageSkill(Skill):
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
         version="0.1.0",
+        spoken=("страница", "страницу", "вкладка", "page"),
     )
 
     async def on_setup(self) -> None:

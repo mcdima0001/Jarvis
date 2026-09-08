@@ -168,6 +168,7 @@ class WeatherSkill(Skill):
         name="weather",
         description="Погода и прогноз через Open-Meteo",
         version="0.1.0",
+        spoken=("погода", "weather"),
     )
 
     async def on_setup(self) -> None:

@@ -369,6 +369,7 @@ class RemindersSkill(Skill):
         name="reminders",
         version="0.1.0",
         description="Напоминания и таймеры: «напомни через час», «таймер на 10 минут»",
+        spoken=("напоминания", "часы", "таймеры", "reminders"),
     )
 
     def __init__(self) -> None:

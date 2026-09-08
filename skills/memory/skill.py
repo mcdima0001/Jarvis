@@ -19,6 +19,7 @@ class MemorySkill(Skill):
         name="memory",
         description="Запоминание фактов и предпочтений",
         version="0.1.0",
+        spoken=("память", "memory"),
     )
 
     async def on_setup(self) -> None:

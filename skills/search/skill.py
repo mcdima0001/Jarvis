@@ -190,6 +190,7 @@ class SearchSkill(Skill):
         name="search",
         description="Поиск информации в интернете",
         version="0.2.0",
+        spoken=("поиск", "search"),
     )
 
     async def on_setup(self) -> None:

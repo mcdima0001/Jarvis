@@ -193,27 +193,66 @@ class CoreTools:
             },
         )
 
-    @tool(name="reload_skill", routable=False)
+    @tool(
+        name="reload_skill",
+        routable=False,
+        phrases=[
+            "переподключи модуль {skill}",
+            "переподключи {skill}",
+            "перезагрузи модуль {skill}",
+            "перезагрузи скилл {skill}",
+            "перезапусти модуль {skill}",
+            "обнови модуль {skill}",
+            "reload module {skill}",
+            "reload skill {skill}",
+        ],
+    )
     async def reload_skill(self, skill: str) -> ToolResult:
         """Перезагрузить скилл с диска без перезапуска приложения.
 
+        Фразы есть, а в каталог модели инструмент не уходит (`routable=False`),
+        и это не противоречие: `phrase_index` строится по всем инструментам, и
+        шаблон работает **до** модели, то есть бесплатно. Платить за него
+        входными токенами в каждом запросе незачем — просят перезагрузку редко
+        и говорят при этом одинаково.
+
+        Имя приходит из речи как попало — «браузер», «страницу», «телеграм», —
+        поэтому сверяется со списком загруженных, а не подставляется напрямую:
+        иначе `reload` получил бы несуществующее имя и ответил бы «скилл не
+        загружен» вместо понятного «такого модуля нет».
+
         :param skill: имя скилла.
         """
+        found = self._skills.find(skill)
+        if found is None:
+            known = ", ".join(self._skills.loaded) or "ни одного"
+            return ToolResult.failure(
+                f"Скилл {skill!r} не найден. Загружены: {known}",
+                speech={
+                    "ru": f"Не нашёл модуль {skill}. Есть: {known}.",
+                    "en": f"No module named {skill}. Available: {known}.",
+                },
+            )
+        # Вслух отвечаем теми словами, какими спросили: «модуль браузер
+        # перезагружен» вместо «модуль browser». Настоящее имя нужно коду, а
+        # человеку — его собственное.
+        spoken, skill = skill, found
+
         try:
             record = await self._skills.reload(skill)
         except Exception as exc:
             return ToolResult.failure(
                 f"{type(exc).__name__}: {exc}",
                 speech={
-                    "ru": f"Не удалось перезагрузить модуль {skill}.",
-                    "en": f"Couldn't reload module {skill}.",
+                    "ru": f"Не удалось перезагрузить модуль {spoken}.",
+                    "en": f"Couldn't reload module {spoken}.",
                 },
             )
         return ToolResult.success(
             {"skill": record.name, "tools": list(record.scope.tool_names)},
             speech={
-                "ru": f"Модуль {skill} перезагружен.",
-                "en": f"Module {skill} reloaded.",
+                "ru": f"Модуль {spoken} перезагружен.",
+                "en": f"Module {spoken} reloaded.",
             },
         )
 

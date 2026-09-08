@@ -129,6 +129,7 @@ class TelegramSkill(Skill):
         name="telegram",
         description="Сообщения и чаты Telegram",
         version="0.2.0",
+        spoken=("телеграм", "telegram"),
     )
 
     async def on_setup(self) -> None:
