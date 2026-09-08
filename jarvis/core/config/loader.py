@@ -287,6 +287,11 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             api_key=str(tts.get("api_key") or ""),
             model=str(tts.get("model") or "s2.1-pro-free"),
             timeout=float(tts.get("timeout", 30.0)),
+            cache_dir=(
+                _resolve(project_root, tts.get("cache_dir", "models/tts-cache"))
+                if tts.get("cache_dir", "models/tts-cache")
+                else None
+            ),
             pronounce={str(k): str(v) for k, v in (tts.get("pronounce") or {}).items()},
         ),
         audio=AudioConfig(

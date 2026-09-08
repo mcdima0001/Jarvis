@@ -28,6 +28,7 @@ from jarvis.core.config import TTSConfig
 from jarvis.core.runtime import BlockingWorker
 
 from .backends import SpeechBackend, build_backend, parse_voice
+from .cache import SpeechCache, worth_caching
 from .normalize import normalize_for_speech
 from .protocol import Speech
 
@@ -51,6 +52,10 @@ class CompositeTTS:
         self._loaded: set[tuple[str, str]] = set()
         #: До какого момента не трогать основной голос после отказа.
         self._blocked_until = 0.0
+        #: Готовые реплики: одно и то же не синтезируется дважды.
+        self._cache = (
+            SpeechCache(config.cache_dir) if config.cache_dir is not None else None
+        )
         #: Фоновый прогрев остальных голосов.
         self._warmup: asyncio.Task[None] | None = None
         #: Замок загрузки: фоновый прогрев и живая реплика не должны грузить
@@ -258,17 +263,32 @@ class CompositeTTS:
         `normalize_for_speech` переводит её латиницей. На запасном голосе это и
         спасает: русская реплика звучит с акцентом, но разборчиво.
         """
-        await self._ensure(code, engine, voice)
-
         # Чужой алфавит движок читает как кашу, поэтому текст готовим здесь,
         # а не в каждом скилле: латиница попадает в речь ещё и подстановками.
         spoken = normalize_for_speech(text, self._config.pronounce, language=code)
         if spoken != text:
             logger.debug("Текст для синтеза (%s): %r -> %r", code, text, spoken)
 
+        # Кеш спрашивается **до** прогрева голоса: у готовой реплики модель не
+        # нужна вовсе, и ради «Готово.» поднимать её было бы обидно — особенно
+        # когда она грузится полторы минуты.
+        speed = self._config.length_scale
+        if self._cache is not None and worth_caching(spoken):
+            ready = self._cache.get(spoken, engine, voice, code, speed)
+            if ready is not None:
+                logger.debug("Реплика из кеша: %r", spoken)
+                return Speech(
+                    audio=ready[0], sample_rate=ready[1], text=text, language=code
+                )
+
+        await self._ensure(code, engine, voice)
         audio, rate = await self._worker.run(
             self._backend(engine).synthesize, spoken, voice, code
         )
+        if self._cache is not None and worth_caching(spoken):
+            await asyncio.to_thread(
+                self._cache.put, spoken, engine, voice, code, speed, audio, rate
+            )
         return Speech(audio=audio, sample_rate=rate, text=text, language=code)
 
     def _spare(self, engine: str, voice: str) -> tuple[str, str, str] | None:
