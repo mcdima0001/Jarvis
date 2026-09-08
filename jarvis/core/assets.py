@@ -526,6 +526,7 @@ def preview_voices(names: list[str], models_dir: Path, *, text: str | None = Non
 
         # Клон говорит на обоих языках, и слушать его нужно тоже на обоих:
         # смысл клонирования в том, чтобы вставка не звучала другим диктором.
+        languages: tuple[str, ...]
         if engine == "xtts":
             languages = ("ru", "en")
         else:

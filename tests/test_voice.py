@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
-from pathlib import Path
-
 from jarvis.core.audio import AudioFrame, EnergyVAD, SileroVAD, frame_rms
 from jarvis.core.bus import LocalEventBus
-from jarvis.core.config import AudioConfig, VADConfig, WakeWordConfig
+from jarvis.core.config import AudioConfig, WakeWordConfig
 from jarvis.core.contracts import ToolResult, Utterance
 from jarvis.core.persona import DONE, FAILED, FAREWELL, GREETING, LISTENING, Persona
 from jarvis.core.router import Dispatcher, PhraseResolver, Router
@@ -196,7 +195,6 @@ async def test_own_speech_is_not_captured(
     """
     import asyncio
 
-    from jarvis.core.audio import AudioFrame
 
     pipeline = _pipeline(registry, events)
 

@@ -1000,14 +1000,14 @@ class BrowserSkill(Skill):
                     f"{name} уже открыт, показываю.",
                     f"Вот {name}.",
                     f"{name} — вот эта вкладка.",
-                    f"Уже открыт, перехожу.",
+                    "Уже открыт, перехожу.",
                     f"Показываю {name}.",
                 ),
                 "en": (
                     f"Switching to {name}.",
                     f"{name} is already open, here it is.",
                     f"Here's {name}.",
-                    f"Already open — over to it.",
+                    "Already open — over to it.",
                 ),
             }
         else:

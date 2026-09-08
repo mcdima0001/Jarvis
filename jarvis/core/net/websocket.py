@@ -269,22 +269,26 @@ class WebSocketServer:
         """Проверить клиента и ответить на апгрейд. ``None`` — отказ."""
         raw = await reader.readuntil(b"\r\n\r\n")
         if len(raw) > _MAX_HANDSHAKE:
-            return await self._reject(writer, "431 Request Header Fields Too Large")
+            await self._reject(writer, "431 Request Header Fields Too Large")
+            return None
 
         target, headers = parse_handshake(raw)
         key = headers.get("sec-websocket-key", "")
         if "websocket" not in headers.get("upgrade", "").lower() or not key:
-            return await self._reject(writer, "400 Bad Request")
+            await self._reject(writer, "400 Bad Request")
+            return None
 
         origin = headers.get("origin", "")
         if not origin_allowed(origin, self._origins):
             # Самый вероятный случай — страница сайта, открывшая наш порт.
             logger.warning("Отказано в подключении: origin %r не разрешён", origin)
-            return await self._reject(writer, "403 Forbidden")
+            await self._reject(writer, "403 Forbidden")
+            return None
 
         if self._token and not hmac.compare_digest(query_token(target), self._token):
             logger.warning("Отказано в подключении: неверный токен (origin %r)", origin)
-            return await self._reject(writer, "403 Forbidden")
+            await self._reject(writer, "403 Forbidden")
+            return None
 
         writer.write(
             b"HTTP/1.1 101 Switching Protocols\r\n"
@@ -304,7 +308,6 @@ class WebSocketServer:
         except OSError:
             pass
         writer.close()
-        return None
 
     async def _read_loop(self, reader: asyncio.StreamReader, client: _Client) -> None:
         """Читать кадры и собирать из них сообщения."""

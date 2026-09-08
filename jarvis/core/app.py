@@ -12,7 +12,7 @@ import asyncio
 import logging
 import signal
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 from jarvis.core.audio import AudioStack, build_audio
 from jarvis.core.builtin import NAMESPACE as CORE_NAMESPACE
@@ -419,7 +419,7 @@ def _build_resolvers(
     стоит между синонимами и моделью: написанное человеком главнее, а модель
     дороже всего.
     """
-    factories = {
+    factories: dict[str, Callable[[], Resolver | None]] = {
         "phrase": lambda: PhraseResolver(registry),
         "alias": lambda: AliasResolver(registry, config.router.aliases),
         "learned": lambda: learner,

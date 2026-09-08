@@ -44,7 +44,7 @@ from urllib.parse import urlsplit
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import closeness, romanize, shared_word, skeleton, sounds_alike, squash
+from jarvis.core.text import closeness, romanize, shared_word, sounds_alike, squash
 from jarvis.core.tools import tool
 
 #: Что умеет сам плеер, без единой кнопки сайта.

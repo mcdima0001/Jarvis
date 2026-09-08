@@ -849,7 +849,7 @@ def test_fade_is_even_by_ear_not_by_numbers() -> None:
     поэтому проверяем именно отношение соседних значений.
     """
     steps = windows.fade_steps(0.1, 0.8, seconds=0.5)
-    ratios = [second / first for first, second in zip(steps, steps[1:])]
+    ratios = [second / first for first, second in zip(steps, steps[1:], strict=False)]
 
     assert max(ratios) - min(ratios) < 0.01, f"шаги неровные: {ratios}"
 

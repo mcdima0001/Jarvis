@@ -26,7 +26,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import logging
 import wave
 from pathlib import Path

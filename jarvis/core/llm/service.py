@@ -14,8 +14,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
-from jarvis.core.errors import LLMError, LLMNotConfigured
 from jarvis.core.contracts import detect_language
+from jarvis.core.errors import LLMError, LLMNotConfigured
 from jarvis.core.state import BRIEF, Modes
 from jarvis.core.tools import ToolCatalog
 
@@ -58,6 +58,26 @@ _SUMMARY_SYSTEM = (
 )
 
 
+def _as_float(value: object) -> float:
+    """Дробное число из чужого JSON — по тем же правилам, что и целое."""
+    try:
+        return float(value)  # type: ignore[arg-type]  # разбираем что дали
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _as_int(value: object) -> int:
+    """Число из чужого JSON, каким бы оно оттуда ни пришло.
+
+    Провайдеры присылают счётчики то числом, то строкой, а иногда не присылают
+    вовсе. Расход — не то, ради чего стоит ронять ответ модели.
+    """
+    try:
+        return int(value)  # type: ignore[call-overload]  # разбираем что дали
+    except (TypeError, ValueError):
+        return 0
+
+
 @dataclass
 class Spending:
     """Сколько израсходовано с момента запуска.
@@ -81,12 +101,12 @@ class Spending:
 
     def add(self, task: str, usage: Mapping[str, object]) -> None:
         """Учесть один ответ модели."""
-        prompt = int(usage.get("prompt_tokens", 0) or 0)
-        completion = int(usage.get("completion_tokens", 0) or 0)
+        prompt = _as_int(usage.get("prompt_tokens"))
+        completion = _as_int(usage.get("completion_tokens"))
         self.calls += 1
         self.prompt_tokens += prompt
         self.completion_tokens += completion
-        self.cost += float(usage.get("cost", 0.0) or 0.0)
+        self.cost += _as_float(usage.get("cost"))
         self.by_task[task] = self.by_task.get(task, 0) + prompt + completion
 
     def summary(self) -> str:

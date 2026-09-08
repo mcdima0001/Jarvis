@@ -15,7 +15,6 @@ import pytest
 from jarvis.core.situation import MAX_NOTE, MAX_NOTES, Situation, now_line
 from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, wakes_up
 
-
 # --- режимы ----------------------------------------------------------------
 
 
@@ -375,9 +374,9 @@ async def test_brief_mode_reaches_every_spoken_text() -> None:
     Текст вслух производит не один инструмент, поэтому проверка стоит там, где
     проходят все.
     """
+    from jarvis.core.config import TaskProfile
     from jarvis.core.llm import LLMService, ProfileRegistry
     from jarvis.core.llm.protocol import LLMResponse
-    from jarvis.core.config import TaskProfile
 
     seen: list = []
 
@@ -415,9 +414,9 @@ async def test_brief_mode_reaches_every_spoken_text() -> None:
 
 async def test_brief_hint_follows_the_language() -> None:
     """Русская подсказка на английском вопросе утащила бы и ответ в русский."""
+    from jarvis.core.config import TaskProfile
     from jarvis.core.llm import LLMService, ProfileRegistry
     from jarvis.core.llm.protocol import LLMResponse
-    from jarvis.core.config import TaskProfile
 
     seen: list = []
 
@@ -476,9 +475,8 @@ async def test_dialog_prompt_carries_the_situation(registry, tmp_path) -> None:
 
 async def test_resolver_shows_the_situation_to_the_model(registry) -> None:
     """Резолвер обязан донести обстановку до разбора, иначе всё зря."""
-    from jarvis.core.contracts import Utterance
+    from jarvis.core.contracts import ToolResult, Utterance
     from jarvis.core.router import LLMResolver
-    from jarvis.core.contracts import ToolResult
     from jarvis.core.tools import collect_tools, tool
 
     class Lights:
@@ -510,9 +508,8 @@ async def test_resolver_shows_the_situation_to_the_model(registry) -> None:
 
 async def test_dispatcher_records_what_was_asked(registry) -> None:
     """Прошлую команду записывает диспетчер: он один знает и её, и результат."""
-    from jarvis.core.contracts import Utterance
+    from jarvis.core.contracts import ToolResult, Utterance
     from jarvis.core.router import Dispatcher, PhraseResolver, Router
-    from jarvis.core.contracts import ToolResult
     from jarvis.core.tools import collect_tools, tool
 
     class Lights:

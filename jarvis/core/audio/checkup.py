@@ -199,11 +199,13 @@ def _drift_report(mic: numpy.ndarray, played: numpy.ndarray, rate: int) -> list[
         points.append(((at + span / 2) / rate, shift * 1000 / rate, sure))
 
     lines = ["", "Сдвиг по ходу записи (так виден дрейф):"]
-    for at, shift_ms, sure in points:
+    for moment, shift_ms, sure in points:
         mark = "" if sure >= 0.3 else "   ← уверенности мало, точка не в счёт"
-        lines.append(f"  {at:5.1f} с   {shift_ms:+8.1f} мс   (уверенность {sure:.2f}){mark}")
+        lines.append(
+            f"  {moment:5.1f} с   {shift_ms:+8.1f} мс   (уверенность {sure:.2f}){mark}"
+        )
 
-    solid = [(at, shift_ms) for at, shift_ms, sure in points if sure >= 0.3]
+    solid = [(moment, shift_ms) for moment, shift_ms, sure in points if sure >= 0.3]
     if len(solid) < 3:
         lines.append("")
         lines.append(
@@ -212,7 +214,7 @@ def _drift_report(mic: numpy.ndarray, played: numpy.ndarray, rate: int) -> list[
         )
         return lines
 
-    times = numpy.array([at for at, _ in solid])
+    times = numpy.array([moment for moment, _ in solid])
     shifts = numpy.array([shift_ms for _, shift_ms in solid])
 
     # Наклон берётся по медиане приращений, а не прямой через все точки.
@@ -234,9 +236,9 @@ def _drift_report(mic: numpy.ndarray, played: numpy.ndarray, rate: int) -> list[
         "",
         f"Дрейф: {slope:+.2f} мс/с ({percent:+.3f}%), разброс за запись {spread:.0f} мс",
     ]
-    for at, size in jumps:
+    for moment, size in jumps:
         lines.append(
-            f"  Скачок к {at:.0f}-й секунде: {size:+.0f} мс разом — это не дрейф, "
+            f"  Скачок к {moment:.0f}-й секунде: {size:+.0f} мс разом — это не дрейф, "
             f"а разрыв в одном из потоков"
         )
     if abs(slope) < 0.05:

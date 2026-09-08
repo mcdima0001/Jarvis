@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from .spoken import romanize, skeleton, squash
 
@@ -125,7 +125,7 @@ def best_match(
     candidates: Iterable[str],
     *,
     similarity: float,
-    prefer: Callable[[str], object] = len,
+    prefer: Callable[[str], Any] = len,
     edges: Callable[..., bool] = touches,
     least: int = LEAST,
     least_skeleton: int = LEAST_SKELETON,

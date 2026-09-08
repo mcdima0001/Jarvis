@@ -40,6 +40,7 @@ from jarvis.core.contracts import (
     AnnouncementRequested,
     AssistantReplied,
     AssistantSpeaking,
+    Event,
     ToolResult,
     Utterance,
     VoiceCommandRecognized,
@@ -190,14 +191,20 @@ class VoicePipeline:
         """
         await self._say(self._persona.line(situation, language), language=language)
 
-    async def _announce(self, event: AnnouncementRequested) -> None:
+    async def _announce(self, event: Event) -> None:
         """Произнести то, о чём попросил скилл.
 
         Единственная точка, где реплика приходит не в ответ на команду.
         Микрофон при этом глохнет так же, как на любой другой речи, — иначе
         ассистент услышит собственное напоминание и, попав в окно ответа,
         честно попробует выполнить его как команду.
+
+        Событие приходит общим типом: шина зовёт обработчик по **имени**
+        события, а не по классу, и знать про наш класс не обязана. Сужаем сами
+        — заодно это защита от чужого события с тем же именем.
         """
+        if not isinstance(event, AnnouncementRequested):
+            return
         await self._say(event.text, language=event.language)
 
     # --- общий путь для голоса и текста ------------------------------------

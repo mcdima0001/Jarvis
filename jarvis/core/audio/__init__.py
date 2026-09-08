@@ -11,9 +11,9 @@ from jarvis.core.errors import AudioError
 from .devices import SoundDeviceSink, SoundDeviceSource, list_devices
 from .echo import EchoCancellingSource
 from .null import AlwaysActiveWakeWord, NullAudioSink, NullAudioSource, PassthroughVAD
-from .sound import load_sound, trim_silence
 from .protocol import VAD, AudioFrame, AudioSink, AudioSource, WakeWord
 from .silero import SileroVAD
+from .sound import load_sound, trim_silence
 from .vad import EnergyVAD, frame_rms
 
 logger = logging.getLogger(__name__)

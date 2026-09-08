@@ -70,13 +70,14 @@ class SileroVAD:
         sample_rate: int = 16000,
         threshold: float = DEFAULT_THRESHOLD,
     ) -> None:
-        self._chunk = CHUNK_SAMPLES.get(sample_rate)
+        chunk = CHUNK_SAMPLES.get(sample_rate)
         self._context_size = CONTEXT_SAMPLES.get(sample_rate, 0)
-        if self._chunk is None:
+        if chunk is None:
             raise AudioError(
                 f"Silero VAD работает на 16 или 8 кГц, а в конфиге {sample_rate}. "
                 f"Поставь audio.sample_rate: 16000 либо audio.vad.engine: energy."
             )
+        self._chunk = chunk
         if not model.is_file():
             raise AudioError(f"Нет модели Silero VAD: {model}")
 

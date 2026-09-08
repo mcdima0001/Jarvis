@@ -131,7 +131,6 @@ def test_phrases_reach_the_tool_without_the_model() -> None:
     входными токенами в каждом запросе незачем — просят её редко и говорят при
     этом одинаково.
     """
-    from jarvis.core.builtin import CoreTools
     from jarvis.core.tools import collect_tools
 
     tools = {tool.name: tool for tool in collect_tools(_stub_core(), namespace="core")}

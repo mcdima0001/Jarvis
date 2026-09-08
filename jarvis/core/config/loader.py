@@ -17,6 +17,7 @@ import yaml
 from jarvis.core.errors import ConfigError
 
 from .schema import (
+    AECConfig,
     AppConfig,
     AudioConfig,
     JarvisConfig,
@@ -27,11 +28,10 @@ from .schema import (
     ProviderConfig,
     RouterConfig,
     RuntimeConfig,
-    STTConfig,
     SkillsConfig,
+    STTConfig,
     TaskProfile,
     TTSConfig,
-    AECConfig,
     VADConfig,
     WakeWordConfig,
 )

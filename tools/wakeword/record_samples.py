@@ -26,6 +26,10 @@ import sys
 import time
 import wave
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # numpy приходит параметром, но аннотации на него ссылаются
+    import numpy
 
 RATE = 16000
 #: Сколько писать после отсчёта. Имя укладывается в секунду, остальное — запас

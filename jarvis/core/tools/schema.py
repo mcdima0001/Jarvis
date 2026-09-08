@@ -59,7 +59,9 @@ def _type_schema(annotation: Any) -> dict[str, Any]:
     # Optional[X] и X | None
     if origin in (typing.Union, types.UnionType):
         inner = [a for a in args if a is not type(None)]
-        schema = _type_schema(inner[0]) if len(inner) == 1 else {"type": "string"}
+        schema: dict[str, Any] = (
+            _type_schema(inner[0]) if len(inner) == 1 else {"type": "string"}
+        )
         if len(args) != len(inner):
             schema["nullable"] = True
         return schema

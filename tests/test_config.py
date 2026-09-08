@@ -376,7 +376,6 @@ def test_one_file_per_day(tmp_path) -> None:
 
 def test_old_days_are_removed(tmp_path) -> None:
     """Хранится столько дней, сколько сказано, — остальное убирается само."""
-    import logging
 
     from jarvis.core.logging.daily import DailyFileHandler
 

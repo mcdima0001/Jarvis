@@ -16,12 +16,6 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from typing import Any
-
-#: Сколько не трогать основной голос после отказа. Реплики звучат десятки раз
-#: за вечер, и ждать таймаут облака на каждой значит превратить обрыв связи в
-#: «ассистент задумывается перед каждым словом».
-RETRY_AFTER_S = 60.0
 
 from jarvis.core.audio import AudioSink
 from jarvis.core.config import TTSConfig
@@ -33,6 +27,11 @@ from .normalize import normalize_for_speech
 from .protocol import Speech
 
 logger = logging.getLogger(__name__)
+
+#: Сколько не трогать основной голос после отказа. Реплики звучат десятки раз
+#: за вечер, и ждать таймаут облака на каждой значит превратить обрыв связи в
+#: «ассистент задумывается перед каждым словом».
+RETRY_AFTER_S = 60.0
 
 
 class CompositeTTS:

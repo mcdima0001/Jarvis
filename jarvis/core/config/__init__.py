@@ -2,6 +2,7 @@
 
 from .loader import DEFAULT_CONFIG_PATH, load_config, load_dotenv
 from .schema import (
+    AECConfig,
     AppConfig,
     AudioConfig,
     JarvisConfig,
@@ -16,7 +17,6 @@ from .schema import (
     STTConfig,
     TaskProfile,
     TTSConfig,
-    AECConfig,
     VADConfig,
     WakeWordConfig,
 )

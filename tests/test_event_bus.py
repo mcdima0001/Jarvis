@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-import pytest
-
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.contracts import Event
 

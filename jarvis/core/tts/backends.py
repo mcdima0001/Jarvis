@@ -466,7 +466,9 @@ class EdgeBackend:
             format="s16", layout="mono", rate=self._SAMPLE_RATE
         )
         pcm = bytearray()
-        for frame in container.decode(audio=0):
+        # `av.open` на чтение всегда отдаёт контейнер-источник, но тип у него
+        # объявлен объединением с контейнером-приёмником.
+        for frame in container.decode(audio=0):  # type: ignore[union-attr]
             for resampled in resampler.resample(frame):
                 # У кадра ровно один план (моно), обрезаем по числу сэмплов:
                 # буфер бывает выровнен с запасом.

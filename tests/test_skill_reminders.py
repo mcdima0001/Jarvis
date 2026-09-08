@@ -213,7 +213,7 @@ async def test_reminder_survives_a_restart(
     Поэтому срок хранится в стенных часах и лежит на диске, а не в памяти
     процесса и не в монотонном времени, которое перезапуск обнуляет.
     """
-    skill = await _ready(tmp_path, events, registry)
+    await _ready(tmp_path, events, registry)
     await registry.invoke("reminders.remind", {"request": "через 2 часа проверить рендер"})
 
     # Новый экземпляр с тем же каталогом памяти — это и есть перезапуск.
