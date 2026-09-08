@@ -956,3 +956,45 @@ async def test_second_duck_is_not_announced_twice(
 async def _no_slide(targets: Any, *, target: Any, seconds: float) -> bool:
     """Плавный переход тут ни при чём: проверяется, что сказано в лог."""
     return True
+
+# --- псевдонимы программ ----------------------------------------------------
+
+
+def test_alias_points_at_another_program() -> None:
+    """«Телеграм» может означать другую программу — ту, что стоит на самом деле.
+
+    Живой случай: Telegram на ноуте владельца не установлен, стоит форк
+    AyuGram, и «открой телеграм» не находило ничего. Написать путь можно было и
+    раньше, но путь ломается после переустановки, а имя программы — нет.
+    """
+    from skills.windows.skill import resolve_alias
+
+    catalog = {"AyuGram": r"C:\Menu\AyuGram.lnk", "Obsidian": r"C:\Menu\Obsidian.lnk"}
+
+    assert resolve_alias("AyuGram", catalog) == r"C:\Menu\AyuGram.lnk"
+    assert resolve_alias("аюграм", catalog) == r"C:\Menu\AyuGram.lnk"
+
+
+def test_path_stays_a_path() -> None:
+    """Путь в конфиге остаётся путём — псевдонимы его не трогают.
+
+    Иначе `D:/Games/game.exe` попыталось бы найтись среди названий программ.
+    """
+    from skills.windows.skill import resolve_alias
+
+    catalog = {"AyuGram": r"C:\Menu\AyuGram.lnk"}
+
+    assert resolve_alias("D:/Games/game.exe", catalog) is None
+    assert resolve_alias(r"C:\Program Files\Apppp.exe", catalog) is None
+    assert resolve_alias("steam://rungameid/42", catalog) is None
+
+
+def test_unknown_alias_is_left_as_written() -> None:
+    """Не нашли, на что ссылается, — оставляем как есть.
+
+    Может быть, это имя исполняемого файла в PATH: `notepad` запускается и без
+    полного пути.
+    """
+    from skills.windows.skill import resolve_alias
+
+    assert resolve_alias("notepad", {"AyuGram": "x"}) is None

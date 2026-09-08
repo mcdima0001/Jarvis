@@ -177,6 +177,36 @@ FADE_IN_S = 1.2
 DUCK_TIMEOUT_S = 20.0
 
 
+#: По чему видно, что в конфиге написан путь, а не имя другой программы.
+#: Разделитель каталогов, расширение файла или схема URI — всё это встречается
+#: в пути и не встречается в том, как программу называют вслух.
+_PATH_MARKS = ("\\", "/", ":")
+
+
+def looks_like_path(value: str) -> bool:
+    """Путь это или название программы."""
+    text = value.strip()
+    return any(mark in text for mark in _PATH_MARKS) or text.lower().endswith(
+        (".exe", ".lnk", ".bat", ".cmd", ".url")
+    )
+
+
+def resolve_alias(value: str, catalog: Mapping[str, str]) -> str | None:
+    """Найти, куда ведёт псевдоним «называю так, а запускать вот это».
+
+    Нужно там, где привычное имя и установленная программа разошлись: у
+    владельца нет Telegram, стоит форк AyuGram, и «открой телеграм» не находило
+    ничего. Написать путь в конфиг можно было и раньше, но путь придётся чинить
+    после каждой переустановки, а имя программы переживёт её.
+
+    :return: чем запускать, либо ``None``, если это не псевдоним.
+    """
+    if looks_like_path(value):
+        return None
+    found = match_program(value, catalog)
+    return found[1] if found else None
+
+
 def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | None:
     """Найти программу в каталоге по услышанному названию.
 
@@ -1084,12 +1114,25 @@ class WindowsSkill(Skill):
         # Ярлыки точнее найденного перебором папок, поэтому идут позже.
         catalog.update(scan_program_files(program_files_dirs()))
         catalog.update(scan_start_menu(start_menu_dirs()))
-        catalog.update(self._configured)
+
+        # Своё из конфига идёт последним и перекрывает найденное. Значение тут
+        # бывает двух видов: путь — берём как есть, имя другой программы —
+        # разрешаем по уже собранному каталогу. Второе живёт дольше: путь
+        # ломается при переустановке, имя — нет.
+        aliases = 0
+        for name, value in self._configured.items():
+            target = resolve_alias(value, catalog)
+            if target is not None:
+                aliases += 1
+                self.log.debug("Псевдоним: %r -> %r (%s)", name, value, target)
+            catalog[name] = target or value
+
         self._catalog = catalog
         self.log.info(
-            "Программ в каталоге: %d (своих в конфиге: %d)",
+            "Программ в каталоге: %d (своих в конфиге: %d, из них псевдонимов: %d)",
             len(catalog),
             len(self._configured),
+            aliases,
         )
 
     @tool(phrases=["открой {program}", "запусти {program}",
