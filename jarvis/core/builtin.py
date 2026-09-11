@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 from jarvis.core.agent import Outcome, Planner
 from jarvis.core.contracts import ToolResult
+from jarvis.core.jobs import Jobs, busy_line
+from jarvis.core.jobs import describe as describe_jobs
 from jarvis.core.llm import LLMService
 from jarvis.core.memory import Memory
 from jarvis.core.persona import Persona
@@ -128,6 +130,7 @@ class CoreTools:
         modes: Modes | None = None,
         situation: Situation | None = None,
         stt: Any = None,
+        jobs: Jobs | None = None,
     ) -> None:
         self._llm = llm
         #: Распознавание — только чтобы показать его расход. Облачное считает
@@ -146,6 +149,9 @@ class CoreTools:
         self._situation = (
             situation if situation is not None else Situation(modes=self._modes)
         )
+        #: Фоновые поручения. Свои завести нельзя: их останавливает
+        #: `ServiceRunner`, а докладывают они в ту же шину.
+        self._jobs = jobs if jobs is not None else Jobs()
 
     @tool(name="chat", reversible=True)
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
@@ -246,6 +252,76 @@ class CoreTools:
         """Цикл создаётся на каждую просьбу: своего состояния он не держит."""
         return Planner(
             llm=self._llm, registry=self._registry, situation=self._situation
+        )
+
+    @tool(
+        name="later",
+        phrases=["займись {goal}", "сделай в фоне {goal}", "потом сделай {goal}",
+                 "work on {goal}", "do {goal} in the background"],
+        reversible=False,
+    )
+    async def later(self, goal: str, language: str = "ru") -> ToolResult:
+        """Взяться за долгую работу в фоне и доложить, когда будет готово.
+
+        Для того, что займёт минуты и чего не ждут стоя: разобраться в логах,
+        собрать что-нибудь, подготовить. Ассистент отвечает сразу и заговорит
+        сам, когда закончит.
+
+        :param goal: что сделать, своими словами владельца.
+        :param language: язык, на котором докладывать.
+        """
+        code = _language(language)
+        if not self._llm.available:
+            return ToolResult.failure(
+                "Языковая модель не настроена: задай JARVIS_OPENROUTER_KEY в .env",
+                speech={
+                    "ru": "Языковая модель не подключена. Добавь ключ в настройки.",
+                    "en": "The language model isn't connected. Add the key in settings.",
+                },
+            )
+
+        job = self._jobs.submit(goal, self._carry_out(goal, code), language=code)
+        if job is None:
+            return ToolResult.failure("все места заняты", speech=busy_line(code))
+
+        return ToolResult.success(
+            {"job": job.id, "title": job.title},
+            speech={
+                "ru": "Займусь и доложу.",
+                "en": "I'll take care of it and report back.",
+            },
+        )
+
+    async def _carry_out(self, goal: str, language: str) -> str:
+        """Что именно делает фоновое поручение: тот же цикл, только не в спешке.
+
+        Доклад собирается здесь, а не в `Jobs`: тот не должен знать, что внутри
+        задачи был план, — завтра там окажется что-нибудь другое.
+        """
+        outcome = await self._planner().run(goal, language=language)
+        if outcome.blocked:
+            return (
+                f"дошёл до шага «{outcome.blocked}», а такое сам не делаю"
+                if language == "ru"
+                else f"got to '{outcome.blocked}', which I won't do on my own"
+            )
+        if outcome.stopped:
+            return outcome.stopped
+        return outcome.answer or ("готово" if language == "ru" else "done")
+
+    @tool(
+        name="jobs",
+        phrases=["чем ты занят", "что в работе", "какие задачи", "what are you doing",
+                 "what is running"],
+        reversible=True,
+    )
+    async def jobs(self, language: str = "ru") -> ToolResult:
+        """Рассказать, какие поручения сейчас в работе."""
+        code = _language(language)
+        running = self._jobs.running
+        return ToolResult.success(
+            {"running": [{"id": job.id, "title": job.title} for job in running]},
+            speech=describe_jobs(running, code),
         )
 
     @tool(

@@ -26,6 +26,7 @@ from jarvis.core.contracts import (
     Utterance,
     detect_language,
 )
+from jarvis.core.jobs import Jobs
 from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
 from jarvis.core.memory import Memory, build_memory
@@ -190,6 +191,11 @@ class JarvisApp:
         )
 
         # Встроенные инструменты ядра: диалог, справка, перезагрузка, модели.
+        # Фоновые поручения. Ставятся до инструментов ядра, потому что
+        # `core.later` без них не имеет смысла, и до конвейера — доклад уходит
+        # событием, которое конвейер подхватит подпиской.
+        jobs = Jobs(events=events)
+
         core_tools = CoreTools(
             llm=llm,
             memory=memory,
@@ -200,6 +206,7 @@ class JarvisApp:
             modes=modes,
             situation=situation,
             stt=stt,
+            jobs=jobs,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
@@ -233,6 +240,9 @@ class JarvisApp:
             (stt, EARS),
             (tts, VOICE),
             (skills, ""),
+            # Фоновые задачи останавливаются раньше конвейера: иначе доклад
+            # отменённой задачи полез бы в уже закрытый синтез.
+            (jobs, ""),
             (pipeline, EARS),
         ):
             runner.add(service, needs=needs)
