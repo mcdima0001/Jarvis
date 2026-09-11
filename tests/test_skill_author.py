@@ -201,3 +201,41 @@ def test_repair_prompt_carries_code_and_findings() -> None:
     assert "class DiskSkill" in prompt
     assert "unhealthy" in prompt
     assert "Имя в meta не меняй" in prompt
+
+
+# --- свежий взгляд ----------------------------------------------------------
+
+
+def test_review_asks_about_what_machines_cannot_see() -> None:
+    """Разбор спрашивает закрытый список, а не «хорошо ли написано».
+
+    На открытый вопрос отвечают «да». Поэтому в запросе перечислено ровно то,
+    что в этом проекте уже ломалось и чего линтер с типами не видят.
+    """
+    prompt = author.review_prompt(_GOOD)
+
+    assert "class DiskSkill" in prompt
+    assert "asyncio.to_thread" in prompt
+    assert "reversible" in prompt
+    assert "произнести" in prompt
+    # И прямо сказано не искать то, что уже проверено машинами.
+    assert "опечатки" in prompt
+
+
+def test_review_offers_a_way_to_say_nothing_is_wrong() -> None:
+    """Без такого ответа модель найдёт замечания всегда — просто из вежливости."""
+    assert author.CLEAN in author.review_prompt(_GOOD)
+
+
+def test_report_separates_broken_from_merely_questionable(tmp_path: Path) -> None:
+    """Непройденные проверки и замечания — разные вещи, и звучат по-разному.
+
+    Замечание не означает, что скилл сломан, только что на него стоит взглянуть
+    внимательнее. Смешивать их значит либо пугать зря, либо прятать поломку.
+    """
+    path = author.draft_path(tmp_path, "disk")
+
+    assert "замечаний нет" in author.report("disk", path, 1)
+    assert "есть замечания" in author.report("disk", path, 1, remarks="фраза слишком общая")
+    # Поломка важнее замечаний и вытесняет их из доклада.
+    assert "не прошёл" in author.report("disk", path, 1, findings="типы: беда", remarks="и ещё")
