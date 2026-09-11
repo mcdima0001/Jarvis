@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Container, Mapping, Sequence
 
 from .schema import build_schema, parse_docstring
 
@@ -192,14 +192,25 @@ class ToolCatalog:
 
     specs: tuple[ToolSpec, ...] = field(default_factory=tuple)
 
-    def function_schemas(self) -> list[dict[str, Any]]:
+    def function_schemas(
+        self, *, exclude: Container[str] = frozenset()
+    ) -> list[dict[str, Any]]:
         """Схемы инструментов для function-calling.
 
         Служебные (``routable=False``) не попадают: каталог уходит в модель на
         каждой неузнанной фразе, и каждый лишний инструмент — это входные
         токены в каждом запросе до конца жизни проекта.
+
+        :param exclude: полные имена, которые не показывать. Нужно агентному
+            циклу: план не должен строить план (вложенность умножает расход, не
+            добавляя возможностей) и не должен «выполнять» цель разговором о
+            ней.
         """
-        return [spec.as_function_schema() for spec in self.specs if spec.routable]
+        return [
+            spec.as_function_schema()
+            for spec in self.specs
+            if spec.routable and spec.name not in exclude
+        ]
 
     def describe(self) -> str:
         """Компактное текстовое описание каталога — для промпта."""

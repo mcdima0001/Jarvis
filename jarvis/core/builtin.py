@@ -14,6 +14,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Mapping
 
+from jarvis.core.agent import Outcome, Planner
 from jarvis.core.contracts import ToolResult
 from jarvis.core.llm import LLMService
 from jarvis.core.memory import Memory
@@ -94,6 +95,24 @@ def _stt_spending(stt: Any) -> tuple[int, float]:
     return int(calls), float(seconds)
 
 
+#: Что сказать, если план дошёл до конца, но своих слов у него не нашлось.
+_DONE_PLAIN = {"ru": "Готово.", "en": "Done."}
+
+
+def _steps_done(outcome: "Outcome", language: str) -> str:
+    """Приставка «столько-то шагов сделал» к неудачному концу плана.
+
+    Без неё отказ звучит так, будто не сделано ничего, — а половина работы уже
+    выполнена, и владельцу важно знать, с какого места продолжать.
+    """
+    count = len(outcome.steps)
+    if not count:
+        return ""
+    if language == "en":
+        return f"Did {count} step{'s' if count > 1 else ''}. "
+    return f"Сделал шагов: {count}. "
+
+
 class CoreTools:
     """Инструменты, которые ядро регистрирует само."""
 
@@ -167,6 +186,67 @@ class CoreTools:
         )
         await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))
         return ToolResult.success(answer, speech=answer)
+
+    @tool(name="plan", reversible=False)
+    async def plan(self, goal: str, language: str = "ru") -> ToolResult:
+        """Выполнить составную просьбу из нескольких действий подряд.
+
+        Годится, когда одной командой не обойтись и следующий шаг зависит от
+        того, что получилось на предыдущем: «найди, что играет, и добавь в
+        избранное», «посмотри, что за ошибка на экране, и найди её причину».
+        Для одиночной команды не нужен — её выполняет обычный инструмент.
+
+        :param goal: просьба целиком, своими словами владельца.
+        :param language: язык, на котором отвечать.
+        """
+        code = _language(language)
+        if not self._llm.available:
+            return ToolResult.failure(
+                "Языковая модель не настроена: задай JARVIS_OPENROUTER_KEY в .env",
+                speech={
+                    "ru": "Языковая модель не подключена. Добавь ключ в настройки.",
+                    "en": "The language model isn't connected. Add the key in settings.",
+                },
+            )
+
+        outcome = await self._planner().run(goal, language=code)
+
+        # Упёрлись в необратимое. Отказ здесь честнее подтверждения: диалог
+        # согласия требует состояния между репликами, а владельцу достаточно
+        # сказать ту же команду напрямую — на прямую команду пометка не влияет.
+        if outcome.blocked:
+            done = _steps_done(outcome, code)
+            return ToolResult.success(
+                {"steps": [step.tool for step in outcome.steps], "blocked": outcome.blocked},
+                speech={
+                    "ru": f"{done}Дальше нужно «{outcome.blocked}», а такое сам не делаю. "
+                          f"Скажи напрямую, и выполню.",
+                    "en": f"{done}Next would be '{outcome.blocked}', which I won't do on my "
+                          f"own. Tell me directly and I will.",
+                },
+            )
+
+        if outcome.stopped:
+            done = _steps_done(outcome, code)
+            return ToolResult.failure(
+                f"план остановлен: {outcome.stopped}",
+                speech={
+                    "ru": f"{done}Дальше не получилось: {outcome.stopped}.",
+                    "en": f"{done}Could not continue: {outcome.stopped}.",
+                },
+            )
+
+        answer = outcome.answer or _DONE_PLAIN[code]
+        return ToolResult.success(
+            {"steps": [step.tool for step in outcome.steps], "answer": answer},
+            speech=answer,
+        )
+
+    def _planner(self) -> Planner:
+        """Цикл создаётся на каждую просьбу: своего состояния он не держит."""
+        return Planner(
+            llm=self._llm, registry=self._registry, situation=self._situation
+        )
 
     @tool(
         name="help",
