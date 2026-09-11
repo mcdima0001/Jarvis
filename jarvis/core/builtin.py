@@ -20,11 +20,13 @@ from jarvis.core.jobs import Jobs, busy_line, shorten
 from jarvis.core.jobs import describe as describe_jobs
 from jarvis.core.llm import LLMService
 from jarvis.core.memory import Memory
+from jarvis.core.meter import Meter
 from jarvis.core.persona import Persona
 from jarvis.core.situation import Situation
 from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, minutes_word
 from jarvis.core.text import best_match
 from jarvis.core.tools import ToolRegistry, tool
+from jarvis.core.tts.normalize import plural_form
 from jarvis.core.version import current
 
 if TYPE_CHECKING:
@@ -162,6 +164,7 @@ class CoreTools:
         stt: Any = None,
         jobs: Jobs | None = None,
         shutdown: Callable[[], None] | None = None,
+        meter: Meter | None = None,
     ) -> None:
         self._llm = llm
         #: Распознавание — только чтобы показать его расход. Облачное считает
@@ -186,6 +189,8 @@ class CoreTools:
         #: Чем попросить приложение выключиться. Инструмент сам этого не умеет
         #: и не должен: остановка сервисов — дело composition root.
         self._shutdown = shutdown
+        #: Учёт нагрузки по звеньям — чтобы на «что греет» отвечать цифрами.
+        self._meter = meter if meter is not None else Meter(enabled=False)
 
     @tool(name="chat", reversible=True)
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
@@ -523,6 +528,57 @@ class CoreTools:
         return ToolResult.success(
             {"stopping": True},
             speech={"ru": "Завершаю работу.", "en": "Shutting down."},
+        )
+
+    @tool(
+        name="load",
+        phrases=[
+            "сколько ты ешь",
+            "что греет",
+            "какая нагрузка",
+            "сколько процессора",
+            "how much cpu",
+            "what is heating",
+        ],
+        reversible=True,
+    )
+    async def load(self) -> ToolResult:
+        """Рассказать, сколько процессора уходит и на что именно.
+
+        Жалоба «ноутбук греется» сама по себе не указывает на виновного: в
+        голосовом круге непрерывно работают сразу четыре вещи. Здесь они
+        посчитаны по отдельности, прямо в живом запуске.
+        """
+        if not self._meter.enabled:
+            return ToolResult.failure(
+                "учёт нагрузки выключен (runtime.meter)",
+                speech={
+                    "ru": "Учёт нагрузки выключен в настройках.",
+                    "en": "Load accounting is switched off in the settings.",
+                },
+            )
+        load = self._meter.peek()
+        percent = round(load.share * 100)
+        spoken = ", ".join(
+            f"{name} {value * 100:.0f}" for name, value in load.shares()[:3]
+        )
+        return ToolResult.success(
+            {
+                "share": round(load.share, 4),
+                "stages": {name: round(value, 4) for name, value in load.shares()},
+                "seconds": round(load.wall, 1),
+            },
+            speech={
+                "ru": (
+                    f"Ем {percent} "
+                    f"{plural_form(percent, ('процент', 'процента', 'процентов'))} ядра"
+                    + (f". Больше всего: {spoken}." if spoken else ".")
+                ),
+                "en": (
+                    f"Using {load.share * 100:.0f} percent of a core"
+                    + (f". Mostly: {spoken}." if spoken else ".")
+                ),
+            },
         )
 
     @tool(name="set_model", routable=False, reversible=True)

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from jarvis.core.config import AudioConfig
 from jarvis.core.errors import AudioError
+from jarvis.core.meter import Meter
 
 from .devices import SoundDeviceSink, SoundDeviceSource, list_devices
 from .echo import EchoCancellingSource
@@ -151,7 +152,7 @@ def _open_wake_word(config: AudioConfig) -> WakeWord:
     )
 
 
-def build_audio(config: AudioConfig) -> AudioStack:
+def build_audio(config: AudioConfig, *, meter: "Meter | None" = None) -> AudioStack:
     """Собрать аудиотракт по конфигу.
 
     Если звуковая подсистема недоступна (нет устройства, не установлен
@@ -196,14 +197,16 @@ def build_audio(config: AudioConfig) -> AudioStack:
         )
 
     return AudioStack(
-        source=_with_echo_cancelling(SoundDeviceSource(config), config),
+        source=_with_echo_cancelling(SoundDeviceSource(config), config, meter=meter),
         sink=SoundDeviceSink(config),
         vad=vad,
         wake_word=wake_word,
     )
 
 
-def _with_echo_cancelling(source: AudioSource, config: AudioConfig) -> AudioSource:
+def _with_echo_cancelling(
+    source: AudioSource, config: AudioConfig, *, meter: "Meter | None" = None
+) -> AudioSource:
     """Обернуть микрофон вычитанием собственного звука.
 
     Обёртка ставится **до** VAD и распознавания, потому что чинит она их обоих:
@@ -224,6 +227,7 @@ def _with_echo_cancelling(source: AudioSource, config: AudioConfig) -> AudioSour
         tail_ms=config.aec.tail_ms,
         residual=config.aec.residual,
         high_pass_hz=config.aec.high_pass_hz,
+        meter=meter,
     )
     if config.aec.reference in ("", "off", "none"):
         logger.info("Опорный сигнал отключён (audio.aec.reference) — остаётся только срез низа")
@@ -236,6 +240,7 @@ def _with_echo_cancelling(source: AudioSource, config: AudioConfig) -> AudioSour
             sample_rate=config.sample_rate,
             device=None if config.aec.reference == "auto" else config.aec.reference,
             on_audio=wrapper.push_reference,
+            meter=meter,
         )
     )
     return wrapper

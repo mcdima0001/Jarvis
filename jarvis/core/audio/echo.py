@@ -34,6 +34,8 @@ from typing import Any, AsyncIterator
 
 import numpy
 
+from jarvis.core.meter import Meter
+
 from .aec import _MUTED, BLOCK, EchoCanceller, HighPass, estimate_delay, to_float, to_pcm
 from .protocol import AudioFrame, AudioSource
 
@@ -251,9 +253,12 @@ class EchoCancellingSource:
         tail_ms: float = 400.0,
         residual: bool = True,
         high_pass_hz: float = 0.0,
+        meter: Meter | None = None,
     ) -> None:
         self._source = source
         self._rate = sample_rate
+        #: Учёт процессорного времени. Выключенный не стоит ничего.
+        self._meter = meter if meter is not None else Meter(enabled=False)
         self._aec = EchoCanceller(sample_rate=sample_rate, tail_ms=tail_ms, residual=residual)
         self._track = ReferenceTrack(sample_rate=sample_rate)
         self._high_pass = HighPass(high_pass_hz, sample_rate) if high_pass_hz > 0 else None
@@ -359,7 +364,9 @@ class EchoCancellingSource:
                 block, self._mic = self._mic[:BLOCK], self._mic[BLOCK:]
                 reference = self._track.take(BLOCK)
                 self._remember(block, reference)
-                self._ready = numpy.concatenate((self._ready, self._aec.process(block, reference)))
+                with self._meter.stage("эхо"):
+                    cleaned = self._aec.process(block, reference)
+                self._ready = numpy.concatenate((self._ready, cleaned))
 
             self._realign()
             size = len(wave)

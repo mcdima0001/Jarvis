@@ -48,6 +48,7 @@ from jarvis.core.contracts import (
     WakeWordDetected,
     detect_language,
 )
+from jarvis.core.meter import Meter
 from jarvis.core.pending import TTL as PENDING_TTL
 from jarvis.core.persona import DONE, FAILED, LISTENING, WORKING, Persona
 from jarvis.core.router import Dispatcher
@@ -82,6 +83,7 @@ class VoicePipeline:
         persona: Persona | None = None,
         modes: Modes | None = None,
         announcer: "Announcer | None" = None,
+        meter: "Meter | None" = None,
     ) -> None:
         self._source = source
         self._sink = sink
@@ -103,6 +105,8 @@ class VoicePipeline:
         #: чтобы **досказывать**: придержанное произносится при первом же
         #: разговоре, когда владелец заведомо рядом и слушает.
         self._announcer = announcer if announcer is not None else Announcer()
+        #: Учёт процессорного времени по звеньям. Выключенный не стоит ничего.
+        self._meter = meter if meter is not None else Meter(enabled=False)
 
         # Вместе со звуком храним момент, когда он прозвучал: окно ответа
         # должно отсчитываться от речи, а не от того, когда до неё дошли руки.
@@ -428,10 +432,15 @@ class VoicePipeline:
                     self._vad.reset()
                     continue
 
-                if self._acoustic and self._wake_word.detect(frame):
-                    self._on_name_heard()
+                if self._acoustic:
+                    with self._meter.stage("имя"):
+                        heard = self._wake_word.detect(frame)
+                    if heard:
+                        self._on_name_heard()
 
-                if self._vad.is_speech(frame):
+                with self._meter.stage("речь"):
+                    speech = self._vad.is_speech(frame)
+                if speech:
                     if not speaking:
                         logger.debug("Начало речи")
                     buffer.extend(frame.data)

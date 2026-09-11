@@ -241,6 +241,8 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
         runtime=RuntimeConfig(
             worker_threads=int(runtime.get("worker_threads", 2)),
             tool_timeout=float(runtime.get("tool_timeout", 30.0)),
+            meter=bool(runtime.get("meter", True)),
+            meter_seconds=float(runtime.get("meter_seconds", 60.0)),
         ),
         skills=SkillsConfig(
             paths=tuple(_resolve(project_root, p) for p in skills.get("paths", ["skills"])),

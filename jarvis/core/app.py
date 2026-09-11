@@ -31,6 +31,7 @@ from jarvis.core.jobs import Jobs
 from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
 from jarvis.core.memory import Memory, build_memory
+from jarvis.core.meter import LoadReporter, Meter
 from jarvis.core.persona import FAREWELL, GREETING, Persona
 from jarvis.core.router import (
     AliasResolver,
@@ -154,7 +155,11 @@ class JarvisApp:
             farewell_on_stop=config.persona.farewell_on_stop,
         )
 
-        audio = build_audio(config.audio)
+        # Счётчик нагрузки заводится раньше звука: размечать надо и его.
+        meter = Meter(enabled=config.runtime.meter)
+        reporter = LoadReporter(meter, every=config.runtime.meter_seconds)
+
+        audio = build_audio(config.audio, meter=meter)
         stt = build_stt(config.stt, worker)
         tts = build_tts(config.tts, worker, sink=audio.sink)
 
@@ -247,6 +252,7 @@ class JarvisApp:
             stt=stt,
             jobs=jobs,
             shutdown=stopping.set,
+            meter=meter,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
@@ -264,6 +270,7 @@ class JarvisApp:
             persona=persona,
             modes=modes,
             announcer=announcer,
+            meter=meter,
         )
 
         runner = ServiceRunner()
@@ -284,6 +291,7 @@ class JarvisApp:
             # Фоновые задачи останавливаются раньше конвейера: иначе доклад
             # отменённой задачи полез бы в уже закрытый синтез.
             (jobs, ""),
+            (reporter, ""),
             (pipeline, EARS),
         ):
             runner.add(service, needs=needs)

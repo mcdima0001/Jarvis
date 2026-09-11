@@ -31,6 +31,8 @@ from typing import Any, Callable
 
 import numpy
 
+from jarvis.core.meter import Meter
+
 logger = logging.getLogger(__name__)
 
 #: Сколько сэмплов просить за один раз. При 16 кГц это 32 мс — вдвое больше
@@ -122,11 +124,14 @@ class LoopbackSource:
         sample_rate: int,
         device: str | None = None,
         on_audio: Callable[[numpy.ndarray], None],
+        meter: "Meter | None" = None,
     ) -> None:
         self._rate = sample_rate
         self._device = device
         self._on_audio = on_audio
         self._thread: threading.Thread | None = None
+        #: Учёт процессорного времени. Поток свой, поэтому и счёт отдельный.
+        self._meter = meter if meter is not None else Meter(enabled=False)
         self._stop = threading.Event()
         self._opened = threading.Event()
         self._name = ""
@@ -210,7 +215,12 @@ class LoopbackSource:
             counted = 0
             while not self._stop.is_set():
                 block = recorder.record(numframes=_CHUNK)
-                self._on_audio(numpy.mean(numpy.asarray(block, dtype=numpy.float64), axis=1))
+                # Ожидание блока в счёт не идёт: греет счёт, а не ожидание.
+                # Отсюда и замер начинается только после `record`.
+                with self._meter.stage("петля"):
+                    self._on_audio(
+                        numpy.mean(numpy.asarray(block, dtype=numpy.float64), axis=1)
+                    )
                 counted += 1
                 if counted >= _RECHECK_BLOCKS:
                     counted = 0
