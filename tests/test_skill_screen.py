@@ -210,3 +210,68 @@ def test_shipped_config_has_the_vision_profile() -> None:
 def test_log_line_says_size_and_weight() -> None:
     """В логе видно, что именно ушло наружу: обещание из шапки скилла."""
     assert screen.describe((1600, 900), 350 * 1024) == "1600x900, 350 КБ"
+
+
+# --- разные мониторы --------------------------------------------------------
+
+
+def test_monitor_number_is_read_from_speech() -> None:
+    """Номер приходит прямо из речи, и цифрой, и словом.
+
+    Распознавание пишет «2-ом мониторе» и «втором мониторе» вперемешку, причём
+    в одном и том же разговоре.
+    """
+    assert screen.monitor_number("2-ом") == 2
+    assert screen.monitor_number("втором") == 2
+    assert screen.monitor_number("второй монитор") == 2
+    assert screen.monitor_number("3") == 3
+    assert screen.monitor_number("first") == 1
+
+
+def test_phrase_without_a_number_asks_for_no_monitor() -> None:
+    """Где номера нет, там его и не надо выдумывать."""
+    assert screen.monitor_number("на экране") == 0
+    assert screen.monitor_number("") == 0
+
+
+def test_big_numbers_are_not_monitor_numbers() -> None:
+    """«Открой 15 вкладку» — это не про мониторы.
+
+    Двузначное число почти наверняка приехало из соседней части фразы, а
+    пятнадцатого монитора не бывает.
+    """
+    assert screen.monitor_number("15") == 0
+    assert screen.monitor_number("2024") == 0
+
+
+def test_target_keeps_the_monitor_number() -> None:
+    """Номер доезжает до съёмки, а не теряется по дороге.
+
+    Именно это и сломалось на живом запуске: «что на 2-ом мониторе» приехало в
+    инструмент как `target: screen`, и снялся не тот экран.
+    """
+    assert screen.normalize_target("2-ом") == "2"
+    assert screen.normalize_target("второй") == "2"
+    assert screen.normalize_target("второй монитор") == "2"
+
+
+def test_areas_still_win_over_numbers() -> None:
+    """Слова об области остаются словами об области."""
+    assert screen.normalize_target("screen") == "screen"
+    assert screen.normalize_target("окно") == "window"
+    assert screen.normalize_target("мониторы") == "all"
+
+
+def test_monitors_are_ordered_left_to_right() -> None:
+    """«Второй монитор» человек считает глазами: тот, что правее.
+
+    Системный порядок зависит от того, в каком гнезде кабель, и с видом на стол
+    не связан никак. Проверяется сама сортировка — перечисление экранов есть
+    только на Windows.
+    """
+    jumbled = [(1920, 0, 3840, 1080), (0, 0, 1920, 1080), (-1920, 0, 0, 1080)]
+    assert sorted(jumbled, key=lambda box: (box[0], box[1])) == [
+        (-1920, 0, 0, 1080),
+        (0, 0, 1920, 1080),
+        (1920, 0, 3840, 1080),
+    ]

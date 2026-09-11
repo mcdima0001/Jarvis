@@ -26,9 +26,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import re
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from jarvis.core.contracts import ToolResult, detect_language
 from jarvis.core.errors import LLMError, LLMNotConfigured
@@ -151,8 +153,38 @@ def build_messages(question: str, image: str, language: str) -> list[Message]:
     ]
 
 
+#: Как называют номер монитора вслух. Падежи нужны все: номер приходит прямо из
+#: речи — «что на втором мониторе», «покажи второй».
+_ORDINALS: dict[str, int] = {
+    "первый": 1, "первом": 1, "первого": 1, "первому": 1, "first": 1,
+    "второй": 2, "втором": 2, "второго": 2, "вторым": 2, "second": 2,
+    "третий": 3, "третьем": 3, "третьего": 3, "третьим": 3, "third": 3,
+    "четвёртый": 4, "четвёртом": 4, "четвертый": 4, "четвертом": 4, "fourth": 4,
+}
+
+#: Слова названия: «2-ом» и «второй» одинаково годятся, а разделители — нет.
+_WORDS = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def monitor_number(text: str) -> int:
+    """Какой монитор назвали. Ноль — номера в речи не было.
+
+    Разбирается и цифрой, и словом: распознавание пишет «2-ом мониторе» и
+    «втором мониторе» вперемешку, причём в одном и том же разговоре.
+    """
+    for word in _WORDS.findall(text.strip().lower()):
+        if word in _ORDINALS:
+            return _ORDINALS[word]
+        if word.isdigit():
+            number = int(word)
+            # Двузначные — это не номер монитора, а что-то из соседней фразы.
+            if 1 <= number <= 9:
+                return number
+    return 0
+
+
 def normalize_target(target: str) -> str:
-    """Привести к одному из известных значений; непонятное — целый монитор.
+    """Привести к известному значению: область либо номер монитора строкой.
 
     Значение приходит от модели, а она склонна изобретать синонимы. Падать из-за
     «monitor» вместо «screen» было бы обидно.
@@ -164,6 +196,9 @@ def normalize_target(target: str) -> str:
         return "window"
     if value in {"всё", "все", "everything", "desktop", "virtual", "мониторы"}:
         return "all"
+    number = monitor_number(value)
+    if number:
+        return str(number)
     return "screen"
 
 
@@ -196,12 +231,52 @@ def claim_dpi_awareness() -> bool:
         return False
 
 
+def monitors() -> list[Box]:
+    """Все мониторы, слева направо.
+
+    **Порядок именно по расположению, а не по тому, в каком система их
+    перечислила.** «Второй монитор» человек считает глазами: тот, что правее.
+    Системный порядок зависит от того, в каком гнезде кабель, и с видом на стол
+    не связан никак.
+    """
+    if sys.platform != "win32":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found: list[Box] = []
+
+    @ctypes.WINFUNCTYPE(
+        wintypes.BOOL,
+        wintypes.HANDLE,
+        wintypes.HDC,
+        ctypes.POINTER(wintypes.RECT),
+        wintypes.LPARAM,
+    )
+    def visit(monitor: int, dc: int, rect: Any, data: int) -> bool:
+        """Запомнить очередной монитор."""
+        area = rect.contents
+        found.append((area.left, area.top, area.right, area.bottom))
+        return True
+
+    user32.EnumDisplayMonitors(None, None, visit, 0)
+    return sorted(found, key=lambda box: (box[0], box[1]))
+
+
 def region(target: str) -> Box | None:
     """Какой прямоугольник снимать. ``None`` — весь виртуальный стол."""
     if sys.platform != "win32":
         return None
     import ctypes
     from ctypes import wintypes
+
+    if target.isdigit():
+        screens = monitors()
+        index = int(target) - 1
+        # Выход за список сюда не доходит: инструмент проверяет номер раньше и
+        # честно говорит, сколько мониторов есть. Здесь только страховка.
+        return screens[index] if 0 <= index < len(screens) else None
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     handle = user32.GetForegroundWindow()
@@ -299,6 +374,10 @@ class ScreenSkill(Skill):
             "глянь на экран",
             "посмотри на экран и скажи {question}",
             "что на экране {question}",
+            "что на {target} мониторе",
+            "что на {target} экране",
+            "посмотри на {target} монитор",
+            "покажи {target} монитор",
             "what is on the screen",
             "what's on my screen",
             "look at the screen",
@@ -312,14 +391,30 @@ class ScreenSkill(Skill):
         окна, что за программа открыта, что написано в сообщении.
 
         :param question: о чём спросить; пусто — просто описать экран.
-        :param target: ``screen`` — монитор с активным окном, ``window`` — только
-            активное окно, ``all`` — все мониторы сразу.
+        :param target: что снимать. ``screen`` — монитор с активным окном,
+            ``window`` — только активное окно, ``all`` — все мониторы сразу,
+            номер (``1``, ``2``, ``3``) — конкретный монитор слева направо.
         """
         language = detect_language(question, default="ru")
         asked = question_for(question, language)
+        where = normalize_target(target)
+
+        if where.isdigit():
+            # Номер проверяется до снимка: сказать «у тебя один монитор» честнее,
+            # чем молча показать не тот. Первое человек поправит, второго не
+            # заметит.
+            count = len(await asyncio.to_thread(monitors))
+            if int(where) > count:
+                return ToolResult.failure(
+                    f"монитора {where} нет, всего {count}",
+                    speech={
+                        "ru": f"Столько мониторов нет, их {count}.",
+                        "en": f"There is no such monitor, you have {count}.",
+                    },
+                )
 
         try:
-            payload, size = await asyncio.to_thread(capture, normalize_target(target))
+            payload, size = await asyncio.to_thread(capture, where)
         except Exception as exc:  # снять экран может помешать что угодно
             self.context.logger.warning("Снимок экрана не удался: %s", exc)
             return ToolResult.failure(f"снимок экрана не удался: {exc}", speech=_NO_SCREEN)
