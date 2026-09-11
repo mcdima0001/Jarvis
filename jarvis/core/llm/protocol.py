@@ -20,6 +20,9 @@ class Message:
 
     role: str  # system | user | assistant | tool
     content: str
+    #: Картинки к реплике, каждая как ``data:``-URI. Пусто почти всегда: их
+    #: прикладывает только тот, кто смотрит на экран.
+    images: tuple[str, ...] = ()
 
     @classmethod
     def system(cls, content: str) -> "Message":
@@ -27,18 +30,31 @@ class Message:
         return cls(role="system", content=content)
 
     @classmethod
-    def user(cls, content: str) -> "Message":
-        """Реплика пользователя."""
-        return cls(role="user", content=content)
+    def user(cls, content: str, *, images: Sequence[str] = ()) -> "Message":
+        """Реплика пользователя, при необходимости с картинками."""
+        return cls(role="user", content=content, images=tuple(images))
 
     @classmethod
     def assistant(cls, content: str) -> "Message":
         """Реплика ассистента."""
         return cls(role="assistant", content=content)
 
-    def as_dict(self) -> dict[str, str]:
-        """Представление для HTTP-запроса."""
-        return {"role": self.role, "content": self.content}
+    def as_dict(self) -> dict[str, Any]:
+        """Представление для HTTP-запроса.
+
+        **Без картинок форма не меняется вовсе**, и это главное здесь. Составной
+        вид (`content` списком частей) провайдеры понимают наравне со строкой,
+        но проверен он у нас только на зрении, а текстовых запросов система
+        делает тысячи. Менять форму всех ради одного значило бы рисковать всем
+        остальным ради возможности, которая срабатывает раз в день.
+        """
+        if not self.images:
+            return {"role": self.role, "content": self.content}
+        parts: list[dict[str, Any]] = [{"type": "text", "text": self.content}]
+        parts.extend(
+            {"type": "image_url", "image_url": {"url": url}} for url in self.images
+        )
+        return {"role": self.role, "content": parts}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
