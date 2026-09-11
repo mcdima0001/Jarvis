@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from .intent import Intent
+
 #: Реплика инструмента. Четыре вида, от простого к полному:
 #:
 #: * ``"Готово."`` — одна строка на всех;
@@ -33,6 +35,9 @@ class ToolResult:
     :param error: текст ошибки, если ``ok`` ложно.
     :param speech: что произнести пользователю. Либо строка, либо варианты по
         языкам — тогда ответ прозвучит на языке вопроса.
+    :param confirm: что сделать, если владелец ответит «да». Инструмент,
+        которому нужно разрешение, возвращает обычный результат с вопросом в
+        `speech` и намерением здесь; ждать ответа он не умеет и не должен.
     """
 
     ok: bool
@@ -41,6 +46,10 @@ class ToolResult:
     tool: str = ""
     duration: float = 0.0
     speech: Speakable = None
+    #: Намерение, ожидающее согласия. Именно `Intent`, а не что-то особое:
+    #: подтверждённый шаг **не получает новых прав** — он идёт тем же путём,
+    #: что и команда, сказанная вслух с самого начала.
+    confirm: "Intent | None" = None
 
     @classmethod
     def success(
@@ -65,6 +74,23 @@ class ToolResult:
     ) -> "ToolResult":
         """Неудачный результат с описанием причины."""
         return cls(ok=False, error=error, tool=tool, speech=speech, duration=duration)
+
+    @classmethod
+    def asking(
+        cls,
+        confirm: "Intent",
+        *,
+        question: Speakable,
+        value: Any = None,
+        tool: str = "",
+    ) -> "ToolResult":
+        """Вопрос владельцу: сделать ли то, на что не хватает разрешения.
+
+        Результат удачный: инструмент отработал ровно так, как должен был, —
+        дошёл до места, где решает человек, и спросил. Неудачей это было бы,
+        если бы он молча ничего не сделал.
+        """
+        return cls(ok=True, value=value, tool=tool, speech=question, confirm=confirm)
 
     def speech_options(
         self, language: str | None, *, fallback: str = "ru"

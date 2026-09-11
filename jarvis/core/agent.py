@@ -12,12 +12,15 @@
 которыми и лежит.
 
 **Правило «план не даёт новых прав» соблюдается буквально.** Каждый шаг идёт
-через тот же реестр, что и голосовая команда, а необратимый шаг не выполняется
-вовсе: цикл останавливается и говорит, обо что упёрся. Подтверждения голосом
-пока нет, и это осознанный первый шаг — диалог согласия требует состояния между
-репликами, а отказ не требует ничего и не может ошибиться в опасную сторону.
-Владелец, услышав отказ, просто говорит команду напрямую: на прямую команду
-пометка обратимости не влияет.
+через тот же реестр, что и голосовая команда, а необратимый шаг цикл **сам не
+выполняет**: он останавливается и возвращает намерение целиком, вместе с
+аргументами. Спросить о нём — дело вызывающего (`core.plan`), а разрешение
+приходит голосом владельца и ничем не отличается от той же команды, сказанной
+вслух с самого начала. Механика ожидания ответа живёт в `core/pending.py`.
+
+Возвращается именно `Intent`, а не имя инструмента: согласие надо исполнять
+теми же аргументами, о которых спрашивали, иначе «отправить маме?» — «да»
+отправило бы неизвестно что и неизвестно кому.
 
 **Формат переписки нарочно простой.** Родной для провайдеров способ вести
 tool-calling требует хранить в сообщениях и сам вызов, и ответ на него с
@@ -34,6 +37,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping
 
+from jarvis.core.contracts import Intent
 from jarvis.core.errors import LLMError, LLMNotConfigured
 from jarvis.core.llm import Message
 from jarvis.core.tools import ToolRegistry
@@ -110,13 +114,15 @@ class Outcome:
     steps: tuple[Step, ...] = ()
     #: Почему остановились раньше времени. Пусто — дошли сами.
     stopped: str = ""
-    #: Инструмент, который цикл отказался выполнять сам.
-    blocked: str = ""
+    #: Шаг, который цикл не стал делать сам. Целиком намерением, а не одним
+    #: именем: чтобы спросить «сделать это?», надо помнить и аргументы, иначе
+    #: согласие пришлось бы исполнять наугад.
+    blocked: Intent | None = None
 
     @property
     def ok(self) -> bool:
         """Дошёл ли цикл до ответа, не упёршись ни во что."""
-        return not self.stopped and not self.blocked and bool(self.answer)
+        return not self.stopped and self.blocked is None and bool(self.answer)
 
 
 class Planner:
@@ -193,7 +199,12 @@ class Planner:
             # «План не даёт новых прав»: необратимое сам не делаю.
             if not found.spec.unattended:
                 logger.info("Цикл упёрся в необратимый шаг: %s", name)
-                return Outcome(steps=tuple(history), blocked=name)
+                return Outcome(
+                    steps=tuple(history),
+                    blocked=Intent(
+                        tool=name, arguments=dict(call.arguments), resolver="plan"
+                    ),
+                )
 
             signature = f"{name}:{json.dumps(dict(call.arguments), sort_keys=True, ensure_ascii=False)}"
             if signature in seen:

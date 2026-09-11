@@ -15,8 +15,8 @@ import time
 from typing import TYPE_CHECKING, Any, Mapping
 
 from jarvis.core.agent import Outcome, Planner
-from jarvis.core.contracts import ToolResult
-from jarvis.core.jobs import Jobs, busy_line
+from jarvis.core.contracts import Intent, ToolResult
+from jarvis.core.jobs import Jobs, busy_line, shorten
 from jarvis.core.jobs import describe as describe_jobs
 from jarvis.core.llm import LLMService
 from jarvis.core.memory import Memory
@@ -99,6 +99,35 @@ def _stt_spending(stt: Any) -> tuple[int, float]:
 
 #: Что сказать, если план дошёл до конца, но своих слов у него не нашлось.
 _DONE_PLAIN = {"ru": "Готово.", "en": "Done."}
+
+
+#: Сколько текста аргументов уместно произнести в вопросе.
+STEP_LIMIT = 120
+
+
+def _describe_step(intent: "Intent", registry: ToolRegistry) -> str:
+    """Назвать шаг так, чтобы вопрос о нём можно было понять на слух.
+
+    Имя инструмента для этого не годится: «memory.remember» на слух не значит
+    ничего. Берётся **описание из каталога** — та самая строка, по которой
+    инструмент выбирает модель, то есть человеческая по определению.
+
+    Значения аргументов в вопрос нужны, а их названия нет: соглашаются на то,
+    что будет сделано, а не на устройство вызова.
+    """
+    found = registry.get(intent.tool)
+    what = (found.spec.description if found else intent.tool).rstrip(".")
+    # Описание начинается с заглавной («Записать факт в журнал»), а встаёт оно
+    # в середину фразы «дальше нужно …». На письме это мелочь, на слух — ничто,
+    # но в логе выглядит опечаткой, а логи тут читают.
+    if what[:1].isupper() and not what[:2].isupper():
+        what = what[0].lower() + what[1:]
+    shown = ", ".join(
+        str(value) for value in intent.arguments.values() if str(value).strip()
+    )
+    if not shown:
+        return what
+    return f"{what}: {shorten(shown, limit=STEP_LIMIT)}"
 
 
 def _steps_done(outcome: "Outcome", language: str) -> str:
@@ -217,18 +246,21 @@ class CoreTools:
 
         outcome = await self._planner().run(goal, language=code)
 
-        # Упёрлись в необратимое. Отказ здесь честнее подтверждения: диалог
-        # согласия требует состояния между репликами, а владельцу достаточно
-        # сказать ту же команду напрямую — на прямую команду пометка не влияет.
-        if outcome.blocked:
+        # Упёрлись в необратимое — спрашиваем. Разрешение приходит голосом
+        # владельца, и подтверждённый шаг не получает никаких особых прав: он
+        # идёт тем же путём, что и та же команда, сказанная вслух сразу.
+        if outcome.blocked is not None:
             done = _steps_done(outcome, code)
-            return ToolResult.success(
-                {"steps": [step.tool for step in outcome.steps], "blocked": outcome.blocked},
-                speech={
-                    "ru": f"{done}Дальше нужно «{outcome.blocked}», а такое сам не делаю. "
-                          f"Скажи напрямую, и выполню.",
-                    "en": f"{done}Next would be '{outcome.blocked}', which I won't do on my "
-                          f"own. Tell me directly and I will.",
+            what = _describe_step(outcome.blocked, self._registry)
+            return ToolResult.asking(
+                outcome.blocked,
+                value={
+                    "steps": [step.tool for step in outcome.steps],
+                    "blocked": outcome.blocked.tool,
+                },
+                question={
+                    "ru": f"{done}Дальше нужно {what}. Делать?",
+                    "en": f"{done}Next step is {what}. Shall I?",
                 },
             )
 
@@ -299,11 +331,15 @@ class CoreTools:
         задачи был план, — завтра там окажется что-нибудь другое.
         """
         outcome = await self._planner().run(goal, language=language)
-        if outcome.blocked:
+        if outcome.blocked is not None:
+            # В фоне спрашивать не у кого: человек занят другим и на вопрос,
+            # прозвучавший через пять минут, отвечать не готов. Докладываем, обо
+            # что упёрлись, и ждём прямой команды.
+            what = _describe_step(outcome.blocked, self._registry)
             return (
-                f"дошёл до шага «{outcome.blocked}», а такое сам не делаю"
+                f"дошёл до шага {what}, а такое сам не делаю"
                 if language == "ru"
-                else f"got to '{outcome.blocked}', which I won't do on my own"
+                else f"got as far as {what}, which I won't do on my own"
             )
         if outcome.stopped:
             return outcome.stopped

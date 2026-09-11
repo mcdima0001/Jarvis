@@ -1286,3 +1286,55 @@ async def test_zero_threshold_turns_the_filler_off(
     await task
 
     assert tts.said == ["Готово, всё сделал."]
+
+
+# --- вопрос ждёт ответа без имени -------------------------------------------
+
+
+class Asks:
+    """Инструмент, которому нужно разрешение."""
+
+    @tool(phrases=["напиши маме"], reversible=True)
+    async def compose(self) -> ToolResult:
+        """Собрать сообщение и спросить."""
+        from jarvis.core.contracts import Intent
+
+        return ToolResult.asking(
+            Intent(tool="asks.send", arguments={"text": "буду через час"}),
+            question="Отправить маме «буду через час»?",
+        )
+
+    @tool(reversible=False)
+    async def send(self, text: str = "") -> ToolResult:
+        """Отправить сообщение."""
+        return ToolResult.success({"sent": text}, speech="Отправил.")
+
+
+async def test_own_question_opens_a_wide_window(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Спросив, ассистент ждёт ответа долго и без повторного обращения по имени.
+
+    Обычных десяти секунд мало: человеку, которого спросили «отправить маме?»,
+    надо успеть подумать. А требовать при этом снова звать по имени значит
+    сделать переспрашивание неудобнее, чем просто повторить команду.
+    """
+    from jarvis.core.pending import TTL
+
+    for item in collect_tools(Asks(), namespace="asks"):
+        registry.register(item)
+    pipeline = _pipeline(registry, events, tts=RecordingTTS())
+
+    before = time.time()
+    result = await pipeline.handle(Utterance(text="напиши маме", source="text"))
+
+    assert result.confirm is not None
+    assert pipeline._follow_up_until >= before + TTL - 1
+
+
+async def test_ordinary_command_does_not_open_the_wide_window(
+    pipeline: VoicePipeline
+) -> None:
+    """Обычная команда окно не трогает: вопроса не было, ждать нечего."""
+    await pipeline.handle(Utterance(text="включи свет", source="text"))
+    assert pipeline._follow_up_until == 0.0

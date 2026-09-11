@@ -46,6 +46,7 @@ from jarvis.core.contracts import (
     VoiceCommandRecognized,
     WakeWordDetected,
 )
+from jarvis.core.pending import TTL as PENDING_TTL
 from jarvis.core.persona import DONE, FAILED, LISTENING, WORKING, Persona
 from jarvis.core.router import Dispatcher
 from jarvis.core.state import DEAF, Modes, wakes_up
@@ -233,7 +234,26 @@ class VoicePipeline:
         ) or self._describe(result, utterance.language)
         if reply:
             await self._say(reply, language=utterance.language)
+
+        if result.confirm is not None:
+            self._await_answer()
         return result
+
+    def _await_answer(self) -> None:
+        """Открыть окно пошире: ассистент сам задал вопрос и ждёт ответа.
+
+        Обычные десять секунд тут не годятся. Человеку, которого спросили
+        «отправить маме?», надо успеть подумать, а требовать при этом снова
+        звать по имени — значит сделать переспрашивание неудобнее, чем просто
+        повторить команду, то есть бессмысленным.
+
+        Отсчёт от `_mute_until`, а не от «сейчас», по той же причине, что и у
+        окна после «Слушаю»: пока вопрос звучит, время идти не должно.
+        """
+        self._follow_up_until = max(
+            self._follow_up_until, self._mute_until + PENDING_TTL
+        )
+        logger.info("Задал вопрос, жду ответа без имени %.0f с", PENDING_TTL)
 
     async def _run(self, utterance: Utterance) -> ToolResult:
         """Выполнить команду, а если она затянулась — сказать, что работаем.

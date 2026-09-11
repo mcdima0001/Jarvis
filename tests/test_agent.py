@@ -172,18 +172,22 @@ async def test_result_of_each_step_reaches_the_model(
 async def test_irreversible_step_is_refused_not_performed(
     studio: tuple[Studio, ToolRegistry]
 ) -> None:
-    """Необратимый шаг цикл не выполняет и честно говорит, обо что упёрся.
+    """Необратимый шаг цикл не выполняет, а возвращает целиком — вместе с
+    аргументами.
 
-    Главное правило всей затеи. Отказ выбран вместо подтверждения намеренно:
-    диалог согласия требует состояния между репликами, а отказ не требует
-    ничего и не может ошибиться в опасную сторону.
+    Главное правило всей затеи. Спрашивать о шаге — дело вызывающего; цикл лишь
+    останавливается и говорит, обо что упёрся.
     """
     skill, registry = studio
     planner = _planner(registry, [("studio.send_message", {"text": "привет"}), "не дойдёт"])
 
     outcome = await planner.run("напиши маме")
 
-    assert outcome.blocked == "studio.send_message"
+    assert outcome.blocked is not None
+    assert outcome.blocked.tool == "studio.send_message"
+    # Аргументы сохраняются целиком: согласие исполняется ровно тем, о чём
+    # спрашивали, иначе «отправить маме?» — «да» отправило бы неизвестно что.
+    assert outcome.blocked.arguments == {"text": "привет"}
     assert not outcome.ok
     assert "send_message" not in skill.calls
 
@@ -201,7 +205,7 @@ async def test_steps_before_the_block_are_reported(
 
     assert skill.calls == ["now_playing"]
     assert [step.tool for step in outcome.steps] == ["studio.now_playing"]
-    assert outcome.blocked == "studio.send_message"
+    assert outcome.blocked is not None and outcome.blocked.tool == "studio.send_message"
 
 
 async def test_plan_and_chat_are_hidden_from_the_loop(

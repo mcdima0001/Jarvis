@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from typing import Any, Mapping
 
 from jarvis.core.bus import EventBus
@@ -167,14 +168,11 @@ class ToolRegistry:
             result = ToolResult.failure(f"{type(exc).__name__}: {exc}", tool=name)
 
         duration = time.perf_counter() - started
-        result = ToolResult(
-            ok=result.ok,
-            value=result.value,
-            error=result.error,
-            tool=name,
-            duration=duration,
-            speech=result.speech,
-        )
+        # Копия с заменой, а не сборка по полям. Пересчитывать поля руками —
+        # значит терять каждое новое: так молча пропало `confirm`, и вопрос
+        # «отправить маме?» переставал быть вопросом на пути от инструмента к
+        # диспетчеру.
+        result = replace(result, tool=name, duration=duration)
 
         if self._events is not None:
             self._events.emit(

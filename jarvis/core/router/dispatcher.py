@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from jarvis.core.bus import EventBus
 from jarvis.core.contracts import AssistantReplied, Intent, ToolResult, Utterance
 from jarvis.core.errors import ToolNotFound
+from jarvis.core.pending import Pending, answer
 from jarvis.core.tools import ToolRegistry
 
 from .resolvers import LearnedResolver
@@ -48,6 +49,13 @@ _NOT_UNDERSTOOD = {
     "en": "Sorry, I didn't catch that. Could you rephrase?",
 }
 
+#: Ответ на отказ от подтверждения. Короткий намеренно: человек сказал «нет»,
+#: и обсуждать тут нечего.
+_DROPPED = {
+    "ru": ("Хорошо, отменил.", "Понял, не делаю.", "Как скажешь."),
+    "en": ("All right, cancelled.", "Understood, skipping it."),
+}
+
 
 class Dispatcher:
     """Проводит реплику через роутер и реестр инструментов."""
@@ -69,6 +77,11 @@ class Dispatcher:
         #: Куда записывать «что просили в прошлый раз». Диспетчер тут
         #: единственный уместный: он один знает и намерение, и чем всё кончилось.
         self._situation = situation
+        #: Заданный вопрос, ждущий ответа. Единственное состояние между
+        #: репликами во всей системе, и живёт оно здесь по той же причине:
+        #: диспетчер — единственный, через кого проходит **каждая** реплика,
+        #: откуда бы она ни пришла.
+        self._pending: Pending | None = None
 
     async def forget_unknown(self) -> tuple[str, ...]:
         """Вычистить выученное, ведущее на исчезнувшие инструменты.
@@ -171,24 +184,95 @@ class Dispatcher:
                 )
 
             self._remember(utterance, intent.tool, result.ok)
-            if not result.ok:
+            self._note_question(utterance, result)
+            if not result.ok or result.confirm is not None:
+                # Вопрос обрывает цепочку так же, как неудача: продолжать, не
+                # дождавшись ответа, значило бы выполнить остаток вслепую.
                 logger.info(
                     "Цепочка прервана на %d-й команде (%s): %s",
                     number,
                     intent.tool,
-                    result.error,
+                    result.error or "жду подтверждения",
                 )
-                return result
+                return self._voiced(utterance, result)
 
-        spoken = result.speech_for(utterance.language)
-        if self._events is not None and spoken:
-            self._events.emit(
-                AssistantReplied(source="dispatcher", text=spoken, spoken=False)
+        return self._voiced(utterance, result)
+
+    @property
+    def awaiting(self) -> Pending | None:
+        """Вопрос, на который ждут ответа. Пусто — ничего не ждём."""
+        return self._pending
+
+    async def _settle(self, utterance: Utterance) -> ToolResult | None:
+        """Прочитать реплику как ответ на заданный вопрос.
+
+        :return: результат, если реплика оказалась ответом; иначе ``None`` — и
+            тогда она идёт обычным путём.
+
+        **Вопрос снимается в любом случае**, даже если ответом реплика не
+        оказалась. Висящий вопрос опаснее забытого: сказанное через минуту «да»
+        по другому поводу выполнило бы то, о чём никто уже не помнит.
+        """
+        question = self._pending
+        if question is None:
+            return None
+        self._pending = None
+
+        if not question.alive():
+            logger.info("Вопрос про %s протух, ответа не жду", question.intent.tool)
+            return None
+
+        said = answer(utterance.text)
+        if said is None:
+            logger.info("Реплика %r не ответ — снимаю вопрос", utterance.text)
+            return None
+
+        if not said:
+            logger.info("Владелец отказался от %s", question.intent.tool)
+            return ToolResult.success(
+                {"confirmed": False, "tool": question.intent.tool}, speech=_DROPPED
             )
+
+        # Согласие и есть разрешение: дальше всё идёт ровно так же, как если бы
+        # эту команду сказали вслух с самого начала.
+        logger.info("Владелец подтвердил %s", question.intent.tool)
+        return await self._call(utterance, question.intent)
+
+    def _note_question(self, utterance: Utterance, result: ToolResult) -> None:
+        """Запомнить вопрос, если инструмент его задал."""
+        if result.confirm is None:
+            return
+        self._pending = Pending.about(
+            result.confirm,
+            question=result.speech_for(utterance.language) or "",
+            language=utterance.language or "ru",
+        )
+        logger.info("Жду подтверждения на %s", result.confirm.tool)
+
+    async def _call(self, utterance: Utterance, intent: Intent) -> ToolResult:
+        """Выполнить намерение и разобраться с последствиями.
+
+        Общее место для обычного разбора и для подтверждённого шага: иначе
+        «запомнить вопрос» и «отметить команду в обстановке» пришлось бы писать
+        дважды, и однажды они разъехались бы.
+        """
+        try:
+            result = await self._registry.invoke(intent.tool, intent.arguments)
+        except ToolNotFound as exc:
+            logger.error("Роутер выбрал несуществующий инструмент: %s", exc)
+            self._remember(utterance, intent.tool, False)
+            return ToolResult.failure(str(exc), tool=intent.tool, speech=_NOT_UNDERSTOOD)
+
+        self._remember(utterance, intent.tool, result.ok)
+        self._note_question(utterance, result)
         return result
 
     async def handle(self, utterance: Utterance) -> ToolResult:
         """Обработать реплику целиком и вернуть результат."""
+        settled = await self._settle(utterance)
+        if settled is not None:
+            return self._voiced(utterance, settled)
+
         chain = await self._chain(utterance)
         if chain is not None:
             return await self._run_chain(utterance, chain)
@@ -202,14 +286,7 @@ class Dispatcher:
                 speech=_NOT_UNDERSTOOD,
             )
 
-        try:
-            result = await self._registry.invoke(intent.tool, intent.arguments)
-        except ToolNotFound as exc:
-            logger.error("Роутер выбрал несуществующий инструмент: %s", exc)
-            self._remember(utterance, intent.tool, False)
-            return ToolResult.failure(str(exc), tool=intent.tool, speech=_NOT_UNDERSTOOD)
-
-        self._remember(utterance, intent.tool, result.ok)
+        result = await self._call(utterance, intent)
 
         # Модель разобрала фразу, инструмент отработал — связка проверена
         # делом, и со второго раза она обойдётся без модели. Записывается
@@ -217,6 +294,10 @@ class Dispatcher:
         if self._learner is not None and result.ok and intent.resolver == "llm":
             await self._learner.remember(utterance.text, intent)
 
+        return self._voiced(utterance, result)
+
+    def _voiced(self, utterance: Utterance, result: ToolResult) -> ToolResult:
+        """Сообщить шине, что ответ сформирован, и вернуть его как есть."""
         spoken = result.speech_for(utterance.language)
         if self._events is not None and spoken:
             self._events.emit(
