@@ -18,6 +18,7 @@ from jarvis.core.tools import ToolRegistry
 from .scope import SkillScope
 
 if TYPE_CHECKING:  # только для типов — реальных зависимостей не создаём
+    from jarvis.core.attention import Announcer
     from jarvis.core.llm import LLMService
     from jarvis.core.memory import Memory
     from jarvis.core.situation import Situation
@@ -51,6 +52,10 @@ class SkillContext:
     root: Path
     modes: "Modes"
     situation: "Situation"
+    #: Куда предлагать реплики, о которых не спрашивали («тебе написали»).
+    #: Именно предлагать: говорить или придержать, решает политика, а не скилл.
+    #: Скилл знает, что случилось; уместность знает одно место на всю систему.
+    announcer: "Announcer"
 
     def setting(self, key: str, default: Any = None) -> Any:
         """Достать значение из конфига скилла."""

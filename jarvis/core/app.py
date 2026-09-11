@@ -14,6 +14,7 @@ import signal
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from jarvis.core.attention import NORMAL, Announcer
 from jarvis.core.audio import AudioStack, build_audio
 from jarvis.core.builtin import NAMESPACE as CORE_NAMESPACE
 from jarvis.core.builtin import CoreTools
@@ -77,6 +78,15 @@ def _quiet_broken_connections() -> None:
             previous(target, context)
 
     loop.set_exception_handler(handler)
+
+
+def _offer(announcer: Announcer, text: str, language: str) -> None:
+    """Отдать доклад политике, ничего не возвращая.
+
+    Решение политики (сказала, придержала, отбросила) здесь не нужно: `Jobs`
+    докладывает и идёт дальше, а что с докладом стало — видно в логе.
+    """
+    announcer.offer(text, importance=NORMAL, language=language)
 
 
 @dataclass(slots=True)
@@ -146,6 +156,19 @@ class JarvisApp:
         stt = build_stt(config.stt, worker)
         tts = build_tts(config.tts, worker, sink=audio.sink)
 
+        # Политика «когда уместно заговорить самому». Одна на всю систему:
+        # каждый, кому есть что сказать без вопроса, знает только **что**
+        # случилось, а уместность — не его дело.
+        announcer = Announcer(
+            events=events,
+            modes=modes,
+            enabled=config.attention.enabled,
+            quiet_from=config.attention.quiet_from,
+            quiet_to=config.attention.quiet_to,
+            min_gap_s=config.attention.min_gap_s,
+            repeat_after_s=config.attention.repeat_after_s,
+        )
+
         skills = SkillManager(
             config=config.skills,
             events=events,
@@ -154,6 +177,7 @@ class JarvisApp:
             llm=llm,
             tts=tts,
             root=config.root,
+            announcer=announcer,
             modes=modes,
             situation=situation,
         )
@@ -194,7 +218,13 @@ class JarvisApp:
         # Фоновые поручения. Ставятся до инструментов ядра, потому что
         # `core.later` без них не имеет смысла, и до конвейера — доклад уходит
         # событием, которое конвейер подхватит подпиской.
-        jobs = Jobs(events=events)
+        #
+        # Доклад идёт через политику, а не прямо в шину: человек мог за это
+        # время попросить не отвлекать, и тогда доклад подождёт разговора.
+        jobs = Jobs(
+            events=events,
+            notify=lambda text, language: _offer(announcer, text, language),
+        )
 
         core_tools = CoreTools(
             llm=llm,
@@ -223,6 +253,7 @@ class JarvisApp:
             config=config.audio,
             persona=persona,
             modes=modes,
+            announcer=announcer,
         )
 
         runner = ServiceRunner()

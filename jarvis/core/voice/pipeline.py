@@ -26,6 +26,7 @@ import logging
 import time
 from typing import Any
 
+from jarvis.core.attention import Announcer
 from jarvis.core.audio import (
     VAD,
     AlwaysActiveWakeWord,
@@ -79,6 +80,7 @@ class VoicePipeline:
         config: AudioConfig,
         persona: Persona | None = None,
         modes: Modes | None = None,
+        announcer: "Announcer | None" = None,
     ) -> None:
         self._source = source
         self._sink = sink
@@ -96,6 +98,10 @@ class VoicePipeline:
         #: только тут, потому что гейт обязан стоять **до** роутера. Проверять
         #: его в инструменте было бы поздно: реплика уже уехала бы в модель.
         self._modes = modes if modes is not None else Modes()
+        #: Политика речи без вопроса. Конвейеру она нужна не чтобы решать, а
+        #: чтобы **досказывать**: придержанное произносится при первом же
+        #: разговоре, когда владелец заведомо рядом и слушает.
+        self._announcer = announcer if announcer is not None else Announcer()
 
         # Вместе со звуком храним момент, когда он прозвучал: окно ответа
         # должно отсчитываться от речи, а не от того, когда до неё дошли руки.
@@ -237,6 +243,14 @@ class VoicePipeline:
 
         if result.confirm is not None:
             self._await_answer()
+        else:
+            # Владелец сам заговорил — значит он рядом и слушает. Лучшего
+            # момента досказать придержанное не будет: будить его ради
+            # накопленных новостей было бы ровно тем, от чего политика и
+            # защищает. Во время незакрытого вопроса молчим: вклиниваться со
+            # сторонними новостями между вопросом и ответом — верный способ
+            # сбить человека.
+            self._announcer.flush(language=utterance.language or "ru")
         return result
 
     def _await_answer(self) -> None:

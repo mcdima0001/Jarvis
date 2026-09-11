@@ -397,6 +397,23 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AttentionConfig:
+    """Когда ассистенту уместно заговорить самому."""
+
+    #: Выключатель всей речи без вопроса. Выключено — придерживается всё, кроме
+    #: самого срочного; потерять при этом ничего нельзя, придержанное
+    #: досказывается при следующем разговоре.
+    enabled: bool = True
+    #: Время тишины, «ЧЧ:ММ». Пустые строки — тишины нет.
+    quiet_from: str = ""
+    quiet_to: str = ""
+    #: Сколько молчать между репликами без вопроса, секунд.
+    min_gap_s: float = 60.0
+    #: Через сколько секунд та же самая реплика перестаёт считаться повтором.
+    repeat_after_s: float = 600.0
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class JarvisConfig:
     """Корень конфигурации."""
 
@@ -413,3 +430,4 @@ class JarvisConfig:
     audio: AudioConfig
     persona: PersonaConfig
     memory: MemoryConfig
+    attention: AttentionConfig = field(default_factory=AttentionConfig)

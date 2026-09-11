@@ -4,6 +4,7 @@ from .loader import DEFAULT_CONFIG_PATH, load_config, load_dotenv
 from .schema import (
     AECConfig,
     AppConfig,
+    AttentionConfig,
     AudioConfig,
     JarvisConfig,
     LLMConfig,
@@ -22,6 +23,7 @@ from .schema import (
 )
 
 __all__ = [
+    "AttentionConfig",
     "DEFAULT_CONFIG_PATH",
     "AppConfig",
     "AudioConfig",

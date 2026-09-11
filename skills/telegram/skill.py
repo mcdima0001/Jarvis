@@ -36,6 +36,7 @@ import difflib
 from dataclasses import dataclass
 from typing import Any, ClassVar, Sequence
 
+from jarvis.core.attention import LOW
 from jarvis.core.contracts import Event, ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.text import best_match, squash, starts
@@ -50,6 +51,22 @@ MIN_PREFIX = 3
 
 #: Сколько диалогов держать в списке для сопоставления имён.
 DIALOG_LIMIT = 100
+
+#: Сколько текста сообщения проговаривать. Длинное вслух не зачитывают: это
+#: уведомление о том, что написали, а не чтение переписки — для чтения есть
+#: «прочитай, что пишет мама».
+PREVIEW = 80
+
+
+def announcement(chat: str, text: str) -> str:
+    """Как сообщить о входящем вслух."""
+    clean = " ".join(text.split())
+    if not clean:
+        return f"{chat} что-то прислал в телеграме."
+    if len(clean) > PREVIEW:
+        clean = clean[: PREVIEW - 1].rstrip() + "…"
+    return f"{chat} пишет: {clean}"
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TelegramMessageReceived(Event):
@@ -141,6 +158,9 @@ class TelegramSkill(Skill):
         )
         #: Сообщать ли о новых сообщениях событием в шину.
         self._notify = bool(self.context.setting("notify", True))
+        #: Проговаривать ли входящие вслух. Отдельно от `notify`: событие в
+        #: шине никому не мешает, а речь без вопроса мешает очень.
+        self._speak_incoming = bool(self.context.setting("announce", False))
         self._history = int(self.context.setting("history", 50))
 
         self._client: Any = None
@@ -210,13 +230,24 @@ class TelegramSkill(Skill):
             client.add_event_handler(self._on_message, events.NewMessage(incoming=True))
 
     async def _on_message(self, event: Any) -> None:
-        """Новое сообщение — это факт, и он уходит в шину."""
+        """Новое сообщение — это факт: он уходит в шину и, может быть, вслух."""
         try:
             chat = await event.get_chat()
             name = getattr(chat, "title", None) or getattr(chat, "first_name", "") or "?"
+            text = event.raw_text or ""
             self.events.emit(
-                TelegramMessageReceived(source="telegram", chat=str(name), text=event.raw_text or "")
+                TelegramMessageReceived(source="telegram", chat=str(name), text=text)
             )
+            if self._speak_incoming:
+                # Скилл знает **что** случилось; уместно ли сейчас говорить,
+                # решает политика. Своего суждения об этом у него нет и быть не
+                # должно: иначе каждый источник новостей заведёт своё, и они
+                # разъедутся.
+                self.context.announcer.offer(
+                    announcement(str(name), text),
+                    importance=LOW,
+                    language="ru",
+                )
         except Exception as exc:  # noqa: BLE001 — сбой обработчика не рвёт связь
             self.log.debug("Не разобрал входящее сообщение: %s", exc)
 

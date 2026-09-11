@@ -19,6 +19,7 @@ from jarvis.core.errors import ConfigError
 from .schema import (
     AECConfig,
     AppConfig,
+    AttentionConfig,
     AudioConfig,
     JarvisConfig,
     LLMConfig,
@@ -220,6 +221,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
     audio = _section(data, "audio")
     persona = _section(data, "persona")
     memory = _section(data, "memory")
+    attention = _section(data, "attention")
 
     return JarvisConfig(
         root=project_root,
@@ -255,6 +257,13 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             learn_commands=bool(router.get("learn_commands", True)),
             learned_section=str(router.get("learned_section", "commands")),
             situation=bool(router.get("situation", True)),
+        ),
+        attention=AttentionConfig(
+            enabled=bool(attention.get("enabled", True)),
+            quiet_from=str(attention.get("quiet_from") or ""),
+            quiet_to=str(attention.get("quiet_to") or ""),
+            min_gap_s=float(attention.get("min_gap_s", 60.0)),
+            repeat_after_s=float(attention.get("repeat_after_s", 600.0)),
         ),
         llm=_build_llm(_section(data, "llm")),
         stt=STTConfig(

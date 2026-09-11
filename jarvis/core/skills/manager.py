@@ -32,6 +32,7 @@ from .loader import find_skill_class, import_module
 from .scope import SkillScope
 
 if TYPE_CHECKING:
+    from jarvis.core.attention import Announcer
     from jarvis.core.llm import LLMService
     from jarvis.core.memory import Memory
     from jarvis.core.tts import TTS
@@ -75,6 +76,7 @@ class SkillManager:
         root: Path,
         modes: "Modes | None" = None,
         situation: "Situation | None" = None,
+        announcer: "Announcer | None" = None,
     ) -> None:
         self._config = config
         self._events = events
@@ -83,6 +85,10 @@ class SkillManager:
         self._llm = llm
         self._tts = tts
         self._root = root
+        # Своего заводить нельзя: политика «когда говорить» одна на систему.
+        from jarvis.core.attention import Announcer as _Announcer
+
+        self._announcer = announcer if announcer is not None else _Announcer()
         # Свои — только чтобы менеджер собирался в тесте, где состояние
         # системы не при чём. В живой сборке приходят снаружи: те же объекты
         # читают конвейер и резолвер модели.
@@ -226,6 +232,7 @@ class SkillManager:
             root=self._root,
             modes=self._modes,
             situation=self._situation,
+            announcer=self._announcer,
         )
 
         try:

@@ -112,3 +112,34 @@ def test_unread_is_spoken_like_a_human() -> None:
 
     assert said == "Непрочитано в 2: Мама, Работа — 4."
     assert telegram.describe_dialogs([]) == "Новых сообщений нет."
+
+
+# --- как сообщают о входящем ------------------------------------------------
+
+
+def test_incoming_is_announced_with_a_preview() -> None:
+    """Вслух идёт кто написал и начало сообщения.
+
+    Целиком зачитывать нельзя: это уведомление о том, что написали, а не чтение
+    переписки — для чтения есть отдельная команда.
+    """
+    said = telegram.announcement("Мама", "буду дома к семи, купи хлеба")
+    assert said == "Мама пишет: буду дома к семи, купи хлеба"
+
+
+def test_long_message_is_cut() -> None:
+    """Длинное режется и помечается многоточием."""
+    said = telegram.announcement("Чат", "а" * 500)
+    assert len(said) < 120
+    assert said.endswith("…")
+
+
+def test_message_without_text_is_still_announced() -> None:
+    """Картинка или стикер — тоже повод сказать, что написали."""
+    assert telegram.announcement("Вася", "") == "Вася что-то прислал в телеграме."
+    assert telegram.announcement("Вася", "   ").endswith("прислал в телеграме.")
+
+
+def test_line_breaks_do_not_leak_into_speech() -> None:
+    """Перевод строки в реплике синтезу не нужен и звучит паузой не там."""
+    assert "\n" not in telegram.announcement("Чат", "первая\nвторая")

@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from jarvis.core.attention import Announcer
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import MemoryConfig
 from jarvis.core.memory import build_memory
@@ -164,6 +165,7 @@ def _skill(tmp_path: Path, events: LocalEventBus, registry: ToolRegistry) -> Any
         root=tmp_path,
         modes=modes,
         situation=Situation(modes=modes),
+        announcer=Announcer(events=events, modes=modes),
     )
     return skill, context
 
@@ -431,6 +433,7 @@ async def test_missing_memory_section_does_not_break_the_skill(
             root=context.root,
             modes=context.modes,
             situation=context.situation,
+            announcer=context.announcer,
         )
     )
     for item in collect_tools(skill, namespace="reminders"):
