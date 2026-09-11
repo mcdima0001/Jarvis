@@ -121,19 +121,21 @@ def test_unrelated_phrase_is_not_a_call(pipeline: VoicePipeline) -> None:
     assert command == "передай отвёртку"
 
 
-def test_name_said_twice_is_stripped_twice(pipeline: VoicePipeline) -> None:
-    """Имя произносят дважды: позвали и повторили внутри фразы."""
+def test_doubled_name_is_stripped_twice(pipeline: VoicePipeline) -> None:
+    """Расшифровка выдала имя дважды — снимаются оба написания."""
     called, command = pipeline._strip_wake("Джарвис Джарвис включи свет")
     assert called
     assert command == "включи свет"
 
 
-def test_misheard_second_name_is_stripped_too(pipeline: VoicePipeline) -> None:
-    """Второе имя обычно приезжает искажённым — и всё равно это имя.
+def test_second_guess_at_the_name_is_stripped_too(pipeline: VoicePipeline) -> None:
+    """Второе написание обычно искажено — и всё равно это то же имя.
 
-    Живой пример из лога: «Джарвис Прарвисская дела» вместо «Джарвис, Джарвис,
-    как дела». Раньше «Прарвисская» уезжала в модель вместе с командой, стоила
-    денег и получала ответ невпопад.
+    Имя при этом произнесено **один раз**: на плохо расслышанном коротком
+    обращении Deepgram выдаёт подряд две догадки об одном слове. Живые примеры
+    из лога: «Джарвис Прарвисская дела» на сказанное «Джарвис, как дела» и
+    «Тарвис Тарвис на паузу». Раньше вторая догадка уезжала в модель вместе с
+    командой, стоила денег и получала ответ невпопад.
     """
     called, command = pipeline._strip_wake("Джарвис Прарвисская дела")
     assert called
@@ -144,10 +146,10 @@ def test_misheard_second_name_is_stripped_too(pipeline: VoicePipeline) -> None:
     assert command == "на паузу"
 
 
-def test_only_one_echo_is_dropped(pipeline: VoicePipeline) -> None:
+def test_only_one_extra_name_is_dropped(pipeline: VoicePipeline) -> None:
     """Убирается ровно одно слово, а не всё похожее подряд.
 
-    Имя говорят два раза, а не пять; ошибись порог — и фраза уехала бы целиком.
+    Догадок бывает две, а не пять; ошибись порог — и фраза уехала бы целиком.
     """
     called, command = pipeline._strip_wake("Джарвис Джарвис Джарвис громче")
     assert called
@@ -166,8 +168,8 @@ def test_command_word_is_not_mistaken_for_the_name(pipeline: VoicePipeline) -> N
     assert command == "давай включим музыку"
 
 
-def test_name_said_twice_and_nothing_else(pipeline: VoicePipeline) -> None:
-    """«Джарвис, Джарвис» — это зов, а не команда из одного слова."""
+def test_two_guesses_and_nothing_else(pipeline: VoicePipeline) -> None:
+    """«Дарвис Драйвис» — это одно слово, услышанное дважды, а не команда."""
     called, command = pipeline._strip_wake("Дарвис Драйвис")
     assert called
     assert command == ""
