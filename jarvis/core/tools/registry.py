@@ -23,6 +23,7 @@ from jarvis.core.contracts import ToolCompleted, ToolInvoked, ToolResult
 from jarvis.core.errors import ToolInvalidArguments, ToolNotFound
 from jarvis.core.tools.schema import validate_arguments
 from jarvis.core.tools.tool import Tool, ToolCatalog, ToolSpec
+from jarvis.core.tts.normalize import plural_form
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,15 @@ class ToolRegistry:
             )
         except asyncio.TimeoutError:
             logger.error("Инструмент %s не ответил за %.1f с", name, timeout)
-            result = ToolResult.failure(f"Инструмент не ответил за {timeout:.0f} с", tool=name)
+            # Полным словом, а не «с»: реплика произносится вслух, и
+            # сокращение синтез читает буквой. Поймано на живом запуске:
+            # «инструмент не ответил за тридцать с».
+            seconds = int(timeout)
+            result = ToolResult.failure(
+                f"Инструмент не ответил за {seconds} "
+                f"{plural_form(seconds, ('секунду', 'секунды', 'секунд'))}",
+                tool=name,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

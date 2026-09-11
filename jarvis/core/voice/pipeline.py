@@ -46,6 +46,7 @@ from jarvis.core.contracts import (
     Utterance,
     VoiceCommandRecognized,
     WakeWordDetected,
+    detect_language,
 )
 from jarvis.core.pending import TTL as PENDING_TTL
 from jarvis.core.persona import DONE, FAILED, LISTENING, WORKING, Persona
@@ -121,6 +122,10 @@ class VoicePipeline:
         #: поднялась ли настоящая модель: заглушка в этом слоте отвечает «да»
         #: на любой кадр, и спрашивать её означало бы срабатывать всегда.
         self._acoustic = not isinstance(wake_word, AlwaysActiveWakeWord)
+        #: Пускать в распознавание только сказанное после имени. Без настоящей
+        #: акустической модели бессмысленно: звать было бы нечем, и ассистент
+        #: оглох бы совсем.
+        self._gate = self._acoustic and config.wake_word.recognize_after_name
         self._speaking = False
         self._mute_until = 0.0
         #: Отклик на распознанную команду: PCM и частота, либо None.
@@ -499,6 +504,12 @@ class VoicePipeline:
             logger.debug("Фрагмент слишком короткий (%d байт), пропускаю", len(audio))
             return
         spoken_at = time.time() - len(audio) / 2 / self._config.sample_rate
+        if not self._worth_recognising(spoken_at):
+            logger.debug(
+                "Имени не было — фрагмент %.1f с не расшифровываю",
+                len(audio) / 2 / self._config.sample_rate,
+            )
+            return
         try:
             self._pending.put_nowait((audio, spoken_at))
         except asyncio.QueueFull:
@@ -511,6 +522,25 @@ class VoicePipeline:
                 "модель (stt.model)",
                 len(audio) / 2 / self._config.sample_rate,
             )
+
+    def _worth_recognising(self, spoken_at: float) -> bool:
+        """Расшифровывать ли этот фрагмент вообще.
+
+        Раньше в распознавание уходила **любая** речь в комнате, а имя искали
+        уже в готовом тексте. Платили за это дважды: чужой разговор уезжал в
+        облако, и за него шёл счёт. Теперь имя ловится по звуку **до** всякой
+        расшифровки, и спрашивать текст незачем — достаточно знать, звали ли нас.
+
+        Сравнение с окном ответа, а не с отдельной отметкой, потому что окно и
+        открывается акустической моделью: одно и то же событие, и заводить
+        второй счётчик того же смысла значило бы однажды их рассинхронизировать.
+
+        Отсчёт от **начала** фрагмента: имя произносят первым, а окно
+        открывается уже посреди фразы.
+        """
+        if not self._gate:
+            return True
+        return spoken_at < self._follow_up_until
 
     # --- распознавание и разбор --------------------------------------------
 
@@ -552,7 +582,11 @@ class VoicePipeline:
             logger.debug("Обращения по имени нет — пропускаю")
             return
 
-        language = transcript.language or "ru"
+        # Язык ответа — по команде, а не по всей расшифровке. Имя в ней бывает
+        # записано латиницей («Jaris Jaris, как дела»), и тогда определение по
+        # всей строке уводит ответ в английский: буквы имени перевешивают
+        # короткую русскую просьбу. К языку просьбы имя отношения не имеет.
+        language = detect_language(command, default=transcript.language or "ru") if command             else (transcript.language or "ru")
 
         if not command:
             # Позвали по имени и замолчали: отвечаем и ждём команду без имени.

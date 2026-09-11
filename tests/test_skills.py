@@ -8,6 +8,7 @@ import pytest
 
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import SkillsConfig
+from jarvis.core.errors import SkillError
 from jarvis.core.skills import SkillManager
 from jarvis.core.tools import ToolRegistry
 
@@ -258,3 +259,53 @@ async def test_deeper_nesting_is_not_a_skill(
 
     assert "deeper" not in manager.loaded
     await manager.stop()
+
+
+async def test_new_skill_on_disk_can_be_connected_without_restart(
+    skills_dir: Path, events: LocalEventBus, registry: ToolRegistry, memory, llm, tts
+) -> None:
+    """Скилл, появившийся на диске после запуска, подключается на ходу.
+
+    `reload` для этого не годится: он начинает с записи о загруженном скилле, а
+    у нового её по определению нет. Это и есть то, что превращает «файл
+    написан» в «умение появилось» — без него ассистент, написавший себе скилл,
+    ждал бы перезапуска.
+    """
+    manager = _manager(skills_dir, events, registry, memory, llm, tts)
+    await manager.start()
+    assert "fresh" not in manager.loaded
+
+    (skills_dir / "fresh.py").write_text(
+        _GOOD_SKILL.format(version="1").replace('name="demo"', 'name="fresh"'),
+        encoding="utf-8",
+    )
+    record = await manager.adopt("fresh")
+
+    assert record.name == "fresh"
+    assert "fresh" in manager.loaded
+
+
+async def test_adopting_a_loaded_skill_just_reloads_it(
+    skills_dir: Path, events: LocalEventBus, registry: ToolRegistry, memory, llm, tts
+) -> None:
+    """«Подключи такой-то» на знакомом имени значит «перечитай с диска»."""
+    manager = _manager(skills_dir, events, registry, memory, llm, tts)
+    await manager.start()
+
+    (skills_dir / "demo.py").write_text(
+        _GOOD_SKILL.format(version="2"), encoding="utf-8"
+    )
+    record = await manager.adopt("demo")
+
+    assert record.instance.meta.version == "2"
+
+
+async def test_adopting_what_is_not_on_disk_is_an_error(
+    skills_dir: Path, events: LocalEventBus, registry: ToolRegistry, memory, llm, tts
+) -> None:
+    """Несуществующий скилл — понятная ошибка, а не молчание."""
+    manager = _manager(skills_dir, events, registry, memory, llm, tts)
+    await manager.start()
+
+    with pytest.raises(SkillError):
+        await manager.adopt("призрак")

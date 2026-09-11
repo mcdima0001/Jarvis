@@ -340,6 +340,9 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                     _section(audio, "wake_word").get("models_dir") or "models/wakeword",
                 ),
                 threshold=float(_section(audio, "wake_word").get("threshold", 0.0)),
+                recognize_after_name=bool(
+                    _section(audio, "wake_word").get("recognize_after_name", True)
+                ),
                 phrases=_wake_phrases(_section(audio, "wake_word")),
                 aliases=tuple(
                     str(a).lower() for a in (_section(audio, "wake_word").get("aliases") or ())

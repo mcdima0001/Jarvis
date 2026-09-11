@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 from jarvis.core.attention import NORMAL, Announcer
@@ -106,6 +106,8 @@ class JarvisApp:
     audio: AudioStack
     worker: BlockingWorker
     runner: ServiceRunner
+    #: Ставится, когда пора выключаться: сигналом системы или командой голосом.
+    stopping: asyncio.Event = field(default_factory=asyncio.Event)
     #: Поднимались ли звук и модели. Отчёт о сборке обходится без них.
     models_loaded: bool = False
 
@@ -155,6 +157,11 @@ class JarvisApp:
         audio = build_audio(config.audio)
         stt = build_stt(config.stt, worker)
         tts = build_tts(config.tts, worker, sink=audio.sink)
+
+        # Просьба «выключись» приходит инструментом, а ждёт её `run`. Событие
+        # заводится здесь, до обоих: иначе инструменту нечего было бы дёргать,
+        # а `run` пришлось бы искать его у себя внутри.
+        stopping = asyncio.Event()
 
         # Политика «когда уместно заговорить самому». Одна на всю систему:
         # каждый, кому есть что сказать без вопроса, знает только **что**
@@ -239,6 +246,7 @@ class JarvisApp:
             situation=situation,
             stt=stt,
             jobs=jobs,
+            shutdown=stopping.set,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
@@ -294,6 +302,7 @@ class JarvisApp:
             audio=audio,
             worker=worker,
             runner=runner,
+            stopping=stopping,
         )
 
     # --- жизненный цикл ----------------------------------------------------
@@ -357,7 +366,7 @@ class JarvisApp:
 
     async def run(self) -> None:
         """Запустить и работать до сигнала остановки."""
-        stop_event = asyncio.Event()
+        stop_event = self.stopping
         loop = asyncio.get_running_loop()
 
         for sig in (signal.SIGINT, signal.SIGTERM):

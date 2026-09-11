@@ -338,3 +338,38 @@ def test_every_tool_in_the_project_declares_reversibility() -> None:
                     silent.append(f"{source.relative_to(root)}:{node.name}")
 
     assert not silent, "инструменты без объявленной обратимости: " + ", ".join(silent)
+
+
+def test_timeout_is_spoken_in_full_words() -> None:
+    """«30 с» синтез читает буквой «с», а не «секунд».
+
+    Поймано на живом запуске: инструмент не ответил, и ассистент произнёс
+    «не ответил за тридцать с». Реплика идёт вслух, поэтому сокращений в ней
+    быть не может — ни здесь, ни где-либо ещё.
+    """
+    from jarvis.core.tts.normalize import plural_form
+
+    assert plural_form(30, ("секунду", "секунды", "секунд")) == "секунд"
+    assert plural_form(1, ("секунду", "секунды", "секунд")) == "секунду"
+    assert plural_form(2, ("секунду", "секунды", "секунд")) == "секунды"
+
+
+async def test_slow_tool_says_seconds_aloud(registry: ToolRegistry) -> None:
+    """Сообщение о превышении ожидания произносимо целиком."""
+
+    class Slow:
+        @tool(timeout=0.01, reversible=True)
+        async def crawl(self) -> ToolResult:
+            """Очень медленный инструмент."""
+            await asyncio.sleep(5)
+            return ToolResult.success()
+
+    for item in collect_tools(Slow(), namespace="slow"):
+        registry.register(item)
+
+    result = await registry.invoke("slow.crawl")
+
+    assert not result.ok
+    assert result.error is not None
+    assert " с" not in result.error.replace("секунд", "")
+    assert "секунд" in result.error

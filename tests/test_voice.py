@@ -1338,3 +1338,77 @@ async def test_ordinary_command_does_not_open_the_wide_window(
     """Обычная команда окно не трогает: вопроса не было, ждать нечего."""
     await pipeline.handle(Utterance(text="включи свет", source="text"))
     assert pipeline._follow_up_until == 0.0
+
+
+# --- расшифровываем только то, что сказано после имени ----------------------
+
+
+def _gated(registry: ToolRegistry, events: LocalEventBus) -> VoicePipeline:
+    """Конвейер с настоящей моделью имени и включёнными воротами."""
+
+    class Deaf:
+        """Модель, которая имени не слышит: ворота решают всё сами."""
+
+        phrase = "джарвис"
+
+        def detect(self, frame: object) -> bool:
+            """Никогда."""
+            return False
+
+        def reset(self) -> None:
+            """Нечего сбрасывать."""
+
+    return _pipeline(registry, events, wake_word=Deaf())
+
+
+def test_speech_without_the_name_is_not_recognised(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Чужой разговор в комнате не уезжает в распознавание.
+
+    Раньше расшифровывалась любая речь, а имя искали уже в готовом тексте.
+    Платили дважды: разговор уходил в облако, и за него шёл счёт.
+    """
+    pipeline = _gated(registry, events)
+    pipeline._follow_up_until = 0.0
+
+    assert not pipeline._worth_recognising(time.time())
+
+
+def test_speech_inside_the_window_is_recognised(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """В открытом окне расшифровываем: имя уже прозвучало."""
+    pipeline = _gated(registry, events)
+    pipeline._follow_up_until = time.time() + 10
+
+    assert pipeline._worth_recognising(time.time())
+
+
+def test_gate_counts_from_the_start_of_the_phrase(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Отсчёт от начала фрагмента, а не от его конца.
+
+    Имя произносят первым, и окно открывается уже посреди фразы. Считай мы от
+    конца — сама фраза с именем и не прошла бы.
+    """
+    pipeline = _gated(registry, events)
+    now = time.time()
+    pipeline._follow_up_until = now + 1
+
+    assert pipeline._worth_recognising(now - 0.5)
+
+
+def test_without_an_acoustic_model_nothing_is_gated(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Без модели имени ворота выключены: звать было бы нечем.
+
+    Иначе ассистент оглох бы совсем — текстовый гейт ловит имя уже в
+    расшифровке, а расшифровки бы не было.
+    """
+    pipeline = _pipeline(registry, events)
+    pipeline._follow_up_until = 0.0
+
+    assert pipeline._worth_recognising(time.time())

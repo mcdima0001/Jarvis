@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jarvis.core.agent import Outcome, Planner
 from jarvis.core.contracts import Intent, ToolResult
@@ -161,6 +161,7 @@ class CoreTools:
         situation: Situation | None = None,
         stt: Any = None,
         jobs: Jobs | None = None,
+        shutdown: Callable[[], None] | None = None,
     ) -> None:
         self._llm = llm
         #: Распознавание — только чтобы показать его расход. Облачное считает
@@ -182,6 +183,9 @@ class CoreTools:
         #: Фоновые поручения. Свои завести нельзя: их останавливает
         #: `ServiceRunner`, а докладывают они в ту же шину.
         self._jobs = jobs if jobs is not None else Jobs()
+        #: Чем попросить приложение выключиться. Инструмент сам этого не умеет
+        #: и не должен: остановка сервисов — дело composition root.
+        self._shutdown = shutdown
 
     @tool(name="chat", reversible=True)
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
@@ -477,6 +481,49 @@ class CoreTools:
             return None
         found = best_match(spoken, names, similarity=0.7)
         return names.get(found) if found else None
+
+    @tool(
+        name="shutdown",
+        phrases=[
+            "выключись",
+            "отключись",
+            "заверши работу",
+            "завершай работу",
+            "заверши свой процесс",
+            "останови себя",
+            "останови работу",
+            "выключай себя",
+            "shut down",
+            "stop yourself",
+            "terminate",
+        ],
+        reversible=False,
+    )
+    async def shutdown(self) -> ToolResult:
+        """Завершить работу ассистента.
+
+        Фразы есть, а в каталог модели инструмент не уходит: просят выключиться
+        редко и говорят при этом одинаково, а место в каждом запросе он занимал
+        бы постоянно.
+
+        Нужен он не только для удобства. Без него «заверши свой процесс»
+        разбиралось как «закрой программу» и уходило в скилл `windows`, где
+        висело до предела ожидания — поймано на живом запуске 11.09.2026.
+        """
+        if self._shutdown is None:
+            return ToolResult.failure(
+                "остановка недоступна: приложение собрано без неё",
+                speech={
+                    "ru": "Не могу выключиться сам в этом режиме.",
+                    "en": "I can't shut myself down in this mode.",
+                },
+            )
+        logger.info("Выключаюсь по команде владельца")
+        self._shutdown()
+        return ToolResult.success(
+            {"stopping": True},
+            speech={"ru": "Завершаю работу.", "en": "Shutting down."},
+        )
 
     @tool(name="set_model", routable=False, reversible=True)
     async def set_model(self, task: str, model: str) -> ToolResult:
