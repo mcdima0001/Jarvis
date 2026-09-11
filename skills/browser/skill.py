@@ -442,6 +442,35 @@ def running_browser(processes: list[str]) -> str | None:
     return None
 
 
+def browser_window(windows: list[dict], title: str = "") -> str | None:
+    """Заголовок окна браузера, которое надо вывести на передний план.
+
+    :param windows: то, что вернул ``windows.list_windows``.
+    :param title: заголовок вкладки, если расширение его назвало.
+    :return: заголовок окна для ``windows.focus_window``, либо ``None``.
+    """
+    ours = [
+        str(window.get("title", ""))
+        for window in windows
+        if str(window.get("image", "")).lower() in BROWSERS
+    ]
+    if not ours:
+        return None
+
+    # Заголовок окна браузера начинается с заголовка активной вкладки, дальше
+    # идёт название самого браузера. Поэтому вкладку ищем по началу строки.
+    wanted = title.strip().lower()
+    if wanted:
+        for name in ours:
+            if name.lower().startswith(wanted):
+                return name
+
+    # Вкладку только что создали, и заголовка у неё ещё нет. Берём первое
+    # окно: `EnumWindows` идёт сверху вниз по z-порядку, а расширение уже
+    # сделало нужное окно верхним среди своих.
+    return ours[0]
+
+
 #: Куда Jarvis кладёт токен для расширения и на каком порту его ждёт.
 EXTENSION_DIR = "extension"
 TOKEN_FILE = "token.json"
@@ -781,6 +810,22 @@ class BrowserSkill(Skill):
         name = clean_spoken(site) or "браузер"
         spoken = clean_spoken(site)
 
+        if not spoken:
+            # «Открой браузер» — просьба о самой программе, а не о странице, и
+            # расширение тут бессильно по определению: новая вкладка внутри
+            # свёрнутого окна ничего не показывает. Поэтому сперва поднимаем
+            # окно, и только если браузера нет — запускаем его ниже. Заодно это
+            # перестаёт плодить вкладку с домашней страницей на каждую просьбу
+            # показать браузер.
+            if await self._raise_browser():
+                return ToolResult.success(
+                    {"reused": True},
+                    speech={
+                        "ru": ("Вот браузер.", "Браузер уже открыт, показываю."),
+                        "en": ("Here's the browser.", "The browser is already open."),
+                    },
+                )
+
         url = self._home if not spoken else site_url(spoken, self._sites)
         if url is None:
             # Не сайт — может быть, служебная страница браузера или уже
@@ -927,6 +972,7 @@ class BrowserSkill(Skill):
             result = await self._extension.call("open", urls=list(pages))
             if result is not None:
                 self.log.info("Служебная страница: %s", result.get("url", pages[0]))
+                await self._raise_browser(result.get("title", ""))
                 return ToolResult.success(
                     result,
                     speech={
@@ -957,6 +1003,7 @@ class BrowserSkill(Skill):
         if result is None:
             return None
         self.log.info("Переключаюсь на вкладку %r", result.get("title", name))
+        await self._raise_browser(result.get("title", ""))
         return ToolResult.success(
             result,
             speech={
@@ -992,6 +1039,8 @@ class BrowserSkill(Skill):
         result = await self._extension.call("open", url=url, reuse=reuse)
         if result is None:
             return None
+
+        await self._raise_browser(result.get("title", ""))
 
         if result.get("reused"):
             self.log.info("Вкладка уже была открыта: %s", result.get("title", url))
@@ -1191,6 +1240,40 @@ class BrowserSkill(Skill):
                 },
             )
         return ToolResult.success(result)
+
+    async def _raise_browser(self, title: str = "") -> bool:
+        """Вывести окно браузера на передний план.
+
+        Расширение открывает вкладку и делает её активной, но окна ОС это не
+        касается: `chrome.windows.update` не разворачивает свёрнутое окно и не
+        может отобрать фокус у чужой программы — Windows вместо этого подсветит
+        кнопку на панели задач. Ровно это владелец и увидел на «открой
+        браузер»: вкладка открылась, а браузер остался свёрнутым.
+
+        Поднимать умеет скилл `windows` — там уже есть и привязка потока ввода,
+        и разворачивание. Нет его (не Windows, не подключён) — молча ничего не
+        делаем: вкладка всё равно открыта, а команда не должна падать из-за
+        того, что её не видно.
+
+        :param title: заголовок вкладки, если расширение его назвало.
+        :return: удалось ли показать окно.
+        """
+        if not self.tools.has("windows.list_windows"):
+            return False
+
+        listed = await self.tools.invoke("windows.list_windows", {})
+        if not listed.ok or not isinstance(listed.value, list):
+            return False
+
+        window = browser_window(listed.value, title)
+        if window is None:
+            return False
+
+        raised = await self.tools.invoke("windows.focus_window", {"title": window})
+        if not raised.ok:
+            # Не беда: вкладка открыта, просто окно осталось где было.
+            self.log.debug("Окно браузера %r поднять не вышло", window)
+        return bool(raised.ok)
 
     async def _focus_open(self, url: str, spoken: str) -> ToolResult | None:
         """Переключиться на уже открытое окно с этим сайтом.

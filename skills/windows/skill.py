@@ -408,7 +408,13 @@ class Process:
 
 
 def parse_tasklist(output: str) -> list[Process]:
-    """Разобрать вывод ``tasklist /fo csv /nh /v``."""
+    """Разобрать вывод ``tasklist /fo csv /nh``.
+
+    Заголовок читается, если он в строке есть: с ключом ``/v`` столбцов девять,
+    без него пять. Сам ключ больше не используется (см. `with_window_titles`),
+    но разбор обеих форм оставлен — вывод чужой команды, и терять на нём данные
+    из-за лишнего столбца незачем.
+    """
     processes: list[Process] = []
     for row in csv.reader(io.StringIO(output)):
         if not row or not row[0].lower().endswith(".exe"):
@@ -422,6 +428,31 @@ def parse_tasklist(output: str) -> list[Process]:
             Process(image=row[0], pid=pid, title="" if title == "N/A" else title)
         )
     return processes
+
+
+def with_window_titles(
+    processes: list[Process], windows: list[tuple[int, str]]
+) -> list[Process]:
+    """Дописать процессам заголовки их окон.
+
+    Заголовки раньше приносил сам ``tasklist`` по ключу ``/v``, и на живой
+    машине этот ключ стоил **сорока секунд** против полусекунды без него: 40.6 с
+    и 0.5 с на одном и том же наборе из 354 процессов. Голосовая команда столько
+    не живёт — она умирала по общему пределу ожидания в 30 секунд, и вместе с ней
+    «закрой программу», «убей программу» и перечисление окон. В живом логе это
+    выглядело как «убей браузер → не удалась», без единой строки о причине.
+
+    Ровно те же заголовки лежат в `enum_windows` и берутся за миллисекунды: это
+    обход окон, а не пересчёт всех процессов системы. У процесса окон бывает
+    несколько, берётся первое — столько же, сколько давал ``/v``.
+    """
+    titles: dict[int, str] = {}
+    for pid, title in windows:
+        titles.setdefault(pid, title)
+    return [
+        Process(image=process.image, pid=process.pid, title=titles.get(process.pid, ""))
+        for process in processes
+    ]
 
 
 def process_catalog(processes: list[Process]) -> dict[str, str]:
@@ -1588,14 +1619,18 @@ class WindowsSkill(Skill):
         )
 
     async def _processes(self) -> list[Process]:
-        """Запущенные процессы: имя, номер, заголовок окна."""
-        # Режим /v добавляет заголовки окон: по ним программа узнаётся там,
-        # где имя процесса ничего не говорит (FL Studio живёт как FL64.exe).
-        result = await self._run(["tasklist.exe", "/fo", "csv", "/nh", "/v"])
+        """Запущенные процессы: имя, номер, заголовок окна.
+
+        Заголовки нужны там, где имя процесса ничего не говорит: FL Studio
+        живёт как ``FL64.exe``. Но спрашивать их у ``tasklist /v`` нельзя —
+        сорок секунд на вызов, см. `with_window_titles`.
+        """
+        result = await self._run(["tasklist.exe", "/fo", "csv", "/nh"])
         if result.returncode != 0:
             self.log.warning("tasklist вернул %s: %s", result.returncode, result.stderr)
             return []
-        return parse_tasklist(result.stdout)
+        windows = await asyncio.to_thread(enum_windows)
+        return with_window_titles(parse_tasklist(result.stdout), windows)
 
     async def health(self) -> HealthStatus:
         """Скилл исправен, пока в каталоге есть хоть что-то."""

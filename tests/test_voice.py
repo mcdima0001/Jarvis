@@ -121,6 +121,58 @@ def test_unrelated_phrase_is_not_a_call(pipeline: VoicePipeline) -> None:
     assert command == "передай отвёртку"
 
 
+def test_name_said_twice_is_stripped_twice(pipeline: VoicePipeline) -> None:
+    """Имя произносят дважды: позвали и повторили внутри фразы."""
+    called, command = pipeline._strip_wake("Джарвис Джарвис включи свет")
+    assert called
+    assert command == "включи свет"
+
+
+def test_misheard_second_name_is_stripped_too(pipeline: VoicePipeline) -> None:
+    """Второе имя обычно приезжает искажённым — и всё равно это имя.
+
+    Живой пример из лога: «Джарвис Прарвисская дела» вместо «Джарвис, Джарвис,
+    как дела». Раньше «Прарвисская» уезжала в модель вместе с командой, стоила
+    денег и получала ответ невпопад.
+    """
+    called, command = pipeline._strip_wake("Джарвис Прарвисская дела")
+    assert called
+    assert command == "дела"
+
+    called, command = pipeline._strip_wake("Тарвис Тарвис на паузу")
+    assert called
+    assert command == "на паузу"
+
+
+def test_only_one_echo_is_dropped(pipeline: VoicePipeline) -> None:
+    """Убирается ровно одно слово, а не всё похожее подряд.
+
+    Имя говорят два раза, а не пять; ошибись порог — и фраза уехала бы целиком.
+    """
+    called, command = pipeline._strip_wake("Джарвис Джарвис Джарвис громче")
+    assert called
+    assert command == "Джарвис громче"
+
+
+def test_command_word_is_not_mistaken_for_the_name(pipeline: VoicePipeline) -> None:
+    """Обычное слово после имени остаётся в команде.
+
+    Порог выбран по замеру: ослышки имени из живого лога лежат в 0.5–0.9, а
+    слова команд не дотягивают и до 0.4. «Давай» с его 0.50 — ближайшее к
+    границе, что нашлось, и оно обязано уцелеть.
+    """
+    called, command = pipeline._strip_wake("Джарвис давай включим музыку")
+    assert called
+    assert command == "давай включим музыку"
+
+
+def test_name_said_twice_and_nothing_else(pipeline: VoicePipeline) -> None:
+    """«Джарвис, Джарвис» — это зов, а не команда из одного слова."""
+    called, command = pipeline._strip_wake("Дарвис Драйвис")
+    assert called
+    assert command == ""
+
+
 def test_command_without_name_ignored(pipeline: VoicePipeline) -> None:
     """Без обращения по имени команда не выполняется."""
     assert pipeline._extract_command("включи свет") is None
@@ -178,8 +230,25 @@ async def test_chat_never_pretends_to_act() -> None:
     """
     from jarvis.core.builtin import _DIALOG_SYSTEM
 
-    assert "не отвечай «включаю»" in _DIALOG_SYSTEM["ru"]
-    assert "no actions" in _DIALOG_SYSTEM["en"] or "perform no actions" in _DIALOG_SYSTEM["en"]
+    assert "«включаю»" in _DIALOG_SYSTEM["ru"]
+    assert "“playing”" in _DIALOG_SYSTEM["en"]
+
+
+async def test_chat_is_told_to_actually_talk() -> None:
+    """И при этом обязан разговаривать, а не отсылать переформулировать.
+
+    Прежняя подсказка объявляла весь канал «тем, что не удалось выполнить
+    командой», и модель делала верный из неё вывод: раз сюда попало, значит это
+    несостоявшаяся команда. «Как дела» получало «не понял команду, сформулируйте
+    иначе», и так три раза подряд на живой проверке. Отказ теперь оговорён
+    отдельным условием, а разговор назван работой.
+    """
+    from jarvis.core.builtin import _DIALOG_SYSTEM
+
+    assert "разговор" in _DIALOG_SYSTEM["ru"]
+    assert "только если" in _DIALOG_SYSTEM["ru"]
+    assert "conversation" in _DIALOG_SYSTEM["en"]
+    assert "Only if" in _DIALOG_SYSTEM["en"]
 
 
 async def test_mode_none_reacts_without_name(

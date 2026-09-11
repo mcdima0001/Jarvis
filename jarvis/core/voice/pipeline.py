@@ -64,6 +64,20 @@ logger = logging.getLogger(__name__)
 #: с опозданием на её длину.
 _PENDING_LIMIT = 2
 
+#: Похоже на имя, но недостаточно, чтобы счесть обращением. Нужен только для
+#: подсказки в логе: иначе непонятно, почему ассистент промолчал.
+ALMOST_NAME = 0.45
+
+#: Имя, названное вторым разом подряд. Порог ниже основного: первое слово уже
+#: опознано как имя, и обычным словам команд тут взяться неоткуда — замер на
+#: ослышках из живого лога дал им 0.5–0.9 против 0.4 и ниже у слов команд.
+ECHOED_NAME = 0.55
+
+
+def _bare(word: str) -> str:
+    """Слово без знаков препинания и регистра — так его и сравнивают с именем."""
+    return word.lower().strip(" .,!?;:—-")
+
 
 class VoicePipeline:
     """Связывает аудиотракт, распознавание, маршрутизацию и синтез."""
@@ -640,26 +654,21 @@ class VoicePipeline:
         if not words:
             return False, ""
 
-        first = words[0].lower().strip(" .,!?;:—-")
+        first = _bare(words[0])
         remainder = " ".join(words[1:]).strip(" ,")
 
         if first in settings.aliases or first in settings.phrases:
             logger.debug("Имя распознано: %r", first)
-            return True, remainder
+            return True, self._drop_echoed_name(remainder)
 
-        # Сравниваем с каждым написанием: «jarvis» и «джарвис» в разных
-        # алфавитах, и похожесть между ними нулевая.
-        ratio = max(
-            (difflib.SequenceMatcher(None, first, phrase).ratio() for phrase in settings.phrases),
-            default=0.0,
-        )
+        ratio = self._like_name(first)
         if ratio >= settings.similarity:
             logger.debug("Имя распознано: %r (похожесть %.2f)", first, ratio)
-            return True, remainder
+            return True, self._drop_echoed_name(remainder)
 
         # Почти совпало — скорее всего звали, но модель ослышалась.
         # Показываем на уровне INFO: иначе непонятно, почему ассистент молчит.
-        if ratio >= 0.45:
+        if ratio >= ALMOST_NAME:
             logger.info(
                 "Похоже на обращение, но не уверен: %r ~ %r (%.2f). "
                 "Добавь вариант в audio.wake_word.aliases, если повторяется",
@@ -668,6 +677,49 @@ class VoicePipeline:
                 ratio,
             )
         return False, cleaned
+
+    def _like_name(self, word: str) -> float:
+        """Насколько слово похоже на имя.
+
+        Сравниваем с каждым написанием: «jarvis» и «джарвис» — одно и то же
+        имя в разных алфавитах, а похожесть между ними нулевая.
+        """
+        return max(
+            (
+                difflib.SequenceMatcher(None, word, phrase).ratio()
+                for phrase in self._config.wake_word.phrases
+            ),
+            default=0.0,
+        )
+
+    def _drop_echoed_name(self, command: str) -> str:
+        """Убрать имя, названное **вторым разом** в начале команды.
+
+        Имя произносят дважды чаще, чем кажется: один раз, чтобы позвать, и
+        второй — уже внутри фразы. Первое распознавание съедает, второе
+        остаётся в команде, причём обычно искажённым: живой пример из лога —
+        «Джарвис Прарвисская дела» вместо «Джарвис, Джарвис, как дела». Дальше
+        эта каша уходила в модель, стоила денег и получала ответ невпопад.
+
+        Порог тут ниже основного намеренно. Первое слово **уже опознано** как
+        имя, поэтому второе похожее — почти наверняка тоже оно, а не начало
+        команды: на замере ослышки имени лежат в 0.5–0.9, обычные слова команд
+        не дотягивают и до 0.4. Убирается ровно одно слово: имя говорят два
+        раза, а не пять, и ошибочный порог не должен съедать фразу целиком.
+        """
+        words = command.split()
+        if not words:
+            return command
+
+        head = _bare(words[0])
+        settings = self._config.wake_word
+        known = head in settings.aliases or head in settings.phrases
+        ratio = 1.0 if known else self._like_name(head)
+        if ratio < ECHOED_NAME:
+            return command
+
+        logger.info("Имя названо дважды, второе убрал: %r (%.2f)", head, ratio)
+        return " ".join(words[1:]).strip(" ,")
 
     def _deaf_gate(self, text: str) -> str | None:
         """Что пропускать, пока включён режим «не слушаю».

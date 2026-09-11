@@ -202,6 +202,49 @@ def test_no_browser_among_processes() -> None:
     assert browser.running_browser(["explorer.exe", "steam.exe"]) is None
 
 
+# --- какое окно поднимать ---------------------------------------------------
+
+
+def _windows() -> list[dict]:
+    """Список окон в том виде, в каком его отдаёт скилл windows."""
+    return [
+        {"title": "Диспетчер задач", "image": "taskmgr.exe", "pid": 10},
+        {"title": "YouTube — Яндекс Браузер", "image": "browser.exe", "pid": 20},
+        {"title": "Почта — Яндекс Браузер", "image": "browser.exe", "pid": 20},
+        {"title": "Telegram", "image": "AyuGram.exe", "pid": 30},
+    ]
+
+
+def test_browser_window_found_by_tab_title() -> None:
+    """Заголовок окна начинается с заголовка вкладки — по нему и ищем."""
+    assert browser.browser_window(_windows(), "Почта") == "Почта — Яндекс Браузер"
+
+
+def test_browser_window_without_a_title_takes_the_topmost() -> None:
+    """Только что созданная вкладка заголовка ещё не имеет.
+
+    Тогда берётся первое окно браузера: перечисление идёт сверху вниз по
+    z-порядку, а расширение уже сделало нужное окно верхним среди своих.
+    """
+    assert browser.browser_window(_windows()) == "YouTube — Яндекс Браузер"
+
+
+def test_unknown_tab_title_does_not_lose_the_window() -> None:
+    """Вкладку по заголовку не нашли — поднимаем хоть какое-то окно браузера.
+
+    Показать не то окно всё же лучше, чем не показать браузер вовсе: первое
+    владелец поправит сам, второе выглядит как невыполненная команда.
+    """
+    assert browser.browser_window(_windows(), "Марс") == "YouTube — Яндекс Браузер"
+
+
+def test_no_browser_window_to_raise() -> None:
+    """Браузер закрыт — поднимать нечего, и это не ошибка."""
+    chat = [{"title": "Telegram", "image": "AyuGram.exe", "pid": 30}]
+    assert browser.browser_window(chat) is None
+    assert browser.browser_window([]) is None
+
+
 # --- ослышки Whisper --------------------------------------------------------
 
 

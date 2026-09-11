@@ -309,6 +309,51 @@ def test_tasklist_parsed() -> None:
     assert "System Idle Process" not in by_image
 
 
+#: Вывод `tasklist /fo csv /nh` — без `/v`. Колонок пять, заголовков окон нет.
+_PLAIN_TASKLIST = (
+    '"chrome.exe","1234","Console","1","250 000 КБ"\r\n'
+    '"FL64.exe","5678","Console","1","900 000 КБ"\r\n'
+    '"svchost.exe","900","Services","0","8 КБ"\r\n'
+)
+
+
+def test_plain_tasklist_parsed_without_titles() -> None:
+    """Без `/v` колонок пять, и разбор от этого не ломается."""
+    by_image = {item.image: item for item in windows.parse_tasklist(_PLAIN_TASKLIST)}
+
+    assert by_image["FL64.exe"].pid == 5678
+    assert by_image["FL64.exe"].title == ""
+
+
+def test_titles_come_from_the_windows_themselves() -> None:
+    """Заголовки берутся у окон, а не у `tasklist /v`.
+
+    Ключ `/v` на живой машине стоил сорока секунд против полусекунды без него —
+    больше общего предела ожидания в 30 с. Из-за этого молча срывались «закрой
+    программу», «убей программу» и перечисление окон.
+    """
+    seen = [(5678, "FL Studio 21"), (1234, "YouTube — Google Chrome")]
+    named = windows.with_window_titles(windows.parse_tasklist(_PLAIN_TASKLIST), seen)
+    by_image = {item.image: item for item in named}
+
+    assert by_image["FL64.exe"].title == "FL Studio 21"
+    assert by_image["chrome.exe"].title == "YouTube — Google Chrome"
+    # Процесс без окна так и остаётся без заголовка.
+    assert by_image["svchost.exe"].title == ""
+
+
+def test_first_window_of_a_process_wins() -> None:
+    """У браузера окон несколько, а заголовок у процесса один.
+
+    Столько же давал и `/v`: менять заодно и это значило бы чинить две вещи
+    одной правкой.
+    """
+    seen = [(1234, "Первое окно"), (1234, "Второе окно")]
+    named = windows.with_window_titles(windows.parse_tasklist(_PLAIN_TASKLIST), seen)
+
+    assert [item.title for item in named if item.pid == 1234] == ["Первое окно"]
+
+
 def test_program_closed_by_window_title() -> None:
     """Имя процесса и название программы совпадают далеко не всегда.
 
