@@ -19,6 +19,7 @@ from .scope import SkillScope
 
 if TYPE_CHECKING:  # только для типов — реальных зависимостей не создаём
     from jarvis.core.attention import Announcer
+    from jarvis.core.jobs import Jobs
     from jarvis.core.llm import LLMService
     from jarvis.core.memory import Memory
     from jarvis.core.situation import Situation
@@ -56,6 +57,10 @@ class SkillContext:
     #: Именно предлагать: говорить или придержать, решает политика, а не скилл.
     #: Скилл знает, что случилось; уместность знает одно место на всю систему.
     announcer: "Announcer"
+    #: Куда сдавать долгую работу. Своей задачей через `scope.spawn` её тоже
+    #: можно сделать, но тогда она не попадёт ни в «чем ты занят», ни под общий
+    #: предел мест, ни в доклад по готовности — а всё это уже написано.
+    jobs: "Jobs"
 
     def setting(self, key: str, default: Any = None) -> Any:
         """Достать значение из конфига скилла."""

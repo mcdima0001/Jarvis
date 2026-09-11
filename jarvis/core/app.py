@@ -169,6 +169,17 @@ class JarvisApp:
             repeat_after_s=config.attention.repeat_after_s,
         )
 
+        # Фоновые поручения. Ставятся до инструментов ядра, потому что
+        # `core.later` без них не имеет смысла, и до конвейера — доклад уходит
+        # событием, которое конвейер подхватит подпиской.
+        #
+        # Доклад идёт через политику, а не прямо в шину: человек мог за это
+        # время попросить не отвлекать, и тогда доклад подождёт разговора.
+        jobs = Jobs(
+            events=events,
+            notify=lambda text, language: _offer(announcer, text, language),
+        )
+
         skills = SkillManager(
             config=config.skills,
             events=events,
@@ -178,6 +189,7 @@ class JarvisApp:
             tts=tts,
             root=config.root,
             announcer=announcer,
+            jobs=jobs,
             modes=modes,
             situation=situation,
         )
@@ -215,16 +227,6 @@ class JarvisApp:
         )
 
         # Встроенные инструменты ядра: диалог, справка, перезагрузка, модели.
-        # Фоновые поручения. Ставятся до инструментов ядра, потому что
-        # `core.later` без них не имеет смысла, и до конвейера — доклад уходит
-        # событием, которое конвейер подхватит подпиской.
-        #
-        # Доклад идёт через политику, а не прямо в шину: человек мог за это
-        # время попросить не отвлекать, и тогда доклад подождёт разговора.
-        jobs = Jobs(
-            events=events,
-            notify=lambda text, language: _offer(announcer, text, language),
-        )
 
         core_tools = CoreTools(
             llm=llm,

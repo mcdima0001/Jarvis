@@ -33,6 +33,7 @@ from .scope import SkillScope
 
 if TYPE_CHECKING:
     from jarvis.core.attention import Announcer
+    from jarvis.core.jobs import Jobs
     from jarvis.core.llm import LLMService
     from jarvis.core.memory import Memory
     from jarvis.core.tts import TTS
@@ -77,6 +78,7 @@ class SkillManager:
         modes: "Modes | None" = None,
         situation: "Situation | None" = None,
         announcer: "Announcer | None" = None,
+        jobs: "Jobs | None" = None,
     ) -> None:
         self._config = config
         self._events = events
@@ -89,6 +91,12 @@ class SkillManager:
         from jarvis.core.attention import Announcer as _Announcer
 
         self._announcer = announcer if announcer is not None else _Announcer()
+
+        from jarvis.core.jobs import Jobs as _Jobs
+
+        # Свои заводить нельзя по той же причине: их останавливает `ServiceRunner`,
+        # и предел мест общий на систему, а не на каждого желающего.
+        self._jobs = jobs if jobs is not None else _Jobs()
         # Свои — только чтобы менеджер собирался в тесте, где состояние
         # системы не при чём. В живой сборке приходят снаружи: те же объекты
         # читают конвейер и резолвер модели.
@@ -233,6 +241,7 @@ class SkillManager:
             modes=self._modes,
             situation=self._situation,
             announcer=self._announcer,
+            jobs=self._jobs,
         )
 
         try:
@@ -277,6 +286,37 @@ class SkillManager:
 
         logger.info("Скилл %s выгружен", record.candidate.label)
         self._events.emit(SkillUnloaded(source="skills", skill=name))
+
+    async def adopt(self, name: str) -> SkillRecord:
+        """Подключить скилл, который появился на диске уже после запуска.
+
+        `reload` для этого не годится: он начинает с записи о загруженном
+        скилле, а у нового её по определению нет. Разница не формальная — это
+        и есть то, что превращает «файл написан» в «умение появилось», не
+        перезапуская систему.
+
+        Уже загруженный скилл тут не ошибка: «подключи такой-то» на знакомом
+        имени естественно означает «перечитай его с диска».
+        """
+        if name in self._records:
+            return await self.reload(name)
+        if name in self._config.disabled:
+            raise SkillError(f"Скилл {name!r} отключён в конфиге")
+
+        for candidate in self.candidates():
+            if candidate.name != name:
+                continue
+            if candidate.parent and candidate.parent not in self._records:
+                raise SkillError(
+                    f"Подскилл {name!r} не подключить: главный скилл "
+                    f"{candidate.parent!r} не загружен"
+                )
+            record = await self.load(candidate)
+            await self._start_record(record)
+            logger.info("Скилл %s подключён на ходу", candidate.label)
+            return record
+
+        raise SkillError(f"Скилл {name!r} не найден на диске")
 
     async def reload(self, name: str) -> SkillRecord:
         """Перезагрузить скилл с диска, не перезапуская приложение."""

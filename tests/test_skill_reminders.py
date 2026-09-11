@@ -19,6 +19,7 @@ import pytest
 from jarvis.core.attention import Announcer
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import MemoryConfig
+from jarvis.core.jobs import Jobs
 from jarvis.core.memory import build_memory
 from jarvis.core.situation import Situation
 from jarvis.core.skills import SkillContext, SkillScope
@@ -166,6 +167,7 @@ def _skill(tmp_path: Path, events: LocalEventBus, registry: ToolRegistry) -> Any
         modes=modes,
         situation=Situation(modes=modes),
         announcer=Announcer(events=events, modes=modes),
+        jobs=Jobs(events=events),
     )
     return skill, context
 
@@ -434,6 +436,7 @@ async def test_missing_memory_section_does_not_break_the_skill(
             modes=context.modes,
             situation=context.situation,
             announcer=context.announcer,
+            jobs=context.jobs,
         )
     )
     for item in collect_tools(skill, namespace="reminders"):

@@ -23,6 +23,7 @@ from jarvis.core.memory import Memory
 from jarvis.core.persona import Persona
 from jarvis.core.situation import Situation
 from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, minutes_word
+from jarvis.core.text import best_match
 from jarvis.core.tools import ToolRegistry, tool
 from jarvis.core.version import current
 
@@ -417,7 +418,7 @@ class CoreTools:
 
         :param skill: имя скилла.
         """
-        found = self._skills.find(skill)
+        found = self._skills.find(skill) or self._fresh_skill(skill)
         if found is None:
             known = ", ".join(self._skills.loaded) or "ни одного"
             return ToolResult.failure(
@@ -432,23 +433,50 @@ class CoreTools:
         # человеку — его собственное.
         spoken, skill = skill, found
 
+        fresh = skill not in self._skills.loaded
         try:
-            record = await self._skills.reload(skill)
+            # `adopt`, а не `reload`: перезагрузить можно только загруженное, а
+            # сюда теперь приходят и модули, появившиеся на диске уже после
+            # запуска, — ровно то, что пишет себе сам ассистент.
+            record = await self._skills.adopt(skill)
         except Exception as exc:
             return ToolResult.failure(
                 f"{type(exc).__name__}: {exc}",
                 speech={
-                    "ru": f"Не удалось перезагрузить модуль {spoken}.",
-                    "en": f"Couldn't reload module {spoken}.",
+                    "ru": f"Не удалось подключить модуль {spoken}.",
+                    "en": f"Couldn't load module {spoken}.",
                 },
             )
         return ToolResult.success(
-            {"skill": record.name, "tools": list(record.scope.tool_names)},
+            {"skill": record.name, "tools": list(record.scope.tool_names), "fresh": fresh},
             speech={
-                "ru": f"Модуль {spoken} перезагружен.",
-                "en": f"Module {spoken} reloaded.",
+                "ru": (
+                    f"Модуль {spoken} подключён." if fresh
+                    else f"Модуль {spoken} перезагружен."
+                ),
+                "en": (
+                    f"Module {spoken} connected." if fresh
+                    else f"Module {spoken} reloaded."
+                ),
             },
         )
+
+    def _fresh_skill(self, spoken: str) -> str | None:
+        """Найти скилл, который лежит на диске, но ещё не загружен.
+
+        `find` знает только загруженные — у незагруженного неоткуда взять
+        произносимые имена, они объявлены внутри самого модуля. Поэтому здесь
+        сравнение идёт по именам каталогов, той же лестницей и тем же порогом.
+        """
+        names = {
+            candidate.name: candidate.name
+            for candidate in self._skills.candidates()
+            if candidate.name not in self._skills.loaded
+        }
+        if not names:
+            return None
+        found = best_match(spoken, names, similarity=0.7)
+        return names.get(found) if found else None
 
     @tool(name="set_model", routable=False, reversible=True)
     async def set_model(self, task: str, model: str) -> ToolResult:
