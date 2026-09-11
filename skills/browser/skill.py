@@ -770,7 +770,8 @@ class BrowserSkill(Skill):
                    "перейди на вкладку {site}", "перейди во вкладку {site}",
                    "open the browser", "open site {site}", "go to {site}",
                    "open {site} in the browser", "open the {site} tab",
-                   "switch to {site}"])
+                   "switch to {site}"],
+          reversible=True)
     async def open_site(self, site: str = "") -> ToolResult:
         """Открыть сайт, служебную страницу браузера или открытую вкладку.
 
@@ -826,7 +827,8 @@ class BrowserSkill(Skill):
                    "погугли {query}", "найди в {engine} {query}",
                    "найди на {engine} {query}", "поищи в {engine} {query}",
                    "покажи в браузере {query}",
-                   "google {query}", "search {engine} for {query}"])
+                   "google {query}", "search {engine} for {query}"],
+          reversible=True)
     async def search(self, query: str, engine: str = "") -> ToolResult:
         """Открыть поисковую выдачу по запросу.
 
@@ -879,7 +881,8 @@ class BrowserSkill(Skill):
     # --- закрытие ----------------------------------------------------------
 
     @tool(phrases=["закрой браузер", "закрой окно браузера",
-                   "close the browser", "close the browser window"])
+                   "close the browser", "close the browser window"],
+          reversible=False)
     async def close(self, browser: str = "") -> ToolResult:
         """Закрыть окно браузера.
 
@@ -1018,7 +1021,8 @@ class BrowserSkill(Skill):
         return ToolResult.success({"url": url, **result}, speech=speech)
 
     @tool(phrases=["закрой вкладку", "закрой вкладку {site}",
-                   "close the tab", "close the {site} tab"])
+                   "close the tab", "close the {site} tab"],
+          reversible=False)
     async def close_tab(self, site: str = "") -> ToolResult:
         """Закрыть вкладку с сайтом.
 
@@ -1083,7 +1087,7 @@ class BrowserSkill(Skill):
     # Разделение обязанностей тут такое: браузер знает про вкладки и адреса,
     # скилл `page` — про то, что делать внутри страницы.
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=True)
     async def page_target(
         self, site: str = "", active: bool = False, open_missing: bool = False
     ) -> ToolResult:
@@ -1102,7 +1106,7 @@ class BrowserSkill(Skill):
             "target", {"active": active, "open": open_missing}, site=site, tab=0
         )
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=False)
     async def page_run(self, plan: list[dict], site: str = "", tab: int = 0) -> ToolResult:
         """Выполнить действие внутри открытой страницы.
 
@@ -1112,7 +1116,7 @@ class BrowserSkill(Skill):
         """
         return await self._page_call("page", {"plan": list(plan)}, site=site, tab=tab)
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=True)
     async def page_go(self, url: str, tab: int = 0, focus: bool = False) -> ToolResult:
         """Увести вкладку по другому адресу и дождаться загрузки.
 
@@ -1135,7 +1139,7 @@ class BrowserSkill(Skill):
             "go", {"url": address, "active": True, "focus": bool(focus)}, site="", tab=tab
         )
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=True)
     async def page_probe(self, site: str = "", tab: int = 0, limit: int = 40) -> ToolResult:
         """Перечислить кнопки открытой страницы.
 

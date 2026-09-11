@@ -228,7 +228,8 @@ class WeatherSkill(Skill):
         return similar
 
     @tool(phrases=["какая погода", "погода", "погода в {city}", "погода на завтра",
-                   "what is the weather", "weather", "weather in {city}"])
+                   "what is the weather", "weather", "weather in {city}"],
+          reversible=True)
     async def forecast(self, city: str = "", day: str = "сегодня") -> ToolResult:
         """Узнать погоду на сегодня, завтра или послезавтра.
 
@@ -292,7 +293,8 @@ class WeatherSkill(Skill):
         )
 
     @tool(phrases=["сколько градусов на улице", "температура на улице",
-                   "how cold is it outside", "temperature outside"])
+                   "how cold is it outside", "temperature outside"],
+          reversible=True)
     async def now(self, city: str = "") -> ToolResult:
         """Узнать погоду прямо сейчас.
 

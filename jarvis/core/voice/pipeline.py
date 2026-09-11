@@ -46,7 +46,7 @@ from jarvis.core.contracts import (
     VoiceCommandRecognized,
     WakeWordDetected,
 )
-from jarvis.core.persona import DONE, FAILED, LISTENING, Persona
+from jarvis.core.persona import DONE, FAILED, LISTENING, WORKING, Persona
 from jarvis.core.router import Dispatcher
 from jarvis.core.state import DEAF, Modes, wakes_up
 from jarvis.core.stt import STT
@@ -224,7 +224,7 @@ class VoicePipeline:
                 confidence=utterance.confidence,
                 source=utterance.source,
             )
-        result = await self._dispatcher.handle(utterance)
+        result = await self._run(utterance)
         # Вариант выбирает персона, а не скилл: она помнит, что уже говорила, и
         # у каждой команды своя память — «пауза» не вытесняет «включаю».
         options = result.speech_options(utterance.language)
@@ -234,6 +234,43 @@ class VoicePipeline:
         if reply:
             await self._say(reply, language=utterance.language)
         return result
+
+    async def _run(self, utterance: Utterance) -> ToolResult:
+        """Выполнить команду, а если она затянулась — сказать, что работаем.
+
+        Молчащий несколько секунд ассистент неотличим от зависшего, и человек
+        начинает повторять команду. Повтор уходит в роутер вторым разом, то есть
+        плата за молчание не только в нервах: «включи музыку», сказанное дважды,
+        выполнится дважды.
+
+        **Заполнитель стоит времени, и это честный размен.** Голос один и
+        занимается по очереди, поэтому настоящий ответ подождёт, пока «секунду»
+        договорит. Отсюда высокий порог: заполнитель должен срабатывать там, где
+        пауза и так выглядит зависанием, а не на каждой команде. Короткие фразы
+        из шаблонов до него не доживают вовсе.
+
+        Отменить уже начатую реплику нельзя, но можно не начинать: если работа
+        закончилась, пока мы ждали своей очереди у замка, говорить «секунду» уже
+        поздно и незачем.
+        """
+        delay = self._config.working_after_s
+        work = asyncio.ensure_future(self._dispatcher.handle(utterance))
+        if delay <= 0 or self.silent:
+            return await work
+
+        try:
+            return await asyncio.wait_for(asyncio.shield(work), delay)
+        except TimeoutError:
+            pass
+
+        if not work.done() and not self._muted:
+            filler = self._persona.line(WORKING, utterance.language)
+            async with self._voice:
+                if not work.done():
+                    await self._speak(
+                        filler, language=utterance.language, remember=False
+                    )
+        return await work
 
     async def _say(self, text: str, *, language: str | None = None) -> None:
         """Озвучить реплику, заглушив на это время микрофон.
@@ -251,8 +288,16 @@ class VoicePipeline:
         async with self._voice:
             await self._speak(text, language=language)
 
-    async def _speak(self, text: str, *, language: str | None = None) -> None:
-        """Собственно озвучка — вызывается только из `_say`, под замком."""
+    async def _speak(
+        self, text: str, *, language: str | None = None, remember: bool = True
+    ) -> None:
+        """Собственно озвучка — вызывается только из `_say`, под замком.
+
+        :param remember: считать ли это ответом на команду. Заполнитель
+            «секунду» произносится вслух, но ответом не является: `--say`
+            печатает `last_reply`, и напечатать «секунду» вместо результата
+            значило бы соврать о том, чем всё кончилось.
+        """
         # Что именно сказал ассистент, по логу иначе не восстановить: в нём
         # видно команду и её результат, а произнесённой фразы — нет. А разбирать
         # приходится как раз расхождение между ними.
@@ -260,7 +305,8 @@ class VoicePipeline:
         # первыми. Помечаем полем записи, а не подсветкой по тексту сообщения:
         # угадывание рассыпалось бы при первой правке формулировки.
         logger.info("Отвечаю: %s", text, extra={"tone": "said"})
-        self.last_reply = text
+        if remember:
+            self.last_reply = text
         if self.silent:
             # Голос выключен целиком: реплика уже в логе, а трогать синтез
             # нельзя — он загрузит модель при первом же обращении.

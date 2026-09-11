@@ -338,6 +338,12 @@ class AudioConfig:
     #: команда выполнится с опозданием; короче — что при фоновой речи
     #: фрагменты теряются чаще.
     pending_limit: int = 2
+    #: Через сколько секунд молчания сказать «секунду» и продолжить работу.
+    #: Ноль выключает. Порог высокий намеренно: заполнитель занимает голос, а
+    #: голос один — значит настоящий ответ подождёт, пока он договорит. Платить
+    #: этим за уверенность «он меня услышал» стоит только там, где пауза и так
+    #: похожа на зависание.
+    working_after_s: float = 2.5
     vad: VADConfig = field(default_factory=VADConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
     aec: AECConfig = field(default_factory=AECConfig)

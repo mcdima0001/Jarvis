@@ -1085,7 +1085,7 @@ class WindowsSkill(Skill):
             self._ducked = {}
             self.log.debug("Громкость вернул: %d приложений", len(saved))
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=True)
     async def duck_others(self, cut_db: float = 0.0) -> ToolResult:
         """Приглушить звук всех приложений, кроме самого ассистента.
 
@@ -1097,7 +1097,7 @@ class WindowsSkill(Skill):
         await self._duck()
         return ToolResult.success(len(self._ducked))
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=True)
     async def restore_others(self) -> ToolResult:
         """Вернуть громкость приложениям, которые приглушали."""
         count = len(self._ducked)
@@ -1136,7 +1136,8 @@ class WindowsSkill(Skill):
         )
 
     @tool(phrases=["открой {program}", "запусти {program}",
-                   "open {program}", "launch {program}", "start {program}"])
+                   "open {program}", "launch {program}", "start {program}"],
+          reversible=True)
     async def launch_program(self, program: str) -> ToolResult:
         """Запустить программу по названию.
 
@@ -1192,7 +1193,8 @@ class WindowsSkill(Skill):
 
     @tool(phrases=["заблокируй компьютер", "заблокируй пк", "заблокируй экран",
                    "заблокируй ноутбук", "заблокируй комп", "заблокируй",
-                   "lock the computer", "lock the pc", "lock screen"])
+                   "lock the computer", "lock the pc", "lock screen"],
+          reversible=False)
     async def lock(self) -> ToolResult:
         """Заблокировать компьютер."""
         import ctypes
@@ -1217,7 +1219,8 @@ class WindowsSkill(Skill):
         )
 
     @tool(phrases=["закрой {program}", "заверши {program}",
-                   "close {program}", "quit {program}"])
+                   "close {program}", "quit {program}"],
+          reversible=False)
     async def close_program(self, program: str) -> ToolResult:
         """Закрыть программу: убрать её окно.
 
@@ -1235,7 +1238,8 @@ class WindowsSkill(Skill):
         return await self._shutdown(program, force=False)
 
     @tool(phrases=["убей {program}", "заверши процесс {program}",
-                   "выгрузи {program}", "kill {program}", "force close {program}"])
+                   "выгрузи {program}", "kill {program}", "force close {program}"],
+          reversible=False)
     async def kill_program(self, program: str) -> ToolResult:
         """Завершить процесс программы принудительно.
 
@@ -1249,7 +1253,7 @@ class WindowsSkill(Skill):
 
     # Голосом это не зовут — инструмент нужен другим скиллам, поэтому в каталог
     # для модели он не попадает: каждая запись там стоит токенов на каждой фразе.
-    @tool(name="list_windows", routable=False)
+    @tool(name="list_windows", routable=False, reversible=True)
     async def list_windows(self) -> ToolResult:
         """Перечислить открытые окна: заголовок, программа, номер процесса."""
         windows = await asyncio.to_thread(enum_windows)
@@ -1261,7 +1265,7 @@ class WindowsSkill(Skill):
             ]
         )
 
-    @tool(name="focus_window", routable=False)
+    @tool(name="focus_window", routable=False, reversible=True)
     async def focus_window(self, title: str) -> ToolResult:
         """Поднять окно с указанным заголовком на передний план.
 
@@ -1441,7 +1445,8 @@ class WindowsSkill(Skill):
         return False
 
     @tool(phrases=["какие программы открыты", "что запущено",
-                   "what is running", "list programs"])
+                   "what is running", "list programs"],
+          reversible=True)
     async def list_programs(self) -> ToolResult:
         """Перечислить запущенные программы."""
         running = await self._processes()
@@ -1465,7 +1470,8 @@ class WindowsSkill(Skill):
 
     @tool(phrases=["поставь громкость {level}", "сделай громкость {level}",
                    "громкость {level}", "звук {level}",
-                   "set volume to {level}", "volume {level}"])
+                   "set volume to {level}", "volume {level}"],
+          reversible=True)
     async def set_volume(self, level: int) -> ToolResult:
         """Установить громкость системы.
 
@@ -1484,18 +1490,20 @@ class WindowsSkill(Skill):
         )
 
     @tool(phrases=["погромче", "сделай громче", "louder", "turn it up"],
-          routable=False)
+          routable=False,
+          reversible=True)
     async def louder(self) -> ToolResult:
         """Сделать громче на десять процентов."""
         return await self.change_volume(10)
 
     @tool(phrases=["потише", "сделай тише", "quieter", "turn it down"],
-          routable=False)
+          routable=False,
+          reversible=True)
     async def quieter(self) -> ToolResult:
         """Сделать тише на десять процентов."""
         return await self.change_volume(-10)
 
-    @tool()
+    @tool(reversible=True)
     async def change_volume(self, delta: int = 10) -> ToolResult:
         """Изменить громкость на несколько процентов.
 
@@ -1515,7 +1523,7 @@ class WindowsSkill(Skill):
                     "en": f"Volume {level} percent."},
         )
 
-    @tool(phrases=["выключи звук", "включи звук", "mute", "unmute"])
+    @tool(phrases=["выключи звук", "включи звук", "mute", "unmute"], reversible=True)
     async def mute(self, on: bool = True) -> ToolResult:
         """Выключить или включить звук.
 
@@ -1551,7 +1559,7 @@ class WindowsSkill(Skill):
                     "en": "Couldn't change the volume."},
         )
 
-    @tool(phrases=["обнови список программ", "refresh programs"])
+    @tool(phrases=["обнови список программ", "refresh programs"], reversible=True)
     async def refresh(self) -> ToolResult:
         """Перечитать меню «Пуск» после установки новой программы."""
         self._rebuild()

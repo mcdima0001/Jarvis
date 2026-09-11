@@ -35,12 +35,13 @@ logger = logging.getLogger(__name__)
 
 #: Ситуации, на которые у ассистента есть свои слова.
 LISTENING = "listening"   # позвали по имени и замолчали
+WORKING = "working"       # команда оказалась долгой, и молчать уже неловко
 DONE = "done"             # команда выполнена, своей реплики у неё нет
 FAILED = "failed"         # команда не выполнилась и не объяснила почему
 GREETING = "greeting"     # запуск
 FAREWELL = "farewell"     # остановка
 
-SITUATIONS: tuple[str, ...] = (LISTENING, DONE, FAILED, GREETING, FAREWELL)
+SITUATIONS: tuple[str, ...] = (LISTENING, WORKING, DONE, FAILED, GREETING, FAREWELL)
 
 #: Как ассистент обращается к владельцу. Пустая строка убирает обращение.
 DEFAULT_ADDRESS: Mapping[str, str] = {"ru": "сэр", "en": "sir"}
@@ -93,6 +94,32 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Here, {address}.",
             "Whenever you're ready, {address}.",
             "Awaiting instructions, {address}.",
+        ),
+    },
+    # Реплика-заполнитель для команд, которые идут дольше терпимого. Она не про
+    # вежливость: молчащий несколько секунд ассистент неотличим от зависшего, и
+    # человек начинает повторять команду — а повтор уходит в роутер второй раз.
+    #
+    # Поэтому варианты короткие и все до одного обещают продолжение. «Готово» и
+    # «сделано» тут были бы враньём: работа ещё идёт.
+    WORKING: {
+        "ru": (
+            "Секунду, {address}.",
+            "Минуту.",
+            "Работаю.",
+            "Сейчас посмотрю.",
+            "Занимаюсь, {address}.",
+            "Один момент.",
+            "Уже смотрю.",
+            "Секунду.",
+        ),
+        "en": (
+            "One moment, {address}.",
+            "Just a second.",
+            "Working on it.",
+            "Let me check.",
+            "One moment.",
+            "Looking into it, {address}.",
         ),
     },
     DONE: {

@@ -35,6 +35,7 @@ class _ToolMarker:
     phrases: tuple[str, ...]
     timeout: float | None
     routable: bool
+    reversible: bool | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -50,6 +51,30 @@ class ToolSpec:
     #: Служебные операции голосом не вызывают, а место в каждом запросе они
     #: занимают — каталог уезжает в модель целиком и на каждой фразе.
     routable: bool = True
+    #: Можно ли отменить последствия вызова. **Три состояния, и это намеренно:**
+    #: `True` — обратимо (громкость, пауза, вопрос), `False` — необратимо
+    #: (отправить сообщение, закрыть программу, удалить запись), `None` — автор
+    #: инструмента не объявил.
+    #:
+    #: На **прямую команду голосом флаг не влияет вообще**: сказал «закрой
+    #: браузер» — значит сам и разрешил. Флаг нужен там, где шаги выбирает не
+    #: человек, а план: правило проекта гласит, что план не даёт новых прав и
+    #: необратимое в цепочку молча не встаёт.
+    #:
+    #: Необъявленное считается необратимым (см. :attr:`unattended`). Это
+    #: сознательный перекос в сторону осторожности: забытый `routable` стоит
+    #: денег, а забытый `reversible` — отправленного не тому человеку
+    #: сообщения.
+    reversible: bool | None = None
+
+    @property
+    def unattended(self) -> bool:
+        """Можно ли выполнить этот шаг без спроса, когда его выбрал план.
+
+        Утвердительный ответ только у явно объявленных обратимыми. Молчание
+        автора инструмента трактуется в пользу вопроса, а не в пользу действия.
+        """
+        return self.reversible is True
 
     def as_function_schema(self) -> dict[str, Any]:
         """Представление для function-calling API языковой модели."""
@@ -84,6 +109,7 @@ def tool(
     phrases: Sequence[str] = (),
     timeout: float | None = None,
     routable: bool = True,
+    reversible: bool | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Пометить метод скилла как инструмент.
 
@@ -95,6 +121,9 @@ def tool(
         операции (перезагрузка скилла, смена модели) голосом не вызывают, а
         каталог уходит в модель на каждой неузнанной фразе — и это платный
         вход. Такие инструменты остаются доступны по точному имени и фразам.
+    :param reversible: можно ли отменить последствия. На прямую команду голосом
+        не влияет: сказал — значит разрешил. Нужен там, где шаг выбрал план, а
+        не человек. Не объявил — считается необратимым и спросит.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -107,6 +136,7 @@ def tool(
                 phrases=tuple(phrases),
                 timeout=timeout,
                 routable=routable,
+                reversible=reversible,
             ),
         )
         return func
@@ -147,6 +177,7 @@ def collect_tools(instance: Any, *, namespace: str) -> list[Tool]:
                     phrases=marker.phrases,
                     skill=namespace,
                     routable=marker.routable,
+                    reversible=marker.reversible,
                 ),
                 handler=bound,
                 timeout=marker.timeout,

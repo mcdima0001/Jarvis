@@ -302,7 +302,8 @@ class ScreenSkill(Skill):
             "what is on the screen",
             "what's on my screen",
             "look at the screen",
-        ]
+        ],
+        reversible=False,
     )
     async def look(self, question: str = "", target: str = "screen") -> ToolResult:
         """Посмотреть на экран и ответить на вопрос о том, что там видно.
@@ -349,7 +350,7 @@ class ScreenSkill(Skill):
             return ToolResult.failure("пустой ответ модели", speech=_NO_VISION)
         return ToolResult.success(answer, speech=answer)
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=False)
     async def snapshot(self, path: str = "", target: str = "screen") -> ToolResult:
         """Сохранить снимок экрана в файл.
 

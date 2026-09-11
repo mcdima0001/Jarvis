@@ -977,7 +977,7 @@ class PageSkill(Skill):
 
     # Описание нарочно перечисляет живые слова: по нему модель и решает, что
     # «включи видео» — это сюда. Первая строка докстринга уезжает в каталог.
-    @tool()
+    @tool(reversible=False)
     async def control(self, action: ACTION, site: str = "", seconds: float = 0) -> ToolResult:
         """Включить, поставить на паузу, переключить трек, лайкнуть или перемотать то, что открыто во вкладке браузера.
 
@@ -991,7 +991,8 @@ class PageSkill(Skill):
 
     @tool(phrases=["нажми {control}", "нажми кнопку {control}", "нажми на {control}",
                    "открой {control} на странице", "открой {control} на сайте",
-                   "press {control}", "click {control}"])
+                   "press {control}", "click {control}"],
+          reversible=False)
     async def press(self, control: str, site: str = "") -> ToolResult:
         """Нажать кнопку на странице по её подписи.
 
@@ -1026,7 +1027,8 @@ class PageSkill(Skill):
                                    "останови музыку", "стоп",
                                    "поставь музыку на паузу", "поставь видео на паузу",
                                    "поставь {site} на паузу", "останови {site}",
-                                   "pause", "stop the video", "pause {site}"])
+                                   "pause", "stop the video", "pause {site}"],
+          reversible=True)
     async def pause(self, site: str = "") -> ToolResult:
         """Поставить воспроизведение на паузу.
 
@@ -1045,7 +1047,8 @@ class PageSkill(Skill):
                                    "продолжи музыку", "продолжи видео",
                                    "включи видео", "включи музыку", "включи трек",
                                    "включи песню", "сними {site} с паузы",
-                                   "resume", "continue playing"])
+                                   "resume", "continue playing"],
+          reversible=True)
     async def play(self, site: str = "") -> ToolResult:
         """Продолжить воспроизведение.
 
@@ -1059,13 +1062,15 @@ class PageSkill(Skill):
     @tool(routable=False, phrases=["следующий трек", "следующее видео", "следующая песня",
                                    "переключи трек", "переключи песню", "дальше трек",
                                    "дальше", "давай дальше", "следующий", "следующую",
-                                   "next track", "next video", "next one"])
+                                   "next track", "next video", "next one"],
+          reversible=True)
     async def next_track(self) -> ToolResult:
         """Включить следующий трек или видео."""
         return await self._act("next")
 
     @tool(routable=False, phrases=["предыдущий трек", "предыдущее видео", "прошлый трек",
-                                   "верни трек", "previous track", "previous video"])
+                                   "верни трек", "previous track", "previous video"],
+          reversible=True)
     async def previous_track(self) -> ToolResult:
         """Вернуться к предыдущему треку или видео."""
         return await self._act("previous")
@@ -1074,19 +1079,22 @@ class PageSkill(Skill):
                                    "лайкни видео", "лайкни трек", "лайкни песню",
                                    "поставь лайк видео", "поставь лайк треку",
                                    "поставь лайк песне",
-                                   "like this", "like it"])
+                                   "like this", "like it"],
+          reversible=False)
     async def like(self) -> ToolResult:
         """Поставить лайк тому, что играет."""
         return await self._act("like")
 
     @tool(routable=False, phrases=["убери лайк", "сними лайк", "убери лайк с видео",
-                                   "убери лайк с трека", "unlike"])
+                                   "убери лайк с трека", "unlike"],
+          reversible=False)
     async def unlike(self) -> ToolResult:
         """Убрать ранее поставленный лайк."""
         return await self._act("unlike")
 
     @tool(routable=False, phrases=["дизлайк", "поставь дизлайк", "мне не нравится",
-                                   "dislike"])
+                                   "dislike"],
+          reversible=False)
     async def dislike(self) -> ToolResult:
         """Поставить дизлайк."""
         return await self._act("dislike")
@@ -1095,7 +1103,8 @@ class PageSkill(Skill):
                    "поставь трек {track}", "поставь песню {track}",
                    "включи {track} на сайте", "поставь {track} на сайте",
                    "включи {track} в яндекс музыке",
-                   "play the track {track}", "play {track} on the page"])
+                   "play the track {track}", "play {track} on the page"],
+          reversible=True)
     async def play_item(self, track: str, site: str = "") -> ToolResult:
         """Включить названное — песню, трек или ролик — там, где сейчас открыт сайт: на Яндекс Музыке это музыка, на YouTube видео; на странице нет — найти в поиске этого же сайта.
 
@@ -1159,7 +1168,8 @@ class PageSkill(Skill):
                    "включи видео {track} на сайте", "открой видео {track} на сайте",
                    "включи в ютубе {track}", "открой в ютубе {track}",
                    "поставь {track} на ютубе",
-                   "play {track} on youtube", "open the video {track}"])
+                   "play {track} on youtube", "open the video {track}"],
+          reversible=True)
     async def play_video(self, track: str, site: str = "") -> ToolResult:
         """Включить названный ролик: на открытом видеосайте или в его поиске.
 
@@ -1185,7 +1195,8 @@ class PageSkill(Skill):
                    "включи канал {name}", "перейди на канал {name}",
                    "покажи канал {name}", "канал {name}",
                    "open the channel {name}", "find the channel {name}",
-                   "go to the channel {name}"])
+                   "go to the channel {name}"],
+          reversible=True)
     async def open_channel(self, name: str, site: str = "") -> ToolResult:
         """Открыть канал автора на видеосайте: найти его в поиске сайта и перейти.
 
@@ -1223,7 +1234,8 @@ class PageSkill(Skill):
                    "введи в поиск на сайте {text}", "найди на странице {text}",
                    "найди на сайте {text}", "поищи на странице {text}",
                    "поищи на сайте {text}",
-                   "type {text}", "search the page for {text}"])
+                   "type {text}", "search the page for {text}"],
+          reversible=False)
     async def type_in(self, text: str, site: str = "") -> ToolResult:
         """Напечатать текст в поле на странице — обычно в поиск сайта.
 
@@ -1260,7 +1272,8 @@ class PageSkill(Skill):
                    "прокути {where}", "прокути страницу {where}",
                    "промотай {where}", "промотай страницу {where}",
                    "пролистни {where}", "листай {where}", "в {where} страницы",
-                   "scroll {where}", "scroll the page {where}"])
+                   "scroll {where}", "scroll the page {where}"],
+          reversible=True)
     async def scroll_page(self, where: str = "down", site: str = "") -> ToolResult:
         """Пролистать страницу вверх, вниз, в самое начало или в конец.
 
@@ -1289,7 +1302,8 @@ class PageSkill(Skill):
                    "какой трек", "какой трек играет", "какой сейчас трек",
                    "какая песня", "какая песня играет", "что за трек",
                    "что за песня", "как называется трек", "как называется песня",
-                   "what is playing", "what's playing", "what song is this"])
+                   "what is playing", "what's playing", "what song is this"],
+          reversible=True)
     async def now_playing(self, site: str = "") -> ToolResult:
         """Сказать, что сейчас играет.
 
@@ -1337,7 +1351,8 @@ class PageSkill(Skill):
     @tool(phrases=["перейди на главную", "перейди на главную страницу",
                    "открой главную страницу", "вернись на главную",
                    "нажми на логотип", "нажми на лого", "нажми логотип",
-                   "go to the home page", "go home"])
+                   "go to the home page", "go home"],
+          reversible=True)
     async def home(self, site: str = "") -> ToolResult:
         """Перейти на главную страницу сайта, не открывая новую вкладку.
 
@@ -1388,7 +1403,8 @@ class PageSkill(Skill):
 
     @tool(routable=False, phrases=["включи первое видео", "открой первое видео",
                                    "включи первый результат", "открой первую ссылку",
-                                   "включи первое", "play the first video"])
+                                   "включи первое", "play the first video"],
+          reversible=True)
     async def open_first(self, site: str = "") -> ToolResult:
         """Открыть первый результат на странице выдачи.
 
@@ -1399,20 +1415,23 @@ class PageSkill(Skill):
         return await self._act("first", site=site, focused=True)
 
     @tool(routable=False, phrases=["выключи звук во вкладке", "заглуши вкладку",
-                                   "mute the tab"])
+                                   "mute the tab"],
+          reversible=True)
     async def mute_tab(self) -> ToolResult:
         """Выключить звук во вкладке, не трогая громкость системы."""
         return await self._act("mute")
 
     @tool(routable=False, phrases=["включи звук во вкладке", "верни звук во вкладке",
-                                   "unmute the tab"])
+                                   "unmute the tab"],
+          reversible=True)
     async def unmute_tab(self) -> ToolResult:
         """Вернуть звук во вкладке."""
         return await self._act("unmute")
 
     @tool(routable=False, phrases=["перемотай вперёд", "перемотай вперёд {seconds}",
                                    "перемотай на {seconds}", "промотай вперёд {seconds}",
-                                   "skip ahead", "skip ahead {seconds}"])
+                                   "skip ahead", "skip ahead {seconds}"],
+          reversible=True)
     async def forward(self, seconds: float = 0) -> ToolResult:
         """Перемотать вперёд.
 
@@ -1422,7 +1441,8 @@ class PageSkill(Skill):
 
     @tool(routable=False, phrases=["перемотай назад", "перемотай назад {seconds}",
                                    "отмотай назад {seconds}", "верни назад {seconds}",
-                                   "skip back", "skip back {seconds}"])
+                                   "skip back", "skip back {seconds}"],
+          reversible=True)
     async def back(self, seconds: float = 0) -> ToolResult:
         """Перемотать назад.
 
@@ -1993,7 +2013,7 @@ class PageSkill(Skill):
         entry["actions"] = actions
         await self._write(host, entry)
 
-    @tool(routable=False)
+    @tool(routable=False, reversible=False)
     async def forget_last(self, apply: bool = True) -> ToolResult:
         """Забыть последнее нажатие: не только выученное, но и **куда** нажали.
 

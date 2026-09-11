@@ -26,7 +26,9 @@ class MemorySkill(Skill):
         """Запомнить, какие разделы доступны."""
         self._journal = str(self.context.setting("journal", "today"))
 
-    @tool(phrases=["запомни {text}", "запиши {text}", "remember {text}", "note that {text}"])
+    @tool(phrases=["запомни {text}", "запиши {text}", "remember {text}",
+                   "note that {text}"],
+          reversible=False)
     async def remember(self, text: str, tag: str = "note") -> ToolResult:
         """Записать факт в журнал.
 
@@ -40,7 +42,8 @@ class MemorySkill(Skill):
         )
 
     @tool(phrases=["что ты помнишь", "напомни что было", "что я просил",
-                   "what do you remember", "what did i ask"])
+                   "what do you remember", "what did i ask"],
+          reversible=True)
     async def recall(self, limit: int = 5, tag: str = "") -> ToolResult:
         """Вспомнить последние записи.
 
@@ -65,7 +68,7 @@ class MemorySkill(Skill):
             speech={"ru": f"Вот что помню: {joined}", "en": f"Here is what I remember: {joined}"},
         )
 
-    @tool()
+    @tool(reversible=False)
     async def set_preference(self, key: str, value: str) -> ToolResult:
         """Сохранить устойчивое предпочтение.
 
@@ -77,7 +80,7 @@ class MemorySkill(Skill):
         await self.context.memory.documents.set("preferences", key, value)
         return ToolResult.success({key: value}, speech={"ru": f"Записал: {key} — {value}.", "en": f"Saved: {key} is {value}."})
 
-    @tool(phrases=["что ты знаешь обо мне", "what do you know about me"])
+    @tool(phrases=["что ты знаешь обо мне", "what do you know about me"], reversible=True)
     async def about_me(self) -> ToolResult:
         """Показать профиль и предпочтения."""
         profile = await self.context.memory.documents.read("profile")

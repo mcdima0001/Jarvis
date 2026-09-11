@@ -534,7 +534,8 @@ class RemindersSkill(Skill):
             "напомни {request}", "напомни мне {request}", "напоминание {request}",
             "поставь напоминание {request}", "поставь напоминание на {request}",
             "remind me {request}", "reminder {request}",
-        ]
+        ],
+        reversible=True,
     )
     async def remind(self, request: str = "", language: str = "ru") -> ToolResult:
         """Напомнить о чём-нибудь в названное время.
@@ -611,6 +612,7 @@ class RemindersSkill(Skill):
             "timer for {request}", "set a timer for {request}",
         ],
         routable=False,
+        reversible=True,
     )
     async def timer(self, request: str = "", language: str = "ru") -> ToolResult:
         """Засечь время и сказать, когда оно выйдет.
@@ -653,6 +655,7 @@ class RemindersSkill(Skill):
                  "какие у меня напоминания", "что мне напомнить", "какие таймеры",
                  "what reminders do i have", "my reminders"],
         routable=False,
+        reversible=True,
     )
     async def pending(self, language: str = "ru") -> ToolResult:
         """Перечислить напоминания, которые ещё ждут."""
@@ -689,6 +692,7 @@ class RemindersSkill(Skill):
                  "отмени напоминание {which}", "отмени напоминание про {which}",
                  "cancel the reminder", "cancel reminders"],
         routable=False,
+        reversible=False,
     )
     async def cancel(self, which: str = "") -> ToolResult:
         """Отменить напоминание.

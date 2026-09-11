@@ -12,7 +12,15 @@ from jarvis.core.audio import AudioFrame, EnergyVAD, SileroVAD, frame_rms
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import AudioConfig, WakeWordConfig
 from jarvis.core.contracts import ToolResult, Utterance
-from jarvis.core.persona import DONE, FAILED, FAREWELL, GREETING, LISTENING, Persona
+from jarvis.core.persona import (
+    DONE,
+    FAILED,
+    FAREWELL,
+    GREETING,
+    LISTENING,
+    WORKING,
+    Persona,
+)
 from jarvis.core.router import Dispatcher, PhraseResolver, Router
 from jarvis.core.tools import ToolRegistry, collect_tools, tool
 from jarvis.core.tts import NullTTS
@@ -56,13 +64,17 @@ def _pipeline(
     from jarvis.core.stt import NullSTT
 
     config = AudioConfig(
+        # Заполнитель «секунду» по умолчанию выключен: он срабатывает по
+        # таймеру, а тест, зависящий от часов, начинает мигать на медленной
+        # машине. Кому он нужен — включает порогом явно.
+        working_after_s=float(wake.get("working_after_s", 0.0)),
         wake_word=WakeWordConfig(
             mode=str(wake.get("mode", "text")),
             phrases=tuple(wake.get("phrases", ("джарвис", "jarvis"))),
             aliases=tuple(wake.get("aliases", ("жарвис",))),
             similarity=float(wake.get("similarity", 0.7)),
             follow_up_s=float(wake.get("follow_up_s", 10.0)),
-        )
+        ),
     )
     router = Router([PhraseResolver(registry)], threshold=0.6)
     return VoicePipeline(
@@ -1159,3 +1171,118 @@ async def test_two_replies_do_not_overlap(
     await asyncio.gather(pipe._say("первая"), pipe._say("вторая"))
 
     assert order == ["начал первая", "кончил первая", "начал вторая", "кончил вторая"]
+
+
+# --- речь по ходу дела ------------------------------------------------------
+
+
+class Slow:
+    """Инструмент, который отпускают снаружи: команда идёт столько, сколько надо."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+
+    @tool(phrases=["сделай долго"], reversible=True)
+    async def work(self) -> ToolResult:
+        """Долгая команда."""
+        await self.release.wait()
+        return ToolResult.success(True, speech="Готово, всё сделал.")
+
+
+def _slow_pipeline(
+    registry: ToolRegistry, events: LocalEventBus, tts: RecordingTTS, *, after: float
+) -> tuple[VoicePipeline, Slow]:
+    """Конвейер с долгой командой и включённым заполнителем."""
+    slow = Slow()
+    for item in collect_tools(slow, namespace="slow"):
+        registry.register(item)
+    pipeline = _pipeline(registry, events, tts=tts, working_after_s=after)
+    return pipeline, slow
+
+
+async def test_quick_command_is_answered_without_a_filler(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Короткая команда до порога не доживает, и «секунду» не звучит.
+
+    Это условие всей затеи: заполнитель занимает голос, а голос один. Срабатывай
+    он на каждой команде — каждый ответ приезжал бы позже, чем сейчас.
+    """
+    tts = RecordingTTS()
+    for item in collect_tools(Lights(), namespace="lights"):
+        registry.register(item)
+    pipeline = _pipeline(registry, events, tts=tts, working_after_s=5.0)
+
+    await pipeline.handle(Utterance(text="включи свет", source="text"))
+
+    assert tts.said == ["Свет включён."]
+
+
+async def test_slow_command_says_it_is_working_and_then_answers(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Затянувшаяся команда сначала отзывается, потом отвечает.
+
+    Молчащий несколько секунд ассистент неотличим от зависшего, и человек
+    повторяет команду — а повтор выполнится вторым разом.
+    """
+    tts = RecordingTTS()
+    persona = Persona()
+    pipeline, slow = _slow_pipeline(registry, events, tts, after=0.02)
+    pipeline._persona = persona
+
+    # Набор готовых реплик: варианты выбираются случайно и с подстановкой
+    # обращения, поэтому сравнивать с шаблоном напрямую нельзя. Перебираем
+    # заранее — вариантов меньше десятка.
+    expected = {persona.line(WORKING, "ru") for _ in range(80)}
+    assert expected, "у ситуации WORKING нет ни одного варианта"
+
+    task = asyncio.ensure_future(
+        pipeline.handle(Utterance(text="сделай долго", source="text"))
+    )
+    await asyncio.sleep(0.1)
+    slow.release.set()
+    result = await task
+
+    assert result.ok
+    assert len(tts.said) == 2
+    assert tts.said[0] in expected
+    assert tts.said[1] == "Готово, всё сделал."
+
+
+async def test_filler_is_not_mistaken_for_the_answer(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """`--say` печатает результат, а не «секунду».
+
+    Заполнитель произносится вслух, но ответом не является: напечатать его
+    вместо результата значило бы соврать о том, чем всё кончилось.
+    """
+    tts = RecordingTTS()
+    pipeline, slow = _slow_pipeline(registry, events, tts, after=0.02)
+
+    task = asyncio.ensure_future(
+        pipeline.handle(Utterance(text="сделай долго", source="text"))
+    )
+    await asyncio.sleep(0.1)
+    slow.release.set()
+    await task
+
+    assert pipeline.last_reply == "Готово, всё сделал."
+
+
+async def test_zero_threshold_turns_the_filler_off(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """Ноль в настройке выключает заполнитель совсем."""
+    tts = RecordingTTS()
+    pipeline, slow = _slow_pipeline(registry, events, tts, after=0.0)
+
+    task = asyncio.ensure_future(
+        pipeline.handle(Utterance(text="сделай долго", source="text"))
+    )
+    await asyncio.sleep(0.1)
+    slow.release.set()
+    await task
+
+    assert tts.said == ["Готово, всё сделал."]

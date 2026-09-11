@@ -263,3 +263,78 @@ def test_plain_numbers_still_work() -> None:
     }
     assert validate_arguments(schema, {"level": 50, "ratio": 0.5}) == {"level": 50, "ratio": 0.5}
     assert validate_arguments(schema, {"level": "50"}) == {"level": 50}
+
+
+# --- обратимость: что план имеет право делать молча -------------------------
+
+
+def test_reversibility_is_three_valued() -> None:
+    """Объявление обратимости — три состояния, и молчание не значит «можно».
+
+    `True` и `False` объявляет автор инструмента, `None` означает, что он не
+    объявил ничего. Молчание трактуется в пользу вопроса: забытый `routable`
+    стоит денег, а забытый `reversible` — отправленного не тому человеку
+    сообщения.
+    """
+
+    class Mixed:
+        @tool(reversible=True)
+        async def volume(self) -> ToolResult:
+            """Сделать громче."""
+            return ToolResult.success()
+
+        @tool(reversible=False)
+        async def send(self) -> ToolResult:
+            """Отправить сообщение."""
+            return ToolResult.success()
+
+        @tool()
+        async def unsaid(self) -> ToolResult:
+            """Автор про обратимость ничего не сказал."""
+            return ToolResult.success()
+
+    collected = collect_tools(Mixed(), namespace="x")
+    specs = {found.spec.name.split(".")[-1]: found.spec for found in collected}
+    assert specs["volume"].reversible is True
+    assert specs["send"].reversible is False
+    assert specs["unsaid"].reversible is None
+
+    # Без спроса выполняется только явно объявленное обратимым.
+    assert specs["volume"].unattended is True
+    assert specs["send"].unattended is False
+    assert specs["unsaid"].unattended is False
+
+
+def test_every_tool_in_the_project_declares_reversibility() -> None:
+    """Ни один инструмент проекта не оставлен без объявления.
+
+    Проверяются исходники, а не поднятая система: часть скиллов работает только
+    на Windows, и на Linux они бы в проверку не попали — то есть забытый флаг
+    нашёлся бы через раз.
+
+    Смысл сторожа в будущем: правило «план не даёт новых прав» соблюдается ровно
+    настолько, насколько заполнены эти пометки, а заполнять их придётся каждому,
+    кто добавит инструмент.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    sources = [root / "jarvis" / "core" / "builtin.py", *root.glob("skills/**/skill.py")]
+    assert len(sources) > 5, "не нашёл исходники скиллов — проверка была бы пустой"
+
+    silent: list[str] = []
+    for source in sources:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                named = decorator.func if isinstance(decorator, ast.Call) else decorator
+                if not (isinstance(named, ast.Name) and named.id == "tool"):
+                    continue
+                keywords = decorator.keywords if isinstance(decorator, ast.Call) else []
+                if not any(keyword.arg == "reversible" for keyword in keywords):
+                    silent.append(f"{source.relative_to(root)}:{node.name}")
+
+    assert not silent, "инструменты без объявленной обратимости: " + ", ".join(silent)

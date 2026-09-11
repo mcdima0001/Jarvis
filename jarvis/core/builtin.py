@@ -128,7 +128,7 @@ class CoreTools:
             situation if situation is not None else Situation(modes=self._modes)
         )
 
-    @tool(name="chat")
+    @tool(name="chat", reversible=True)
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
         """Ответить на свободный вопрос через языковую модель.
 
@@ -171,6 +171,7 @@ class CoreTools:
     @tool(
         name="help",
         phrases=["что ты умеешь", "список команд", "помощь", "what can you do", "help"],
+        reversible=True,
     )
     async def help(self) -> ToolResult:
         """Перечислить доступные команды."""
@@ -206,6 +207,7 @@ class CoreTools:
             "reload module {skill}",
             "reload skill {skill}",
         ],
+        reversible=False,
     )
     async def reload_skill(self, skill: str) -> ToolResult:
         """Перезагрузить скилл с диска без перезапуска приложения.
@@ -256,7 +258,7 @@ class CoreTools:
             },
         )
 
-    @tool(name="set_model", routable=False)
+    @tool(name="set_model", routable=False, reversible=True)
     async def set_model(self, task: str, model: str) -> ToolResult:
         """Сменить модель для типа задач во время работы.
 
@@ -281,7 +283,7 @@ class CoreTools:
             },
         )
 
-    @tool(name="status", phrases=["статус", "как дела", "status", "how are you"])
+    @tool(name="status", phrases=["статус", "как дела", "status", "how are you"], reversible=True)
     async def status(self) -> ToolResult:
         """Показать состояние скиллов и подключённых моделей."""
         health = await self._skills.health()
@@ -346,6 +348,7 @@ class CoreTools:
             "stop listening", "go to sleep", "don't listen",
             "stop listening for {minutes} minutes",
         ],
+        reversible=True,
     )
     async def sleep(self, minutes: int = DEFAULT_SLEEP_MINUTES) -> ToolResult:
         """Перестать принимать команды на заданное время.
@@ -390,6 +393,7 @@ class CoreTools:
             "отвечай покороче", "покороче", "отвечай коротко", "говори короче",
             "короче отвечай", "be brief", "keep it short", "shorter answers",
         ],
+        reversible=True,
     )
     async def be_brief(self, minutes: int = 0) -> ToolResult:
         """Отвечать короче обычного — одним предложением.
@@ -405,7 +409,7 @@ class CoreTools:
             },
         )
 
-    @tool(name="as_usual", phrases=list(WAKE_PHRASES), routable=False)
+    @tool(name="as_usual", phrases=list(WAKE_PHRASES), routable=False, reversible=True)
     async def as_usual(self) -> ToolResult:
         """Вернуться к обычному поведению: выключить все режимы разом.
 
@@ -441,6 +445,7 @@ class CoreTools:
         phrases=["какие режимы", "в каком ты режиме", "какой режим",
                  "что у тебя включено", "what mode are you in", "active modes"],
         routable=False,
+        reversible=True,
     )
     async def modes(self) -> ToolResult:
         """Перечислить включённые режимы.
@@ -505,6 +510,7 @@ class CoreTools:
         phrases=["не сохраняй в память", "не запоминай", "не запоминай это",
                  "забудь это", "забудь последнюю команду", "не надо это запоминать",
                  "don't remember that", "forget that", "forget the last command"],
+        reversible=False,
     )
     async def forget_last(self) -> ToolResult:
         """Отменить последнее, что ассистент запомнил сам.
@@ -577,7 +583,8 @@ class CoreTools:
         )
 
     @tool(name="spending", phrases=["сколько потрачено", "расход токенов",
-                                    "how much have you spent", "token usage"])
+                                    "how much have you spent", "token usage"],
+          reversible=True)
     async def spending(self) -> ToolResult:
         """Показать расход токенов с момента запуска."""
         report = self._llm.spending

@@ -250,7 +250,8 @@ class SearchSkill(Skill):
     # «найди и расскажи». Здесь остаются формулировки, на которые ждут ответа
     # голосом, а не открытой вкладки.
     @tool(phrases=["найди {query}", "поищи {query}",
-                   "search for {query}", "look up {query}"])
+                   "search for {query}", "look up {query}"],
+          reversible=True)
     async def web_search(self, query: str, limit: int = 3) -> ToolResult:
         """Найти страницы по запросу.
 
@@ -326,7 +327,8 @@ class SearchSkill(Skill):
         return summary
 
     @tool(phrases=["что такое {query}", "расскажи про {query}", "кто такой {query}",
-                   "what is {query}", "tell me about {query}", "who is {query}"])
+                   "what is {query}", "tell me about {query}", "who is {query}"],
+          reversible=True)
     async def answer(self, query: str) -> ToolResult:
         """Найти информацию и дать короткий ответ своими словами.
 

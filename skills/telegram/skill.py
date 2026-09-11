@@ -258,7 +258,8 @@ class TelegramSkill(Skill):
 
     @tool(phrases=["напиши {request}", "отправь сообщение {request}",
                    "напиши в телеграм {request}", "отправь в телеграм {request}",
-                   "send a telegram message {request}"])
+                   "send a telegram message {request}"],
+          reversible=False)
     async def send_message(self, request: str, text: str = "") -> ToolResult:
         """Отправить сообщение в чат Telegram.
 
@@ -310,7 +311,8 @@ class TelegramSkill(Skill):
         )
 
     @tool(phrases=["что нового в телеграме", "проверь телеграм", "новые сообщения",
-                   "есть новые сообщения", "any new messages", "check telegram"])
+                   "есть новые сообщения", "any new messages", "check telegram"],
+          reversible=True)
     async def get_recent_chats(self, limit: int = 5) -> ToolResult:
         """Показать чаты с непрочитанными сообщениями.
 
@@ -336,7 +338,8 @@ class TelegramSkill(Skill):
         )
 
     @tool(phrases=["прочитай {chat}", "что пишет {chat}", "что написал {chat}",
-                   "прочитай сообщения {chat}", "read {chat}"])
+                   "прочитай сообщения {chat}", "read {chat}"],
+          reversible=True)
     async def read_chat(self, chat: str, limit: int = 5) -> ToolResult:
         """Прочитать последние сообщения из чата.
 
@@ -370,7 +373,8 @@ class TelegramSkill(Skill):
         )
 
     @tool(phrases=["перескажи {chat}", "перескажи переписку {chat}",
-                   "о чём пишет {chat}", "summarize {chat}"])
+                   "о чём пишет {chat}", "summarize {chat}"],
+          reversible=True)
     async def summarize_chat(self, chat: str, limit: int = 0) -> ToolResult:
         """Пересказать переписку в чате.
 
