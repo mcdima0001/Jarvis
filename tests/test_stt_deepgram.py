@@ -254,3 +254,50 @@ async def test_cloud_gets_another_chance_later() -> None:
 
     assert result.text == "облако"
     assert cloud.calls == 2
+
+
+# --- подсказка словаря ------------------------------------------------------
+
+
+def test_keyterms_go_into_the_request() -> None:
+    """Слова-подсказки уходят списком: сервис ждёт повторённый параметр.
+
+    Строкой через запятую он бы понял их как одно длинное слово.
+    """
+    from jarvis.core.config import STTConfig
+    from jarvis.core.stt.deepgram import DeepgramSTT
+
+    stt = DeepgramSTT(
+        STTConfig(model="nova-3", keyterms=("Джарвис", "AyuGram")), api_key="x"
+    )
+    params = stt._params()
+
+    assert params["keyterm"] == ["Джарвис", "AyuGram"]
+
+
+def test_without_keyterms_the_parameter_is_absent() -> None:
+    """Пустая подсказка не должна превращаться в пустой параметр."""
+    from jarvis.core.config import STTConfig
+    from jarvis.core.stt.deepgram import DeepgramSTT
+
+    stt = DeepgramSTT(STTConfig(model="nova-3"), api_key="x")
+
+    assert "keyterm" not in stt._params()
+
+
+def test_shipped_config_hints_the_name() -> None:
+    """Имя обязано быть в подсказках, и это не украшение.
+
+    При `language: auto` модель ищет слово сразу в двух языках, и «Джарвис»
+    уходит в латиницу: в живом логе он приходил как «Darles», «Harvest»,
+    «Чарльз», «Jarda». Замер на одной фразе: без подсказки «Jarvis», с
+    подсказкой «Джарвис».
+    """
+    from pathlib import Path
+
+    from jarvis.core.config import load_config
+
+    root = Path(__file__).resolve().parent.parent
+    config = load_config(root / "config" / "config.yaml")
+
+    assert any("жарвис" in word.lower() for word in config.stt.keyterms)

@@ -279,6 +279,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             language=str(stt.get("language", "ru")),
             languages=tuple(str(code) for code in stt.get("languages", ("ru", "en"))),
             language_min_probability=float(stt.get("language_min_probability", 0.6)),
+            keyterms=tuple(str(word) for word in stt.get("keyterms", ())),
             fallback_language=str(stt.get("fallback_language", "ru")),
             beam_size=int(stt.get("beam_size", 1)),
             vad_filter=bool(stt.get("vad_filter", True)),

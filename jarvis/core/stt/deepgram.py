@@ -34,6 +34,7 @@ from __future__ import annotations
 import io
 import logging
 import wave
+from typing import Any
 
 import httpx
 
@@ -161,9 +162,17 @@ class DeepgramSTT:
                 self._seconds,
             )
 
-    def _params(self) -> dict[str, str]:
-        """Параметры запроса: модель, язык, оформление текста."""
-        return {
+    def _params(self) -> dict[str, Any]:
+        """Параметры запроса: модель, язык, подсказка словаря, оформление.
+
+        **Подсказка словаря нужна из-за имени, и это измерено.** При
+        `language: auto` модель ищет слово сразу в двух языках, и «Джарвис»
+        уходит в латиницу: в живом логе 11.09.2026 он приходил как «Darles»,
+        «Harvest», «Чарльз», «Jarda». На одной и той же фразе без подсказки
+        выходит «Jarvis», с подсказкой — «Джарвис». Отказываться ради этого от
+        второго языка не пришлось.
+        """
+        params: dict[str, Any] = {
             "model": self._config.model,
             "language": (
                 _MULTILINGUAL if self._config.auto_detect else self._config.language
@@ -173,6 +182,11 @@ class DeepgramSTT:
             # через словарь числительных. Первое дешевле.
             "smart_format": "true",
         }
+        if self._config.keyterms:
+            # Список, а не строка: httpx повторит параметр для каждого слова,
+            # как того и ждёт сервис.
+            params["keyterm"] = list(self._config.keyterms)
+        return params
 
     async def transcribe(self, audio: bytes, *, sample_rate: int = 16000) -> Transcript:
         """Распознать моно-PCM 16 бит.
