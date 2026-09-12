@@ -4,27 +4,31 @@
 Telegram и попросил найти место; ассистент описал картинку, но места не назвал,
 а открыть его в картах не смог вовсе.
 
-**Основа тут — содержимое снимка, а не EXIF, и это главное решение.** Первая
-версия скилла была построена на координатах из файла, и владелец сразу возразил:
-«EXIF не всегда есть». Проверка это подтвердила буквально — из сорока снимков на
-его машине координат не оказалось **ни у одного**. Мессенджеры и соцсети вырезают
-GPS при отправке, у скриншота его не бывает по построению, а именно скриншоты и
-пересланные фотографии чаще всего и показывают ассистенту.
+**Основа — содержимое снимка, а не EXIF.** Первая версия скилла была построена
+на координатах из файла, и владелец сразу возразил: «EXIF не всегда есть».
+Проверка подтвердила буквально — из сорока снимков на его машине координат не
+оказалось **ни у одного**. Мессенджеры и соцсети вырезают GPS при отправке, у
+скриншота его не бывает по построению, а именно скриншоты и пересланные
+фотографии чаще всего и показывают ассистенту.
 
-Поэтому порядок обратный привычному:
+**Нужна точка, а не город.** Второе возражение владельца: «город я и сам найду».
+Оно и определило устройство. Человек, который ищет место всерьёз, тратит
+двадцать минут и делает три вещи: перечисляет зацепки (язык вывесок, рельеф,
+растительность, разметка, номера машин), выдвигает несколько версий и проверяет
+их. Модель, которую спрашивают «где это снято», отвечает с первого взгляда и
+потому называет страну. Поэтому её просят пройти тот же путь: **сперва зацепки,
+потом до трёх версий, и каждая — точкой**.
 
-1. **Смотрим на картинку зрячей моделью** — она узнаёт место по виду: горы,
-   архитектура, вывески, тип застройки. Это работает на любом снимке, включая то,
-   что открыто на экране прямо сейчас.
-2. **Название превращаем в точку** обратным запросом к геокодеру, чтобы вышла
-   ссылка на карту, а не просто слово.
-3. **EXIF спрашиваем первым, если это файл** — не потому, что он есть, а потому,
-   что когда он есть, он точен. Это удача, а не опора.
+**Точность измеряется, а не обещается.** Геокодер отдаёт рамку найденного
+объекта, и по её размеру видно, что именно нашлось: здание — сорок метров,
+башня — сто семьдесят, площадь — триста шестьдесят, город — двадцать километров
+(замер 12.09.2026). Из версий побеждает та, что нашлась **точнее**, а не та, что
+первая. И вслух говорится, до чего дотянулись: «с точностью до здания» или
+«только до города». Владельцу это важнее названия: город он и сам найдёт.
 
 **Догадку и замер не путаем.** Координаты из файла — это «снято здесь»,
 узнавание по виду — «похоже на». Разница не косметическая: модель уверенно
-называет Анталию по любому средиземноморскому пейзажу, и выдавать это за
-измерение нельзя.
+называет Анталию по любому средиземноморскому пейзажу.
 """
 
 from __future__ import annotations
@@ -32,6 +36,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import math
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -47,54 +54,150 @@ from jarvis.core.tools import tool
 #: картинки, а разбор команд идёт на самой дешёвой.
 VISION_TASK = "vision"
 
-#: Геокодер OpenStreetMap: без ключа, по названию отдаёт точку и наоборот.
+#: Геокодер OpenStreetMap: без ключа, по названию отдаёт точку и рамку объекта.
 NOMINATIM = "https://nominatim.openstreetmap.org"
 
 #: Представляться геокодеру обязательно: их правила требуют узнаваемого имени,
 #: анонимные запросы блокируют.
 USER_AGENT = "Jarvis voice assistant (github.com/mcdima0001/Jarvis)"
 
-#: Сколько ждать геокодер. Ответ нужен внутри голосовой команды, а не когда-нибудь.
+#: Сколько ждать геокодер. Ответ нужен внутри голосовой команды.
 GEOCODE_TIMEOUT = 8.0
 
-#: Длинная сторона картинки для модели. Тот же предел, что у зрения: дальше цена
-#: в токенах растёт, а читаемость нет.
+#: Сколько версий проверять. Больше трёх — это уже не проверка версий, а
+#: перебор, и каждая стоит запроса к чужому сервису.
+MAX_CANDIDATES = 3
+
+#: Длинная сторона картинки для модели. Тот же предел, что у зрения.
 LIMIT = 1920
 
-#: Что читаем как фотографию. EXIF бывает только в этих форматах, но зрение
+#: Что читаем как фотографию. EXIF бывает только в части форматов, но зрение
 #: работает с любым, поэтому список шире.
 PICTURES = frozenset({".jpg", ".jpeg", ".jpe", ".png", ".webp", ".tif", ".tiff", ".bmp"})
 
-#: О чём спрашивать модель. Просим **одну строку с названием**, а не рассказ:
-#: ответ идёт в геокодер, и лишние слова там только мешают. Отдельно разрешаем
-#: честно не знать — иначе модель угадывает всегда.
 _ASK = {
-    "ru": (
-        "Посмотри на фотографию и назови место, где она снята, как можно точнее: "
-        "город и страну, а если узнаёшь конкретное место — его название. "
-        "Ответь ОДНОЙ строкой, только название места, без пояснений. "
-        "Не узнаёшь — ответь ровно «не знаю»."
-    ),
-    "en": (
-        "Look at the photo and name the place where it was taken, as precisely as "
-        "you can: city and country, and the landmark if you recognise one. "
-        "Answer in ONE line, the place name only, no explanations. "
-        "If you cannot tell, answer exactly \"unknown\"."
-    ),
+    "ru": """Определи, где снята эта фотография. Отвечай как человек, который ищет
+место всерьёз, а не с первого взгляда.
+
+Сначала перечисли зацепки, которые видишь: язык и текст на вывесках, стиль
+архитектуры, рельеф и силуэт гор, растительность, дорожная разметка и знаки,
+номера машин, тип столбов и ограждений, положение солнца.
+
+Потом назови до трёх версий, от самой вероятной к запасной. Версия — это ТОЧКА,
+а не город: здание, отель, пляж, набережная, смотровая площадка, перекрёсток,
+достопримечательность.
+
+Ответь строго в таком виде, без пояснений:
+ЗАЦЕПКИ: <через запятую>
+1) <название по-русски> | <название на местном языке или по-английски> | <широта, долгота или нет>
+2) <то же самое для второй версии>
+3) <то же самое для третьей версии>
+
+Узнаёшь только город — поставь город версией, но улицу не выдумывай.
+Не узнаёшь вовсе — ответь ровно: не знаю.""",
+    "en": """Work out where this photo was taken. Answer like a person who looks
+into it properly, not at first glance.
+
+First list the clues you can see: language and text on signs, architecture,
+terrain and mountain silhouette, vegetation, road markings and signs, number
+plates, poles and railings, the position of the sun.
+
+Then give up to three guesses, best first. A guess is a SPOT, not a city: a
+building, hotel, beach, promenade, viewpoint, crossroads or landmark.
+
+Answer exactly like this, with no commentary:
+CLUES: <comma separated>
+1) <name in English> | <name in the local language> | <latitude, longitude or no>
+2) <the same for the second guess>
+3) <the same for the third guess>
+
+If you only recognise the city, put the city as a guess, but do not invent a
+street. If you cannot tell at all, answer exactly: unknown.""",
 }
 
-#: Что срезать с краёв названия: обрамление и знаки, но не буквы.
-_EDGES = " 	«»\"'`.,:;!?"
+#: Подпись строки с зацепками. Обе раскладки: модель отвечает на языке вопроса.
+_CLUES = ("зацепки:", "clues:")
 
-#: Чем модель отказывается. Проверяется началом строки: «не знаю», «не могу
-#: определить», «unknown place» — всё это отказы.
+#: Строка версии: «1) название | местное | координаты». Номер обязателен — без
+#: него в разбор лезут вступления вроде «вот мои версии».
+_GUESS = re.compile(r"^\s*(\d)\s*[).]\s*(.+)$")
+
+#: Координаты в свободном виде: «36.8969, 30.7133». Знак и дробная часть
+#: необязательны, разделитель — запятая или точка с запятой.
+_POINT = re.compile(r"^\s*(-?\d{1,3}(?:[.,]\d+)?)\s*[;,]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$")
+
+#: Что срезать с краёв названия: обрамление и знаки, но не буквы.
+_EDGES = " \t«»\"'`.,:;!?"
+
+#: Чем модель отказывается. Проверяется началом строки.
 _REFUSALS = ("не знаю", "не могу", "непонятно", "unknown", "i cannot", "i can't", "unable")
+
+#: Насколько точен найденный объект, метров по большей стороне, и как это назвать
+#: вслух. Пороги из замера по геокодеру 12.09.2026: здание — 47 м, башня — 175,
+#: площадь — 359, город — от двадцати километров.
+PRECISION = (
+    (250.0, "с точностью до здания", "within about a hundred metres"),
+    (2_000.0, "с точностью до квартала", "within a couple of blocks"),
+    (100_000.0, "только до города", "the city only"),
+    (float("inf"), "только до региона", "the region only"),
+)
+
+#: Насколько точен объект по рангу геокодера: ранг → метры. Ранг — это
+#: подробность объекта в шкале OSM, от страны (4) до дома (30).
+#:
+#: **Рамка объекта тут не годится, и это выяснилось замером.** У точечных
+#: объектов геокодер отдаёт рамку в одиннадцать метров — всегда, чем бы объект
+#: ни был: и у отеля, и у семикилометрового пляжа, и у Средиземного моря. То
+#: есть по рамке метка неотличима от здания. Ранг же честен: у моря он 2, у
+#: города 16, у здания 30.
+RANK_METRES = (
+    (30, 100.0),
+    (27, 300.0),
+    (24, 1_000.0),
+    (20, 3_000.0),
+    (16, 25_000.0),
+    (12, 60_000.0),
+    (0, 500_000.0),
+)
 
 #: Части адреса от точной к общей — для ответа по координатам из файла.
 _ADDRESS = (
     "tourism", "attraction", "building", "amenity", "road",
     "suburb", "city", "town", "village", "county", "state", "country",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Guess:
+    """Одна версия модели: как называется и где, если она сказала."""
+
+    name: str
+    local: str = ""
+    point: tuple[float, float] | None = None
+
+    @property
+    def queries(self) -> tuple[str, ...]:
+        """Чем спрашивать геокодер, по порядку.
+
+        Местное написание первым, и это не вежливость: «пляж Конъяалты, Анталия»
+        и «отель Rixos Downtown Antalya» по-русски не находятся вовсе, а
+        по-английски и по-турецки находятся (замер 12.09.2026).
+        """
+        names = [name for name in (self.local, self.name) if name]
+        return tuple(dict.fromkeys(names))
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """Что модель вычитала из снимка: зацепки и версии."""
+
+    clues: str = ""
+    guesses: tuple[Guess, ...] = field(default_factory=tuple)
+
+    @property
+    def empty(self) -> bool:
+        """Нечего проверять."""
+        return not self.guesses
 
 
 def is_refusal(answer: str) -> bool:
@@ -108,23 +211,141 @@ def is_refusal(answer: str) -> bool:
 
 
 def clean_place(answer: str) -> str:
-    """Привести ответ модели к названию, которое можно спросить у геокодера.
+    """Снять с названия обрамление и знаки.
 
-    Модель просят ответить одной строкой, но она нет-нет да добавит вступление.
-    Берём первую строку и снимаем кавычки с точкой — остальное не трогаем:
-    выкусывать «лишнее» из названия места опаснее, чем оставить.
+    Одним набором и с обоих концов: по отдельности точка и кавычка спасают друг
+    друга — «Анталия».» теряло точку и оставляло кавычку.
     """
     first = answer.strip().splitlines()[0] if answer.strip() else ""
-    # Снимаем обрамление одним набором и с обоих концов: по отдельности точка и
-    # кавычка спасают друг друга — «Анталия».» теряло точку и оставляло кавычку.
     return first.strip(_EDGES)
+
+
+def parse_point(text: str) -> tuple[float, float] | None:
+    """Координаты из свободной строки. ``None`` — их там нет.
+
+    Модель пишет то «36.8969, 30.7133», то «нет». Берём только то, что похоже на
+    пару чисел, и проверяем, что они на Земле: перепутанные местами широта и
+    долгота иначе уехали бы в океан молча.
+    """
+    found = _POINT.match(text.strip().strip(_EDGES))
+    if found is None:
+        return None
+    try:
+        latitude = float(found.group(1).replace(",", "."))
+        longitude = float(found.group(2).replace(",", "."))
+    except ValueError:
+        return None
+    if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+        return None
+    return latitude, longitude
+
+
+def parse_reading(answer: str) -> Reading:
+    """Разобрать ответ модели: строка зацепок и пронумерованные версии.
+
+    Разбор терпим к мелочам оформления и строг к сути: версия без названия не
+    версия, а третье поле (координаты) модель нет-нет да и опустит.
+    """
+    clues = ""
+    guesses: list[Guess] = []
+    for line in answer.splitlines():
+        stripped = line.strip()
+        low = stripped.lower()
+        for mark in _CLUES:
+            if low.startswith(mark):
+                clues = stripped[len(mark) :].strip(_EDGES)
+                break
+        found = _GUESS.match(stripped)
+        if found is None:
+            continue
+        parts = [part.strip(_EDGES) for part in found.group(2).split("|")]
+        name = parts[0] if parts else ""
+        if not name or is_refusal(name):
+            continue
+        local = parts[1] if len(parts) > 1 else ""
+        point = parse_point(parts[2]) if len(parts) > 2 else None
+        guesses.append(Guess(name=name, local=local, point=point))
+    return Reading(clues=clues, guesses=tuple(guesses[:MAX_CANDIDATES]))
+
+
+def span_metres(box: Any) -> float | None:
+    """Размер найденного объекта по большей стороне, метров.
+
+    Рамка приходит как «юг, север, запад, восток» в градусах. Долгота к полюсам
+    сжимается, поэтому её умножаем на косинус широты — иначе объект в Норвегии
+    выглядел бы вдвое шире, чем он есть.
+    """
+    try:
+        south, north, west, east = (float(value) for value in box)
+    except (TypeError, ValueError):
+        return None
+    middle = math.radians((south + north) / 2)
+    tall = abs(north - south) * 111_320
+    wide = abs(east - west) * 111_320 * math.cos(middle)
+    return max(tall, wide)
+
+
+def precision_of(found: dict[str, Any]) -> float | None:
+    """Насколько точен ответ геокодера, метров. ``None`` — судить нечем.
+
+    Два источника, и порядок между ними важен:
+
+    * **Протяжённый объект** (линия или область) сам говорит о своём размере
+      рамкой, и точнее этого не скажешь: у Красной площади 359 метров, у Твери
+      двадцать один километр.
+    * **Точечный объект** о размере не говорит ничего: рамка у него всегда
+      одиннадцать метров — и у отеля, и у семикилометрового пляжа, и у
+      Средиземного моря (замер 12.09.2026). Тут судим по рангу.
+
+    Ошибка в оставшемся случае возможна и признаётся: пляж, отмеченный на карте
+    точкой, получит «до здания», хотя тянется на километры. Цена мала — таких
+    объектов немного, а обратная ошибка (объявить отель городом) обесценила бы
+    ответ целиком.
+    """
+    rank = found.get("place_rank")
+    box = span_metres(found.get("boundingbox"))
+    if str(found.get("osm_type", "")).lower() in ("way", "relation") and box is not None:
+        return box
+    return metres_for_rank(rank)
+
+
+def metres_for_rank(rank: Any) -> float | None:
+    """Во что превращается ранг геокодера. ``None`` — ранга нет."""
+    try:
+        value = int(rank)
+    except (TypeError, ValueError):
+        return None
+    for edge, metres in RANK_METRES:
+        if value >= edge:
+            return metres
+    return None
+
+
+def describe_precision(metres: float | None, language: str = "ru") -> str:
+    """Как назвать вслух достигнутую точность. Пусто — точность неизвестна."""
+    if metres is None:
+        return ""
+    for limit, russian, english in PRECISION:
+        if metres <= limit:
+            return english if language == "en" else russian
+    return ""
+
+
+def tighter(candidate: float | None, current: float | None) -> bool:
+    """Точнее ли новая версия прежней.
+
+    Неизвестная точность хуже любой известной: выбирать вслепую нечего.
+    """
+    if candidate is None:
+        return False
+    return current is None or candidate < current
 
 
 def map_url(latitude: float, longitude: float) -> str:
     """Ссылка на точку в OpenStreetMap."""
     return (
         f"https://www.openstreetmap.org/?mlat={latitude:.6f}"
-        f"&mlon={longitude:.6f}#map=15/{latitude:.6f}/{longitude:.6f}"
+        f"&mlon={longitude:.6f}#map=17/{latitude:.6f}/{longitude:.6f}"
     )
 
 
@@ -149,8 +370,7 @@ def coordinates_of(path: Path) -> tuple[float, float] | None:
     """Координаты съёмки из EXIF. ``None`` — их там нет, и это обычное дело.
 
     Через Pillow, а не своим разбором TIFF: Pillow и так нужен этому скиллу,
-    чтобы показать картинку модели, а сто тридцать строк ручного разбора
-    двоичного формата — это сто тридцать строк, которые некому чинить.
+    чтобы показать картинку модели.
     """
     try:
         from PIL import ExifTags, Image
@@ -180,8 +400,9 @@ def picture_for_model(path: Path, *, limit: int = LIMIT) -> tuple[str, tuple[int
     """Картинка из файла в виде ``data:``-URI для зрячей модели.
 
     Уменьшаем только то, что больше предела: у зрения замерено, что на участке
-    от 768 до 2200 пикселей цена в токенах не меняется вовсе, а читаемость от
-    сжатия портится всерьёз.
+    от 768 до 2200 пикселей цена в токенах не меняется, а читаемость от сжатия
+    портится всерьёз. Читаемость тут и есть точность: место узнают по вывеске и
+    по силуэту гор, и то и другое сжатие съедает первым.
     """
     from PIL import Image
 
@@ -193,7 +414,7 @@ def picture_for_model(path: Path, *, limit: int = LIMIT) -> tuple[str, tuple[int
             size = (max(1, int(size[0] * scale)), max(1, int(size[1] * scale)))
             picture = picture.resize(size, Image.LANCZOS)
         buffer = io.BytesIO()
-        picture.save(buffer, format="JPEG", quality=88)
+        picture.save(buffer, format="JPEG", quality=92)
     body = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{body}", size
 
@@ -215,7 +436,7 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.2.0",
+        version="0.3.0",
         spoken=("место по фото", "где снято", "photo place"),
     )
 
@@ -251,8 +472,10 @@ class PhotoPlaceSkill(Skill):
         ],
         reversible=False,
     )
-    async def photo_place(self, path: str = "", language: str = "ru") -> ToolResult:
-        """Назвать место, где снята фотография.
+    async def photo_place(
+        self, path: str = "", hint: str = "", language: str = "ru"
+    ) -> ToolResult:
+        """Назвать место, где снята фотография, как можно точнее.
 
         Пустой путь означает «то, что сейчас на экране»: чаще всего снимок
         показывают именно так — в мессенджере или в браузере.
@@ -261,12 +484,14 @@ class PhotoPlaceSkill(Skill):
         чужое облако, и делать это шагом плана без спроса нельзя.
 
         :param path: путь к файлу; пусто — смотреть на экран.
+        :param hint: что владелец знает о снимке и чего на нём не видно: «это
+            Турция», «не Анталия». Сужает поиск сильнее любых зацепок.
         :param language: язык ответа.
         """
         code = "en" if str(language).startswith("en") else "ru"
         if path.strip():
-            return await self._by_file(path, code)
-        return await self._by_screen(code)
+            return await self._by_file(path, code, hint)
+        return await self._by_screen(code, hint)
 
     @tool(
         phrases=[
@@ -277,16 +502,20 @@ class PhotoPlaceSkill(Skill):
         ],
         reversible=False,
     )
-    async def place_on_map(self, path: str = "", language: str = "ru") -> ToolResult:
+    async def place_on_map(
+        self, path: str = "", hint: str = "", language: str = "ru"
+    ) -> ToolResult:
         """Найти место съёмки и открыть его в картах.
 
         :param path: путь к файлу; пусто — смотреть на экран.
+        :param hint: что владелец знает о снимке и чего на нём не видно.
         :param language: язык ответа.
         """
-        found = await self.photo_place(path=path, language=language)
+        found = await self.photo_place(path=path, hint=hint, language=language)
         if not found.ok:
             return found
-        url = (found.value or {}).get("map_url") if isinstance(found.value, dict) else None
+        value = found.value if isinstance(found.value, dict) else {}
+        url = value.get("map_url")
         if not url:
             return ToolResult.failure(
                 "место названо, а точки на карте нет",
@@ -298,9 +527,9 @@ class PhotoPlaceSkill(Skill):
         if not self.tools.has("browser.open_site"):
             return found
         await self.tools.invoke("browser.open_site", {"site": url})
-        place = (found.value or {}).get("place") or ""
+        place = value.get("place") or ""
         return ToolResult.success(
-            found.value,
+            value,
             speech={
                 "ru": f"Открыл на карте: {place}." if place else "Открыл на карте.",
                 "en": f"Opened on the map: {place}." if place else "Opened on the map.",
@@ -325,7 +554,7 @@ class PhotoPlaceSkill(Skill):
 
     # --- откуда берём картинку ---------------------------------------------
 
-    async def _by_screen(self, code: str) -> ToolResult:
+    async def _by_screen(self, code: str, hint: str) -> ToolResult:
         """Спросить у зрения про то, что на экране.
 
         Своего снимка экрана не делаем: этим занимается скилл `screen`, и
@@ -340,12 +569,14 @@ class PhotoPlaceSkill(Skill):
                     "en": "I cannot see the screen: the vision module is missing.",
                 },
             )
-        looked = await self.tools.invoke("screen.look", {"question": _ASK[code]})
+        looked = await self.tools.invoke(
+            "screen.look", {"question": self._question(code, hint)}
+        )
         if not looked.ok:
             return looked
-        return await self._answer(str(looked.value or ""), code, exact=None)
+        return await self._answer(str(looked.value or ""), code)
 
-    async def _by_file(self, path: str, code: str) -> ToolResult:
+    async def _by_file(self, path: str, code: str, hint: str) -> ToolResult:
         """Разобрать файл: сперва координаты, если они есть, потом вид."""
         photo = resolve_photo(path)
         if photo is None:
@@ -358,9 +589,8 @@ class PhotoPlaceSkill(Skill):
             )
         exact = await asyncio.to_thread(coordinates_of, photo)
         if exact is not None:
-            # Координаты в файле — редкая удача, зато точная: спрашиваем не «что
-            # это за место», а «как называется вот эта точка».
-            return await self._by_coordinates(exact, code, photo)
+            # Координаты в файле — редкая удача, зато точная.
+            return await self._by_coordinates(exact, photo)
 
         try:
             image, _ = await asyncio.to_thread(picture_for_model, photo)
@@ -372,8 +602,8 @@ class PhotoPlaceSkill(Skill):
                     "en": "I could not open that photo.",
                 },
             )
-        answer = await self._ask_model(image, code)
-        if answer is None:
+        said = await self._ask_model(image, code, hint)
+        if said is None:
             return ToolResult.failure(
                 "зрячая модель не ответила",
                 speech={
@@ -381,11 +611,22 @@ class PhotoPlaceSkill(Skill):
                     "en": "The model did not answer about this photo.",
                 },
             )
-        return await self._answer(answer, code, exact=None)
+        return await self._answer(said, code)
 
-    async def _ask_model(self, image: str, code: str) -> str | None:
-        """Показать картинку зрячей модели и получить название места."""
-        messages = [Message.user(_ASK[code], images=(image,))]
+    def _question(self, code: str, hint: str) -> str:
+        """Что спросить у зрения, с учётом подсказки владельца."""
+        asked = _ASK[code]
+        clue = hint.strip()
+        if not clue:
+            return asked
+        # Подсказка идёт первой строкой: человек знает о снимке то, чего на нём
+        # не видно, и это сужает поиск сильнее любых зацепок с картинки.
+        head = "Владелец подсказывает" if code == "ru" else "The owner says"
+        return f"{head}: {clue}\n\n{asked}"
+
+    async def _ask_model(self, image: str, code: str, hint: str) -> str | None:
+        """Показать картинку зрячей модели и получить зацепки с версиями."""
+        messages = [Message.user(self._question(code, hint), images=(image,))]
         try:
             response = await self.context.llm.complete(messages, task=VISION_TASK)
         except Exception as exc:  # noqa: BLE001 — сеть и тариф, не наша вина
@@ -393,10 +634,10 @@ class PhotoPlaceSkill(Skill):
             return None
         return response.text.strip()
 
-    # --- что делаем с названием ---------------------------------------------
+    # --- что делаем с версиями -----------------------------------------------
 
-    async def _answer(self, said: str, code: str, *, exact: tuple[float, float] | None) -> ToolResult:
-        """Собрать ответ по названию, которое дала модель."""
+    async def _answer(self, said: str, code: str) -> ToolResult:
+        """Проверить версии геокодером и выбрать ту, что нашлась точнее."""
         if is_refusal(said):
             return ToolResult.failure(
                 "модель места не узнала",
@@ -405,36 +646,93 @@ class PhotoPlaceSkill(Skill):
                     "en": "I cannot tell where this was taken.",
                 },
             )
-        place = clean_place(said)
-        point = exact or await self._find(place)
+        reading = parse_reading(said)
+        if reading.empty:
+            # Формат не соблюдён, но ответ есть, и терять его нельзя: берём
+            # первую строку как единственную версию.
+            reading = Reading(guesses=(Guess(name=clean_place(said)),))
+        if reading.clues:
+            self.log.info("Зацепки на снимке: %s", reading.clues)
+
+        best = await self._weigh(reading.guesses)
+        if best is None:
+            return ToolResult.failure(
+                "версии не подтвердились",
+                speech={
+                    "ru": "Место назвать не берусь, ничего не сходится.",
+                    "en": "I would rather not guess, nothing checks out.",
+                },
+            )
+        guess, point, metres = best
+        accuracy = describe_precision(metres, code)
         payload: dict[str, Any] = {
-            "place": place,
-            "exact": exact is not None,
+            "place": guess.name,
+            "local": guess.local,
+            "clues": reading.clues,
+            "guesses": [item.name for item in reading.guesses],
+            "exact": False,
+            "accuracy_m": round(metres) if metres is not None else None,
             "latitude": point[0] if point else None,
             "longitude": point[1] if point else None,
             "map_url": map_url(*point) if point else "",
         }
-        self.log.info("Место по фотографии: %r, точка %s", place, point)
-        # «Похоже на» и «снято здесь» — разные утверждения, и путать их нельзя:
-        # модель уверенно называет Анталию по любому южному пейзажу.
+        self.log.info(
+            "Место по снимку: %r, точка %s, точность %s м (версии: %s)",
+            guess.name,
+            point,
+            round(metres) if metres is not None else "?",
+            ", ".join(item.name for item in reading.guesses),
+        )
         if point is None:
             return ToolResult.success(
                 payload,
                 speech={
-                    "ru": f"Похоже на {place}. На карте показать не смогу.",
-                    "en": f"Looks like {place}. I cannot put it on the map though.",
+                    "ru": f"Похоже на {guess.name}. На карте показать не смогу.",
+                    "en": f"Looks like {guess.name}. I cannot put it on the map though.",
                 },
             )
+        # Точность говорится вслух: владельцу нужна точка, и услышать «только до
+        # города» ему важнее, чем услышать название города.
+        tail = f", {accuracy}" if accuracy else ""
         return ToolResult.success(
             payload,
             speech={
-                "ru": f"Похоже на {place}.",
-                "en": f"Looks like {place}.",
+                "ru": f"Похоже на {guess.name}{tail}.",
+                "en": f"Looks like {guess.name}{tail}.",
             },
         )
 
+    async def _weigh(
+        self, guesses: tuple[Guess, ...]
+    ) -> tuple[Guess, tuple[float, float] | None, float | None] | None:
+        """Проверить версии и вернуть лучшую: название, точку и точность.
+
+        **Побеждает та, что нашлась точнее, а не первая.** Модель ставит первой
+        самую вероятную, но вероятная и точная — разные вещи: «Анталия» вернее
+        «отеля Rixos», а толку от неё меньше.
+
+        Координаты самой модели идут в дело, когда геокодер названия не знает:
+        «вон та бухта» именем не ищется, а точкой — да. Точность в этом случае
+        неизвестна, и о ней честно молчим, а не выдумываем число.
+        """
+        best: tuple[Guess, tuple[float, float] | None, float | None] | None = None
+        for guess in guesses:
+            found = await self._find(guess)
+            if found is not None:
+                try:
+                    point = (float(found["lat"]), float(found["lon"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                metres = precision_of(found)
+                if best is None or tighter(metres, best[2]):
+                    best = (guess, point, metres)
+                continue
+            if guess.point is not None and best is None:
+                best = (guess, guess.point, None)
+        return best
+
     async def _by_coordinates(
-        self, point: tuple[float, float], code: str, photo: Path
+        self, point: tuple[float, float], photo: Path
     ) -> ToolResult:
         """Ответ по координатам из файла — единственный случай, когда мы знаем."""
         answer = await self._named(point)
@@ -442,6 +740,7 @@ class PhotoPlaceSkill(Skill):
         payload = {
             "place": place,
             "exact": True,
+            "accuracy_m": 10,
             "latitude": point[0],
             "longitude": point[1],
             "map_url": map_url(*point),
@@ -459,33 +758,29 @@ class PhotoPlaceSkill(Skill):
         return ToolResult.success(
             payload,
             speech={
-                "ru": f"Снято здесь: {place}.",
-                "en": f"Taken here: {place}.",
+                "ru": f"Снято здесь: {place}. Это из самого снимка, точно.",
+                "en": f"Taken here: {place}. That is from the photo itself, exact.",
             },
         )
 
     # --- геокодер ------------------------------------------------------------
 
-    async def _find(self, place: str) -> tuple[float, float] | None:
-        """Название — в точку. ``None`` — геокодер такого не знает."""
-        if not place:
-            return None
-        try:
-            response = await self._http().get(
-                f"{NOMINATIM}/search",
-                params={"q": place, "format": "jsonv2", "limit": 1},
-            )
-            response.raise_for_status()
-            found = response.json()
-        except (httpx.HTTPError, ValueError) as error:
-            self.log.warning("Геокодер не ответил на %r: %s", place, error)
-            return None
-        if not isinstance(found, list) or not found:
-            return None
-        try:
-            return float(found[0]["lat"]), float(found[0]["lon"])
-        except (KeyError, TypeError, ValueError):
-            return None
+    async def _find(self, guess: Guess) -> dict[str, Any] | None:
+        """Название — в объект на карте. ``None`` — геокодер такого не знает."""
+        for query in guess.queries:
+            try:
+                response = await self._http().get(
+                    f"{NOMINATIM}/search",
+                    params={"q": query, "format": "jsonv2", "limit": 1},
+                )
+                response.raise_for_status()
+                found = response.json()
+            except (httpx.HTTPError, ValueError) as error:
+                self.log.warning("Геокодер не ответил на %r: %s", query, error)
+                return None
+            if isinstance(found, list) and found and isinstance(found[0], dict):
+                return found[0]
+        return None
 
     async def _named(self, point: tuple[float, float]) -> dict[str, Any] | None:
         """Точка — в название. ``None`` — геокодер промолчал."""

@@ -193,3 +193,161 @@ def test_only_pictures_are_accepted(tmp_path: Path) -> None:
     assert place.resolve_photo(str(tmp_path / "нет.jpg")) is None
     assert place.resolve_photo("") is None
     assert place.resolve_photo(f'"{picture}"') == picture
+
+
+# --- зацепки и версии --------------------------------------------------------
+
+_ANSWER = """ЗАЦЕПКИ: турецкий язык на вывесках, силуэт гор Бейдаглары, жёлтые такси
+1) Анталия, Турция | Antalya, Turkey | 36.8969, 30.7133
+2) Пляж Коньяалты | Konyaalti Beach, Antalya | нет
+3) Старый город Калеичи | Kaleici, Antalya | 36.88, 30.70"""
+
+
+def test_clues_and_guesses_are_read() -> None:
+    """Из ответа вынимаются и зацепки, и все три версии с их полями."""
+    reading = place.parse_reading(_ANSWER)
+
+    assert "жёлтые такси" in reading.clues
+    assert [guess.name for guess in reading.guesses] == [
+        "Анталия, Турция",
+        "Пляж Коньяалты",
+        "Старый город Калеичи",
+    ]
+    assert reading.guesses[0].point == (36.8969, 30.7133)
+    assert reading.guesses[1].point is None, "«нет» — это не координаты"
+
+
+def test_local_name_is_asked_first() -> None:
+    """Геокодер спрашивается местным написанием раньше русского.
+
+    Замер 12.09.2026: «пляж Конъяалты, Анталия» и «отель Rixos Downtown
+    Antalya» по-русски не находятся вовсе, а по-английски находятся.
+    """
+    guess = place.Guess(name="Пляж Коньяалты", local="Konyaalti Beach")
+
+    assert guess.queries == ("Konyaalti Beach", "Пляж Коньяалты")
+    assert place.Guess(name="Тверь").queries == ("Тверь",)
+    assert place.Guess(name="Тверь", local="Тверь").queries == ("Тверь",)
+
+
+def test_more_than_three_guesses_are_cut() -> None:
+    """Четвёртая версия — уже перебор, и каждая стоит запроса к чужому сервису."""
+    many = "\n".join(f"{n}) Версия {n} | Guess {n} | нет" for n in range(1, 6))
+
+    assert len(place.parse_reading(many).guesses) == place.MAX_CANDIDATES
+
+
+def test_sloppy_format_still_gives_something() -> None:
+    """Формат не соблюдён — но ответ есть, и терять его нельзя."""
+    assert place.parse_reading("Это точно Анталия").guesses == ()
+    assert place.clean_place("Это точно Анталия") == "Это точно Анталия"
+
+
+def test_refusal_inside_a_guess_is_skipped() -> None:
+    """«Не знаю» версией не считается, даже если стоит под номером."""
+    reading = place.parse_reading("1) не знаю | unknown | нет\n2) Тверь | Tver | нет")
+
+    assert [guess.name for guess in reading.guesses] == ["Тверь"]
+
+
+@pytest.mark.parametrize(
+    ("said", "expected"),
+    [
+        ("36.8969, 30.7133", (36.8969, 30.7133)),
+        ("-33.8688, 151.2093", (-33.8688, 151.2093)),
+        ("55,75; 37,62", (55.75, 37.62)),
+        ("нет", None),
+        ("", None),
+        ("возможно где-то там", None),
+        ("999.0, 30.0", None),
+    ],
+)
+def test_coordinates_are_read_or_refused(said: str, expected) -> None:
+    """Координаты берём только тогда, когда это правда координаты.
+
+    Перепутанные местами или выдуманные числа уехали бы в океан молча.
+    """
+    assert place.parse_point(said) == expected
+
+
+# --- измеренная точность -----------------------------------------------------
+
+
+def test_extended_object_is_measured_by_its_box() -> None:
+    """У линии и области рамка — это правда её размер."""
+    square = {
+        "osm_type": "relation",
+        "place_rank": 25,
+        "boundingbox": ["55.752", "55.755", "37.619", "37.624"],
+    }
+
+    metres = place.precision_of(square)
+    assert metres is not None and 200 < metres < 600
+    assert place.describe_precision(metres) == "с точностью до квартала"
+
+
+def test_point_object_is_judged_by_its_rank() -> None:
+    """У метки рамка всегда одиннадцать метров и не значит ничего.
+
+    Замер 12.09.2026: одинаковые одиннадцать метров у отеля, у семикилометрового
+    пляжа и у Средиземного моря. По рамке метка неотличима от здания, по рангу —
+    отличима сразу.
+    """
+    hotel = {"osm_type": "node", "place_rank": 30, "boundingbox": ["36.8", "36.8", "30.7", "30.7"]}
+    city = {"osm_type": "node", "place_rank": 16, "boundingbox": ["36.8", "36.8", "30.7", "30.7"]}
+    sea = {"osm_type": "node", "place_rank": 2, "boundingbox": ["35.0", "35.0", "20.0", "20.0"]}
+
+    assert place.describe_precision(place.precision_of(hotel)) == "с точностью до здания"
+    assert place.describe_precision(place.precision_of(city)) == "только до города"
+    assert place.describe_precision(place.precision_of(sea)) == "только до региона"
+
+
+def test_big_city_is_still_a_city() -> None:
+    """Анталия занимает тридцать пять километров и остаётся городом, не регионом."""
+    antalya = {
+        "osm_type": "relation",
+        "place_rank": 16,
+        "boundingbox": ["36.75", "37.07", "30.55", "30.95"],
+    }
+
+    assert place.describe_precision(place.precision_of(antalya)) == "только до города"
+
+
+def test_unknown_precision_is_not_invented() -> None:
+    """Судить нечем — молчим, а не выдумываем число."""
+    assert place.precision_of({"osm_type": "node"}) is None
+    assert place.describe_precision(None) == ""
+
+
+def test_longitude_shrinks_towards_the_poles() -> None:
+    """Градус долготы в Норвегии вдвое короче, чем на экваторе."""
+    equator = place.span_metres(["0.0", "0.0", "0.0", "1.0"])
+    north = place.span_metres(["60.0", "60.0", "0.0", "1.0"])
+
+    assert equator is not None and north is not None
+    assert north < equator * 0.6
+
+
+# --- какая версия побеждает --------------------------------------------------
+
+
+def test_the_most_precise_guess_wins_not_the_first() -> None:
+    """Вероятная и точная — разные вещи, и владельцу нужна точная.
+
+    Модель ставит первой самую вероятную версию: «Анталия» вернее «отеля
+    Rixos», а толку от неё меньше — город владелец и сам найдёт.
+    """
+    assert place.tighter(100.0, 25_000.0)
+    assert not place.tighter(25_000.0, 100.0)
+    assert place.tighter(100.0, None), "известная точность лучше неизвестной"
+    assert not place.tighter(None, 25_000.0)
+
+
+def test_prompt_demands_a_spot_not_a_city() -> None:
+    """Подсказка обязана требовать точку: на этом скилл и переделывали."""
+    russian = " ".join(place._ASK["ru"].split())
+    english = " ".join(place._ASK["en"].split())
+
+    assert "ТОЧКА, а не город" in russian
+    assert "SPOT, not a city" in english
+    assert "ЗАЦЕПКИ" in russian, "без зацепок модель отвечает страной"
