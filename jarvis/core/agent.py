@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jarvis.core.contracts import Intent
 from jarvis.core.errors import LLMError, LLMNotConfigured
@@ -105,6 +105,11 @@ class Step:
     summary: str = ""
 
 
+def _signature(tool: str, arguments: Mapping[str, Any]) -> str:
+    """Отпечаток шага: по нему цикл узнаёт, что ходит по кругу."""
+    return f"{tool}:{json.dumps(dict(arguments), sort_keys=True, ensure_ascii=False)}"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Outcome:
     """Чем кончился цикл."""
@@ -166,15 +171,30 @@ class Planner:
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         return text[:RESULT_LIMIT]
 
-    async def run(self, goal: str, *, language: str = "ru") -> Outcome:
-        """Выполнить цель шагами и вернуть, чем всё кончилось."""
+    async def run(
+        self, goal: str, *, language: str = "ru", done: Sequence[Step] = ()
+    ) -> Outcome:
+        """Выполнить цель шагами и вернуть, чем всё кончилось.
+
+        :param done: шаги, сделанные до этого вызова. Нужны, когда цикл упёрся в
+            необратимое, владелец разрешил, и работу надо **продолжить**, а не
+            начать заново. Без них цикл пошёл бы по второму кругу: снова выбрал
+            бы тот же шаг, снова упёрся бы в него и снова спросил — а человек
+            уже ответил. Их результаты идут в переписку так же, как результаты
+            шагов, сделанных прямо сейчас: модель не должна различать, на каком
+            вызове шаг случился.
+        """
         schemas = self._schemas()
         if not schemas:
             return Outcome(stopped="нет инструментов")
 
         messages = self._opening(goal, language)
-        history: list[Step] = []
-        seen: set[str] = set()
+        history: list[Step] = list(done)
+        seen: set[str] = {_signature(step.tool, step.arguments) for step in history}
+        for step in history:
+            messages.append(
+                Message.user(f"Вызвал {step.tool}, получилось: {step.summary}")
+            )
 
         for number in range(1, self._steps + 1):
             try:
@@ -206,7 +226,7 @@ class Planner:
                     ),
                 )
 
-            signature = f"{name}:{json.dumps(dict(call.arguments), sort_keys=True, ensure_ascii=False)}"
+            signature = _signature(name, call.arguments)
             if signature in seen:
                 # Повтор того же шага означает, что модель ходит по кругу.
                 # Дальше она будет ходить по нему за наши деньги.

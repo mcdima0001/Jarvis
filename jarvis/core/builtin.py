@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from jarvis.core.agent import Outcome, Planner
+from jarvis.core.agent import Outcome, Planner, Step
 from jarvis.core.contracts import Intent, ToolResult
 from jarvis.core.dialogue import Conversation
 from jarvis.core.jobs import Jobs, busy_line, shorten
@@ -157,6 +158,25 @@ def _steps_done(outcome: "Outcome", language: str) -> str:
 #: Формы слова «процент» под число: ответ произносится вслух.
 _PERCENT = ("процент", "процента", "процентов")
 
+#: Сколько живёт прерванный план, секунд. Тот же порядок, что у заданного
+#: вопроса: разрешение, данное давно, относится уже к другому разговору.
+RESUME_TTL_S = 120.0
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Waiting:
+    """Прерванный план: цель, сделанное и шаг, на который спросили разрешения."""
+
+    goal: str
+    steps: tuple[Step, ...]
+    approved: Intent
+    at: float
+
+    def stale(self, now: float | None = None) -> bool:
+        """Протух ли: согласие через час — это уже про другое."""
+        moment = time.monotonic() if now is None else now
+        return moment - self.at >= RESUME_TTL_S
+
 
 class CoreTools:
     """Инструменты, которые ядро регистрирует само."""
@@ -201,6 +221,9 @@ class CoreTools:
         #: Чем попросить приложение выключиться. Инструмент сам этого не умеет
         #: и не должен: остановка сервисов — дело composition root.
         self._shutdown = shutdown
+        #: Прерванный план, ждущий разрешения. Один на систему: вопрос тоже один
+        #: (`pending.py`), и двух прерванных планов сразу быть не может.
+        self._waiting: _Waiting | None = None
         #: Учёт нагрузки по звеньям — чтобы на «что греет» отвечать цифрами.
         self._meter = meter if meter is not None else Meter(enabled=False)
         #: Недавний разговор. Тот же экземпляр, что у конвейера и обстановки:
@@ -277,7 +300,13 @@ class CoreTools:
                 },
             )
 
-        outcome = await self._planner().run(goal, language=code)
+        # Продолжение прерванного плана: владелец разрешил шаг, и работа идёт
+        # дальше **с того же места**. Раньше согласие выполняло один шаг и на
+        # этом всё кончалось — цель терялась. В живом запуске 12.09.2026 план
+        # посмотрел на экран, описал фотографию и замолчал, хотя просили найти
+        # место и открыть его в картах.
+        already = await self._resumed(goal)
+        outcome = await self._planner().run(goal, language=code, done=already)
 
         # Упёрлись в необратимое — спрашиваем. Разрешение приходит голосом
         # владельца, и подтверждённый шаг не получает никаких особых прав: он
@@ -285,8 +314,15 @@ class CoreTools:
         if outcome.blocked is not None:
             done = _steps_done(outcome, code)
             what = _describe_step(outcome.blocked, self._registry)
+            # Вопрос задаётся о шаге, а согласие возвращает нас **в план**:
+            # иначе разрешённый шаг выполнился бы в одиночку, а остальная
+            # работа осталась бы несделанной.
+            self._waiting = _Waiting(
+                goal=goal, steps=outcome.steps, approved=outcome.blocked,
+                at=time.monotonic(),
+            )
             return ToolResult.asking(
-                outcome.blocked,
+                Intent(tool=f"{NAMESPACE}.plan", arguments={"goal": goal}),
                 value={
                     "steps": [step.tool for step in outcome.steps],
                     "blocked": outcome.blocked.tool,
@@ -311,6 +347,26 @@ class CoreTools:
         return ToolResult.success(
             {"steps": [step.tool for step in outcome.steps], "answer": answer},
             speech=answer,
+        )
+
+    async def _resumed(self, goal: str) -> tuple[Step, ...]:
+        """Выполнить разрешённый шаг и вернуть всё, что уже сделано.
+
+        Пусто — это не продолжение, а новая просьба. Сверяется и цель, и срок:
+        «да», сказанное через час по другому поводу, ничего исполнять не должно,
+        а сама формулировка цели — единственное, чем два плана различимы.
+        """
+        waiting = self._waiting
+        self._waiting = None
+        if waiting is None or waiting.goal != goal or waiting.stale():
+            return ()
+        step = waiting.approved
+        result = await self._registry.invoke(step.tool, dict(step.arguments))
+        logger.info("Разрешённый шаг %s выполнен: %s", step.tool, "ок" if result.ok else result.error)
+        summary = Planner._brief(result.value, result.error)
+        return (
+            *waiting.steps,
+            Step(tool=step.tool, arguments=dict(step.arguments), ok=result.ok, summary=summary),
         )
 
     def _planner(self) -> Planner:

@@ -93,7 +93,7 @@ class RouterConfig:
     """Цепочка резолверов и порог уверенности."""
 
     confidence_threshold: float = 0.6
-    resolvers: tuple[str, ...] = ("phrase", "alias", "learned", "llm", "fallback")
+    resolvers: tuple[str, ...] = ("plan", "phrase", "alias", "learned", "llm", "fallback")
     aliases: Mapping[str, str] = field(default_factory=dict)
     #: Приставки дословного захвата: «впиши …» → весь хвост в инструмент как
     #: есть, мимо шаблонов и модели. См. `VerbatimRule`.

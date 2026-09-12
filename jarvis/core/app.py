@@ -41,6 +41,7 @@ from jarvis.core.router import (
     LearnedResolver,
     LLMResolver,
     PhraseResolver,
+    PlanResolver,
     Resolver,
     Router,
     VerbatimResolver,
@@ -490,6 +491,7 @@ def _build_resolvers(
     дороже всего.
     """
     factories: dict[str, Callable[[], Resolver | None]] = {
+        "plan": lambda: PlanResolver(),
         "phrase": lambda: PhraseResolver(registry),
         "alias": lambda: AliasResolver(registry, config.router.aliases),
         "verbatim": lambda: (

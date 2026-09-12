@@ -15,7 +15,7 @@ from typing import Any, Sequence
 
 import pytest
 
-from jarvis.core.agent import HIDDEN, Planner
+from jarvis.core.agent import HIDDEN, Planner, Step
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.config import TaskProfile
 from jarvis.core.contracts import ToolResult
@@ -327,3 +327,130 @@ async def test_long_result_is_cut_before_it_reaches_the_model(
     outcome = await Planner(llm=_service(provider), registry=registry).run("вывали")
 
     assert len(outcome.steps[0].summary) <= RESULT_LIMIT
+
+
+# --- продолжение прерванного плана -------------------------------------------
+
+
+async def test_finished_step_is_not_done_twice(
+    studio: tuple[Studio, ToolRegistry]
+) -> None:
+    """Цикл, продолженный после разрешения, не повторяет уже сделанное.
+
+    Живой запуск 12.09.2026: план посмотрел на экран, спросил разрешения,
+    получил «да» — и на этом всё кончилось. Без переданного сделанного цикл
+    пошёл бы по второму кругу: снова выбрал бы тот же шаг, снова упёрся бы и
+    снова спросил, хотя человек уже ответил.
+    """
+    skill, registry = studio
+    planner = _planner(registry, [("studio.now_playing", {}), "Готово."])
+    already = Step(tool="studio.now_playing", arguments={}, ok=True, summary="Кино")
+
+    outcome = await planner.run("что играет и сделай громче", done=(already,))
+
+    assert skill.calls == [], "уже сделанный шаг выполнили ещё раз"
+    assert outcome.stopped == "шаг повторился"
+    assert [step.tool for step in outcome.steps] == ["studio.now_playing"]
+
+
+async def test_the_model_sees_what_was_already_done(
+    studio: tuple[Studio, ToolRegistry]
+) -> None:
+    """Результаты прежних шагов уходят в переписку наравне со свежими.
+
+    Иначе модель продолжает вслепую: она не знает, что показал экран, и
+    следующий шаг выбрать не из чего.
+    """
+    _, registry = studio
+    provider = ScriptedProvider(["Готово."])
+    planner = Planner(llm=_service(provider), registry=registry)
+    already = Step(
+        tool="studio.now_playing", arguments={}, ok=True, summary="Кино — Группа крови"
+    )
+
+    await planner.run("добавь это в избранное", done=(already,))
+
+    said = " ".join(message.content for message in provider.seen[-1].messages)
+    assert "Группа крови" in said
+    assert "studio.now_playing" in said
+
+
+async def test_plan_starts_clean_without_any_history(
+    studio: tuple[Studio, ToolRegistry]
+) -> None:
+    """Обычный запуск ничего о прошлом не знает: продолжение — исключение."""
+    skill, registry = studio
+    planner = _planner(registry, [("studio.now_playing", {}), "Готово."])
+
+    outcome = await planner.run("что играет")
+
+    assert skill.calls == ["now_playing"]
+    assert len(outcome.steps) == 1
+
+
+async def test_confirmed_step_continues_the_plan(
+    studio: tuple[Studio, ToolRegistry]
+) -> None:
+    """Согласие возвращает в план, а не выполняет один шаг и на этом всё.
+
+    Живой запуск 12.09.2026: план посмотрел на экран, спросил «делать?»,
+    получил «да», описал фотографию и замолчал — хотя просили найти место и
+    открыть его в картах. Причина: вопрос задавался о шаге, и согласие
+    выполняло шаг, а цель терялась.
+    """
+    from jarvis.core.builtin import CoreTools
+
+    skill, registry = studio
+    provider = ScriptedProvider(
+        [
+            ("studio.send_message", {"text": "привет"}),  # необратимый: упрёмся
+            ("studio.louder", {}),                        # дальше, уже с разрешения
+            "Готово.",
+        ]
+    )
+    core = CoreTools(
+        llm=_service(provider),
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+    goal = "напиши маме и сделай громче"
+
+    asked = await registry.invoke("core.plan", {"goal": goal})
+
+    assert asked.confirm is not None
+    assert asked.confirm.tool == "core.plan", "согласие обязано вернуть в план"
+    assert asked.confirm.arguments == {"goal": goal}
+    assert skill.calls == [], "необратимый шаг сделали, не спросив"
+
+    done = await registry.invoke("core.plan", {"goal": goal})
+
+    assert skill.calls == ["send_message", "louder"], "план не продолжился"
+    assert done.ok
+
+
+async def test_plan_does_not_resume_someone_elses_goal(
+    studio: tuple[Studio, ToolRegistry]
+) -> None:
+    """Разрешение относится к своей цели, а не к любой следующей просьбе."""
+    from jarvis.core.builtin import CoreTools
+
+    skill, registry = studio
+    provider = ScriptedProvider(
+        [("studio.send_message", {"text": "привет"}), "Готово."]
+    )
+    core = CoreTools(
+        llm=_service(provider),
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    await registry.invoke("core.plan", {"goal": "напиши маме"})
+    await registry.invoke("core.plan", {"goal": "совсем другое дело"})
+
+    assert skill.calls == [], "разрешённый шаг выполнился в чужом плане"

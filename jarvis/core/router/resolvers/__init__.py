@@ -10,6 +10,7 @@ from .fallback import CHAT_TOOL, FallbackResolver
 from .learned import LearnedResolver
 from .llm import LLMResolver
 from .phrase import PhraseResolver
+from .plan import PlanResolver, needs_a_plan
 from .verbatim import VerbatimResolver
 
 __all__ = [
@@ -19,5 +20,7 @@ __all__ = [
     "LearnedResolver",
     "LLMResolver",
     "PhraseResolver",
+    "PlanResolver",
     "VerbatimResolver",
+    "needs_a_plan",
 ]
