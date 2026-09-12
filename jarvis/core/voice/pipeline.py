@@ -41,6 +41,7 @@ from jarvis.core.contracts import (
     AnnouncementRequested,
     AssistantReplied,
     AssistantSpeaking,
+    CommandTyped,
     Event,
     ToolResult,
     Utterance,
@@ -157,6 +158,8 @@ class VoicePipeline:
         self._voice = asyncio.Lock()
         #: Подписка на просьбы что-нибудь произнести; снимается при остановке.
         self._announcements: Any = None
+        #: Подписка на команды со стороны (клавиатура, позже — Telegram).
+        self._typed: Any = None
 
     @property
     def service_name(self) -> str:
@@ -190,6 +193,9 @@ class VoicePipeline:
         self._announcements = self._events.subscribe(
             AnnouncementRequested.NAME, self._announce
         )
+        # Команда со стороны идёт тем же путём, что и голос: тут диспетчер,
+        # персона и приглушение микрофона, второй такой набор заводить незачем.
+        self._typed = self._events.subscribe(CommandTyped.NAME, self._on_typed)
         phrase = self._config.wake_word.phrase
         if self._acoustic:
             logger.info("Слушаю. Имя «%s» ловлю моделью, по звуку", phrase)
@@ -203,6 +209,9 @@ class VoicePipeline:
         if self._announcements is not None:
             self._announcements.unsubscribe()
             self._announcements = None
+        if self._typed is not None:
+            self._typed.unsubscribe()
+            self._typed = None
         if self._sound_task is not None:
             self._sound_task.cancel()
         for task in self._tasks:
@@ -236,6 +245,27 @@ class VoicePipeline:
         if not isinstance(event, AnnouncementRequested):
             return
         await self._say(event.text, language=event.language)
+
+    async def _on_typed(self, event: Event) -> None:
+        """Выполнить команду, пришедшую вводом, и ответить вслух.
+
+        Ровно тот же путь, что у голоса: `handle` проведёт текст через роутер,
+        озвучит ответ и приглушит на это время микрофон. Никакого особого пути
+        для клавиатуры нет намеренно — «новый вход не даёт новых прав».
+
+        Режим «не слушаю» здесь не проверяется: наблюдатель гасит себя сам, ещё
+        до события, чтобы зря не гонять команду через роутер. Сужаем тип по той
+        же причине, что и у объявлений: шина зовёт по имени события.
+        """
+        if not isinstance(event, CommandTyped):
+            return
+        text = event.text.strip()
+        if not text:
+            return
+        logger.info("Команда с клавиатуры: %r", text)
+        await self.handle(
+            Utterance(text=text, language=event.language, source="keyboard")
+        )
 
     # --- общий путь для голоса и текста ------------------------------------
 
