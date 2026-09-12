@@ -25,7 +25,13 @@ from .events import (
     VoiceCommandRecognized,
     WakeWordDetected,
 )
-from .intent import Intent, Utterance, detect_language, parse_number
+from .intent import (
+    Intent,
+    Utterance,
+    detect_language,
+    dominant_language,
+    parse_number,
+)
 from .results import ToolResult
 
 __all__ = [
@@ -50,6 +56,7 @@ __all__ = [
     "ToolResult",
     "Utterance",
     "detect_language",
+    "dominant_language",
     "VoiceCommandRecognized",
     "WakeWordDetected",
 ]

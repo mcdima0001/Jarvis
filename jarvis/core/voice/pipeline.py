@@ -47,7 +47,7 @@ from jarvis.core.contracts import (
     Utterance,
     VoiceCommandRecognized,
     WakeWordDetected,
-    detect_language,
+    dominant_language,
 )
 from jarvis.core.dialogue import Conversation
 from jarvis.core.meter import Meter
@@ -146,6 +146,10 @@ class VoicePipeline:
         #: поднимал модель — просто позже и молча, уже после ответа.
         self.silent = False
         self._follow_up_until = 0.0
+        #: Язык разговора. Держится, пока его явно не сменят: в русской просьбе
+        #: латиницей пишут названия программ и файлов, и считать их сменой языка
+        #: значит отвечать по-английски на русский вопрос.
+        self._language = ""
         #: Слушать ли имя по звуку. Признак — не режим из конфига, а то,
         #: поднялась ли настоящая модель: заглушка в этом слоте отвечает «да»
         #: на любой кадр, и спрашивать её означало бы срабатывать всегда.
@@ -456,6 +460,19 @@ class VoicePipeline:
             self._mute_until = time.time() + self._config.echo_tail_ms / 1000
             self._speaking = False
 
+    def _language_of(self, command: str, *, fallback: str = "") -> str:
+        """На каком языке отвечать на эту команду.
+
+        Язык разговора держится, пока его явно не сменили: латиница в названии
+        программы, сайта или файла поводом не является. Подробности и цена
+        ошибки — в `dominant_language`.
+        """
+        found = dominant_language(command)
+        if found:
+            self._language = found
+            return found
+        return self._language or fallback or "ru"
+
     @property
     def _muted(self) -> bool:
         """Глушить ли сейчас микрофон (говорим сами или ещё звучит хвост)."""
@@ -653,11 +670,16 @@ class VoicePipeline:
             logger.debug("Обращения по имени нет — пропускаю")
             return
 
-        # Язык ответа — по команде, а не по всей расшифровке. Имя в ней бывает
-        # записано латиницей («Jaris Jaris, как дела»), и тогда определение по
-        # всей строке уводит ответ в английский: буквы имени перевешивают
-        # короткую русскую просьбу. К языку просьбы имя отношения не имеет.
-        language = detect_language(command, default=transcript.language or "ru") if command             else (transcript.language or "ru")
+        # Язык ответа — по команде, а не по всей расшифровке: имя в ней бывает
+        # записано латиницей («Jaris Jaris, как дела»), и к языку просьбы оно
+        # отношения не имеет.
+        #
+        # И меняется он **только при явном перевесе**. Простого большинства не
+        # хватило: «открой папку Photostock. Jpg» дало тринадцать латинских букв
+        # против одиннадцати кириллических, и ассистент ответил «I don't know a
+        # program called папку Photostock. Jpg». Названия программ и файлов
+        # латиницей — обычное дело в русской просьбе, а не смена языка.
+        language = self._language_of(command, fallback=transcript.language)
 
         if not command:
             # Позвали по имени и замолчали: отвечаем и ждём команду без имени.

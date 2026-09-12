@@ -105,7 +105,18 @@ SITES: dict[str, str] = {
     "claude": "https://claude.ai",
     "реддит": "https://www.reddit.com",
     "reddit": "https://www.reddit.com",
+    # Карты названы поштучно, и это не дубль. Без записи «гугл карты» лестница
+    # находила по началу просто «гугл» и открывала поиск: «открой в Google
+    # картах» уходило на google.com (живой запуск 12.09.2026). Ключ длиннее —
+    # ключ и выигрывает.
     "карты": "https://yandex.ru/maps",
+    "карта": "https://yandex.ru/maps",
+    "яндекс карты": "https://yandex.ru/maps",
+    "гугл карты": "https://www.google.com/maps",
+    "google карты": "https://www.google.com/maps",
+    "гугл мапс": "https://www.google.com/maps",
+    "google maps": "https://www.google.com/maps",
+    "карты гугл": "https://www.google.com/maps",
     "переводчик": "https://translate.google.com",
 }
 

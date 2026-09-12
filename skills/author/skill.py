@@ -40,6 +40,7 @@ import httpx
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
+from jarvis.core.text import best_match
 from jarvis.core.tools import tool
 
 #: Куда складывать написанное до одобрения. Намеренно **не** `skills/`:
@@ -52,6 +53,13 @@ TIMEOUT = 600.0
 
 #: Ограждение от выдумок в имени: оно становится именем каталога.
 NAME = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
+
+#: Порог узнавания имени черновика на слух. Ниже, чем у программ и чатов, и
+#: намеренно: черновиков единицы, они свои, и цена промаха мала — в худшем
+#: случае подключится не тот скилл, который тут же видно и легко убрать. А вот
+#: цена строгости оказалась велика: «прими спид-тест» на черновик `speedtest`
+#: не срабатывало вовсе (живой запуск 12.09.2026).
+SIMILARITY = 0.6
 
 #: Имя скилла в его же паспорте — по нему и узнаём, как назвать каталог.
 _META_NAME = re.compile(r"""name\s*=\s*["']([a-z][a-z0-9_]*)["']""")
@@ -158,6 +166,35 @@ def safe_name(name: str) -> str:
     """
     clean = name.strip().lower()
     return clean if NAME.match(clean) else ""
+
+
+def draft_names(root: Path) -> list[str]:
+    """Какие черновики лежат и ждут одобрения."""
+    folder = root / DRAFTS
+    if not folder.is_dir():
+        return []
+    return sorted(
+        item.name for item in folder.glob("*") if (item / "skill.py").is_file()
+    )
+
+
+def pick_draft(said: str, names: list[str]) -> str:
+    """Какой черновик назвали вслух. Пусто — не поняли.
+
+    **Сверяется со списком на диске, а не с правилами написания имени**, и в
+    этом вся суть. Имя скилла придумала модель и написала латиницей
+    (`speedtest`), а произносят его как получится: «спид-тест», «speed-test»,
+    «скилл спид тест». Строгая проверка отвергала всё это подряд — в живом
+    запуске 12.09.2026 черновик не удалось принять ни с одной попытки.
+
+    Лестница сопоставления транслитерации берёт сама, поэтому «спид-тест»
+    находит `speedtest`. Чего в списке нет, того не найдётся: «погода» так и
+    останется неузнанной, и это правильно.
+    """
+    exact = safe_name(said)
+    if exact and exact in names:
+        return exact
+    return best_match(said, names, similarity=SIMILARITY) or ""
 
 
 def draft_path(root: Path, name: str) -> Path:
@@ -358,43 +395,105 @@ class AuthorSkill(Skill):
 
         :param name: имя скилла из доклада.
         """
-        safe = safe_name(name)
+        waiting = draft_names(self._root)
+        safe = pick_draft(name, waiting)
         if not safe:
+            # Список в отказе — не вежливость, а единственный способ узнать, как
+            # черновик называется на самом деле: имя ему дала модель.
+            listed = ", ".join(waiting)
             return ToolResult.failure(
-                f"негодное имя: {name!r}",
-                speech={"ru": f"Не знаю черновика {name}.", "en": f"No draft named {name}."},
-            )
-
-        source = draft_path(self._root, safe)
-        if not source.is_file():
-            return ToolResult.failure(
-                f"черновика {safe} нет",
+                f"черновика {name!r} нет; ждут одобрения: {listed or 'ничего'}",
                 speech={
-                    "ru": f"Черновика {safe} не нашёл.",
-                    "en": f"Draft {safe} not found.",
+                    "ru": (
+                        f"Черновика {name} не нашёл. Ждут одобрения: {listed}."
+                        if waiting
+                        else "Черновиков нет вовсе."
+                    ),
+                    "en": (
+                        f"No draft named {name}. Waiting: {listed}."
+                        if waiting
+                        else "There are no drafts at all."
+                    ),
                 },
             )
 
-        target = self._root / "skills" / safe / "skill.py"
-        await asyncio.to_thread(self._move, source, target)
-        self.log.info("Черновик %s принят: %s", safe, target)
-
-        connected = await self.context.tools.invoke("core.reload_skill", {"skill": safe})
-        if not connected.ok:
+        failure = await self._adopt(safe)
+        if failure:
             return ToolResult.failure(
-                f"файл перенесён, но модуль не поднялся: {connected.error}",
+                f"файл перенесён, но модуль не поднялся: {failure}",
                 speech={
                     "ru": f"Файл на месте, а модуль {safe} не запустился. Смотри лог.",
                     "en": f"File moved, but module {safe} failed to start. See the log.",
                 },
             )
         return ToolResult.success(
-            {"skill": safe, "path": target.as_posix()},
+            {"skill": safe},
             speech={
                 "ru": f"Скилл {safe} принят и подключён.",
                 "en": f"Skill {safe} accepted and connected.",
             },
         )
+
+    @tool(
+        phrases=[
+            "прими все черновики",
+            "прими все скиллы",
+            "прими всё написанное",
+            "подключи все черновики",
+            "accept all drafts",
+        ],
+        reversible=False,
+    )
+    async def accept_all(self) -> ToolResult:
+        """Принять сразу все написанные скиллы.
+
+        Отдельным инструментом, а не особым именем у `accept`: фраза «прими все
+        черновики» подстановки не содержит, и разбирать её как имя значило бы,
+        что плохо расслышанное «прими скилл» однажды подключит всё разом.
+
+        Сорвавшийся модуль остальных не отменяет: они друг от друга не зависят,
+        и отказываться от трёх рабочих из-за одного сломанного незачем. Вслух
+        называется и то, и другое.
+        """
+        waiting = draft_names(self._root)
+        if not waiting:
+            return ToolResult.success(
+                [], speech={"ru": "Черновиков нет.", "en": "No drafts."}
+            )
+        taken: list[str] = []
+        failed: list[str] = []
+        for name in waiting:
+            failure = await self._adopt(name)
+            (failed if failure else taken).append(name)
+        self.log.info("Принято черновиков: %s; не поднялось: %s", taken, failed)
+        done = ", ".join(taken)
+        broken = ", ".join(failed)
+        if not taken:
+            return ToolResult.failure(
+                f"ни один черновик не поднялся: {broken}",
+                speech={
+                    "ru": f"Ни один не запустился: {broken}. Смотри лог.",
+                    "en": f"None started: {broken}. See the log.",
+                },
+            )
+        tail_ru = f" Не запустились: {broken}." if failed else ""
+        tail_en = f" Failed: {broken}." if failed else ""
+        return ToolResult.success(
+            {"accepted": taken, "failed": failed},
+            speech={
+                "ru": f"Принял и подключил: {done}.{tail_ru}",
+                "en": f"Accepted and connected: {done}.{tail_en}",
+            },
+        )
+
+    async def _adopt(self, safe: str) -> str:
+        """Перенести черновик в скиллы и подключить. Возвращает причину отказа."""
+        source = draft_path(self._root, safe)
+        target = self._root / "skills" / safe / "skill.py"
+        await asyncio.to_thread(self._move, source, target)
+        self.log.info("Черновик %s принят: %s", safe, target)
+        connected = await self.context.tools.invoke("core.reload_skill", {"skill": safe})
+        return "" if connected.ok else str(connected.error or "не поднялся")
 
     @staticmethod
     def _move(source: Path, target: Path) -> None:
@@ -411,10 +510,7 @@ class AuthorSkill(Skill):
     @tool(phrases=["какие черновики", "что написано", "what drafts"], reversible=True)
     async def drafts(self) -> ToolResult:
         """Показать скиллы, написанные и ждущие одобрения."""
-        folder = self._root / DRAFTS
-        names = sorted(
-            item.name for item in folder.glob("*") if (item / "skill.py").is_file()
-        ) if folder.is_dir() else []
+        names = draft_names(self._root)
         if not names:
             return ToolResult.success(
                 [], speech={"ru": "Черновиков нет.", "en": "No drafts."}

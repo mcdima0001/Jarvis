@@ -40,7 +40,7 @@ from jarvis.core.contracts import (
     WakeWordDetected,
 )
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import closeness, romanize, skeleton, squash, touches
+from jarvis.core.text import best_match, closeness, romanize, skeleton, squash, touches
 from jarvis.core.tools import tool
 from jarvis.core.tts.normalize import plural_form
 
@@ -311,6 +311,96 @@ def scan_start_menu(directories: list[Path], *, limit: int = 400) -> dict[str, s
             if len(found) >= limit:
                 return found
     return found
+
+
+#: Сколько уровней вглубь искать папку и сколько всего их набирать. Предел не
+#: от жадности: каталог собирается на каждую просьбу, а рекурсия по диску целиком
+#: занимает минуты — больше предела ожидания инструмента.
+FOLDER_DEPTH = 2
+FOLDER_LIMIT = 4000
+
+#: Как называют вслух стандартные папки. Ключ — то, что говорят, значение — имя
+#: переменной окружения или подпапка профиля. Нужны отдельно: «загрузки» на
+#: диске зовутся `Downloads`, и никакое сравнение строк одно из другого не
+#: выведет — это перевод, ровно как «браузер» и `browser`.
+HOME_FOLDERS: dict[str, str] = {
+    "загрузки": "Downloads",
+    "скачанное": "Downloads",
+    "рабочий стол": "Desktop",
+    "стол": "Desktop",
+    "документы": "Documents",
+    "изображения": "Pictures",
+    "картинки": "Pictures",
+    "фотографии": "Pictures",
+    "музыка": "Music",
+    "видео": "Videos",
+}
+
+
+def folder_roots() -> list[Path]:
+    """Где искать папку по названию.
+
+    Профиль пользователя и корни дисков: там лежит всё, что человек называет
+    «папкой такой-то». Системные каталоги не трогаем — в них голосом не ходят.
+    """
+    roots: list[Path] = []
+    home = os.environ.get("USERPROFILE")
+    if home:
+        roots.append(Path(home))
+    for letter in "DEFG":
+        drive = Path(f"{letter}:/")
+        if drive.is_dir():
+            roots.append(drive)
+    return roots
+
+
+def folder_catalog(
+    roots: list[Path], *, depth: int = FOLDER_DEPTH, limit: int = FOLDER_LIMIT
+) -> dict[str, str]:
+    """Собрать папки: название → путь. Ближние к корню побеждают.
+
+    Обход по уровням, а не вглубь: папка, названная вслух, почти всегда лежит
+    неглубоко, а полный обход диска не уложится в предел ожидания.
+    """
+    found: dict[str, str] = {}
+    level = [root for root in roots if root.is_dir()]
+    for _ in range(max(1, depth)):
+        following: list[Path] = []
+        for directory in level:
+            try:
+                children = sorted(item for item in directory.iterdir() if item.is_dir())
+            except OSError:
+                continue
+            for child in children:
+                if child.name.startswith((".", "$")):
+                    continue
+                found.setdefault(child.name, str(child))
+                following.append(child)
+                if len(found) >= limit:
+                    return found
+        level = following
+    return found
+
+
+def match_folder(query: str, catalog: Mapping[str, str], home: Path | None = None) -> str | None:
+    """Найти папку, которую назвали вслух. ``None`` — не узнали.
+
+    Сначала стандартные папки профиля: «загрузки» — это `Downloads`, и такое
+    сравнением строк не выводится. Потом каталог с диска, обычной лестницей
+    сопоставления — она берёт на себя падежи, транслитерацию и опечатки.
+    """
+    asked = " ".join(query.split()).lower().strip(" .,")
+    for prefix in ("папку ", "папка ", "каталог ", "folder ", "директорию "):
+        if asked.startswith(prefix):
+            asked = asked[len(prefix) :].strip()
+    if not asked:
+        return None
+    if home is not None:
+        tail = HOME_FOLDERS.get(asked)
+        if tail and (home / tail).is_dir():
+            return str(home / tail)
+    found = best_match(asked, list(catalog), similarity=_SIMILARITY, prefer=len)
+    return catalog.get(found) if found else None
 
 
 def start_menu_dirs() -> list[Path]:
@@ -1290,6 +1380,52 @@ class WindowsSkill(Skill):
             len(catalog),
             len(self._configured),
             aliases,
+        )
+
+    @tool(
+        phrases=[
+            "открой папку {folder}",
+            "покажи папку {folder}",
+            "открой каталог {folder}",
+            "открой директорию {folder}",
+            "open folder {folder}",
+            "show folder {folder}",
+        ],
+        reversible=True,
+    )
+    async def open_folder(self, folder: str) -> ToolResult:
+        """Открыть папку в проводнике.
+
+        Своим инструментом, а не через запуск программы: «открой папку
+        Photostock» шаблон `открой {program}` забирал себе целиком вместе со
+        словом «папку», искал такую программу и не находил (живой запуск
+        12.09.2026). Шаблон тут длиннее и потому выигрывает.
+
+        :param folder: название папки, как его произносят: «загрузки»,
+            «рабочий стол», «Photostock».
+        """
+        home = Path(os.environ["USERPROFILE"]) if os.environ.get("USERPROFILE") else None
+        catalog = await asyncio.to_thread(folder_catalog, folder_roots())
+        path = match_folder(folder, catalog, home)
+        if path is None:
+            self.log.warning("Папка %r не найдена среди %d", folder, len(catalog))
+            return ToolResult.failure(
+                f"папка {folder!r} не найдена",
+                speech={
+                    "ru": f"Не нашёл папку {folder}.",
+                    "en": f"I couldn't find the folder {folder}.",
+                },
+            )
+        # Тем же способом, что и программы: имя в оболочку не попадает никогда,
+        # открывается найденный путь.
+        await asyncio.to_thread(os.startfile, path)
+        self.log.info("Открыл папку: %s", path)
+        return ToolResult.success(
+            {"folder": path},
+            speech={
+                "ru": f"Открыл {Path(path).name}.",
+                "en": f"Opened {Path(path).name}.",
+            },
         )
 
     @tool(phrases=["открой {program}", "запусти {program}",

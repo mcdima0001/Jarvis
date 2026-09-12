@@ -23,11 +23,52 @@ def detect_language(text: str, *, default: str = "ru") -> str:
     :param text: реплика пользователя.
     :param default: что вернуть, если букв нет вовсе.
     """
-    cyrillic = sum(1 for char in text if "а" <= char.lower() <= "я" or char.lower() == "ё")
-    latin = sum(1 for char in text if "a" <= char.lower() <= "z")
+    cyrillic, latin = count_letters(text)
     if not cyrillic and not latin:
         return default
     return "ru" if cyrillic >= latin else "en"
+
+
+#: Сколько букв нужно, чтобы судить о языке фразы. Короткое («ОК», «Steam»)
+#: язык разговора не меняет.
+ENOUGH_LETTERS = 8
+
+#: Во сколько раз один алфавит должен перевешивать другой, чтобы счесть язык
+#: определённым. Смешанное («открой папку Photostock») остаётся при своём.
+CLEAR_MAJORITY = 2
+
+
+def count_letters(text: str) -> tuple[int, int]:
+    """Сколько в тексте кириллицы и латиницы."""
+    cyrillic = sum(1 for char in text if "а" <= char.lower() <= "я" or char.lower() == "ё")
+    latin = sum(1 for char in text if "a" <= char.lower() <= "z")
+    return cyrillic, latin
+
+
+def dominant_language(text: str) -> str:
+    """Язык фразы, если он очевиден. Пусто — не берёмся судить.
+
+    В отличие от `detect_language`, эта функция **имеет право промолчать**, и
+    ради этого и сделана. Простое большинство букв на смешанных фразах врёт, а
+    врёт оно дорого: в живом запуске 12.09.2026 просьба «открой папку
+    Photostock. Jpg» получила тринадцать латинских букв против одиннадцати
+    кириллических, язык объявился английским, и ассистент ответил
+    «I don't know a program called папку Photostock. Jpg». Так же ушли в
+    английский «Working on it» и «No draft named…».
+
+    Названия программ, сайтов и файлов пишутся латиницей всегда, и к языку
+    просьбы они отношения не имеют. Поэтому язык меняется **только при явном
+    перевесе**, а в спорном случае решает тот, кто спрашивает: он знает язык
+    предыдущей реплики, а эта функция — нет.
+    """
+    cyrillic, latin = count_letters(text)
+    if cyrillic + latin < ENOUGH_LETTERS:
+        return ""
+    if cyrillic >= latin * CLEAR_MAJORITY:
+        return "ru"
+    if latin >= cyrillic * CLEAR_MAJORITY:
+        return "en"
+    return ""
 
 
 #: Числительные словами. Whisper пишет числа то цифрами, то прописью, и «сделай

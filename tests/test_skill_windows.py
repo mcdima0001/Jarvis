@@ -1113,3 +1113,86 @@ def test_percent_agrees_with_the_number() -> None:
 def test_quiet_machine_says_nothing() -> None:
     """Мелочь по полпроцента называть незачем: это фон, а не виновник."""
     assert windows.describe_hogs([("x.exe", 0.004), ("y.exe", 0.001)]) == ""
+
+
+# --- открыть папку -----------------------------------------------------------
+
+
+def test_folder_is_found_by_name(tmp_path) -> None:
+    """Папку находим по названию, даже когда его произнесли неточно."""
+    (tmp_path / "Photo_TEMP" / "PhotoStock JPG").mkdir(parents=True)
+    (tmp_path / "Проекты").mkdir()
+
+    catalog = windows.folder_catalog([tmp_path])
+
+    assert windows.match_folder("Photostock. Jpg", catalog) == str(
+        tmp_path / "Photo_TEMP" / "PhotoStock JPG"
+    )
+    assert windows.match_folder("проекты", catalog) == str(tmp_path / "Проекты")
+
+
+def test_the_word_folder_is_not_part_of_the_name(tmp_path) -> None:
+    """«Открой папку X» — это X, а не «папку X».
+
+    Ровно на этом и сломалось в живом запуске 12.09.2026: шаблон `открой
+    {program}` забрал фразу целиком вместе со словом «папку» и пошёл искать
+    такую программу.
+    """
+    (tmp_path / "Отчёты").mkdir()
+    catalog = windows.folder_catalog([tmp_path])
+
+    assert windows.match_folder("папку Отчёты", catalog) == str(tmp_path / "Отчёты")
+    assert windows.match_folder("каталог Отчёты", catalog) == str(tmp_path / "Отчёты")
+
+
+def test_home_folders_are_translated_not_matched(tmp_path) -> None:
+    """«Загрузки» — это `Downloads`, и сравнением строк это не выводится.
+
+    Тот же случай, что «браузер» и `browser`: перевод, а не написание.
+    """
+    (tmp_path / "Downloads").mkdir()
+    (tmp_path / "Desktop").mkdir()
+
+    assert windows.match_folder("загрузки", {}, tmp_path) == str(tmp_path / "Downloads")
+    assert windows.match_folder("рабочий стол", {}, tmp_path) == str(tmp_path / "Desktop")
+
+
+def test_missing_home_folder_is_not_invented(tmp_path) -> None:
+    """Нет такой папки в профиле — не выдумываем путь."""
+    assert windows.match_folder("музыка", {}, tmp_path) is None
+
+
+def test_unknown_folder_stays_unknown(tmp_path) -> None:
+    """Чужое название не должно цеплять случайного соседа."""
+    (tmp_path / "Отчёты").mkdir()
+    catalog = windows.folder_catalog([tmp_path])
+
+    assert windows.match_folder("квартальные премии", catalog) is None
+    assert windows.match_folder("", catalog) is None
+
+
+def test_catalog_walks_level_by_level(tmp_path) -> None:
+    """Обход по уровням: ближняя к корню папка побеждает одноимённую глубокую."""
+    (tmp_path / "Архив").mkdir()
+    (tmp_path / "Проекты" / "Архив").mkdir(parents=True)
+
+    catalog = windows.folder_catalog([tmp_path], depth=2)
+
+    assert catalog["Архив"] == str(tmp_path / "Архив")
+
+
+def test_catalog_respects_its_limit(tmp_path) -> None:
+    """Предел не от жадности: каталог собирается на каждую просьбу."""
+    for number in range(20):
+        (tmp_path / f"папка{number}").mkdir()
+
+    assert len(windows.folder_catalog([tmp_path], limit=5)) == 5
+
+
+def test_hidden_and_system_folders_are_skipped(tmp_path) -> None:
+    """В `.git` и `$Recycle.Bin` голосом не ходят."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "$Recycle.Bin").mkdir()
+    (tmp_path / "Отчёты").mkdir()
+
+    assert list(windows.folder_catalog([tmp_path])) == ["Отчёты"]

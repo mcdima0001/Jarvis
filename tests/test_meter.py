@@ -207,19 +207,26 @@ def test_session_counts_the_open_window_too() -> None:
 
 
 def test_peak_remembers_the_heaviest_window() -> None:
-    """Средняя по вечеру прячет всплески, а греется ноутбук на них."""
+    """Средняя по вечеру прячет всплески, а греется ноутбук на них.
+
+    Проверяется само свойство «пик не убывает», а не конкретное число: общий
+    расход считается по всему процессу, и чужие потоки в тихий отрезок могут
+    попасть какие угодно.
+    """
     meter = Meter()
     assert meter.peak == 0.0
 
-    meter.take()
-    burn(0.02)
-    meter.take()
-    heavy = meter.peak
-    assert heavy > 0.0
+    # Пик — это максимум по закрытым отрезкам, и проверяется он точно, без
+    # опоры на часы: у процессорного времени на Windows шаг 15.6 мс, и «сколько
+    # намерил короткий отрезок» — величина случайная.
+    shares = []
+    for _ in range(3):
+        burn(0.03)
+        shares.append(meter.take().share)
+        time.sleep(0.01)
+        shares.append(meter.take().share)
 
-    time.sleep(0.05)
-    meter.take()
-    assert meter.peak == heavy, "тихий отрезок пик не сбрасывает"
+    assert meter.peak == max(shares)
 
 
 # --- ядро против процессора --------------------------------------------------

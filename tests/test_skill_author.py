@@ -239,3 +239,41 @@ def test_report_separates_broken_from_merely_questionable(tmp_path: Path) -> Non
     assert "есть замечания" in author.report("disk", path, 1, remarks="фраза слишком общая")
     # Поломка важнее замечаний и вытесняет их из доклада.
     assert "не прошёл" in author.report("disk", path, 1, findings="типы: беда", remarks="и ещё")
+
+
+# --- имя черновика на слух ---------------------------------------------------
+
+
+def test_draft_is_found_by_how_it_sounds(tmp_path) -> None:
+    """«Прими спид-тест» обязано находить черновик `speedtest`.
+
+    Имя скилла придумала модель и написала латиницей, а произносят его как
+    получится. В живом запуске 12.09.2026 черновик не удалось принять ни с
+    одной попытки: «skill-speed-test», «спид-тест», «speed-test» — все мимо.
+    """
+    names = ["speedtest", "downloads_cleanup"]
+
+    assert author.pick_draft("спид-тест", names) == "speedtest"
+    assert author.pick_draft("skill-speed-test", names) == "speedtest"
+    assert author.pick_draft("speed-test", names) == "speedtest"
+    assert author.pick_draft("speedtest", names) == "speedtest"
+
+
+def test_unknown_draft_stays_unknown() -> None:
+    """Чего в списке нет, то и не находится: подключать не тот скилл нельзя."""
+    assert author.pick_draft("погода", ["speedtest"]) == ""
+    assert author.pick_draft("", ["speedtest"]) == ""
+    assert author.pick_draft("speedtest", []) == ""
+
+
+def test_drafts_are_read_from_disk(tmp_path) -> None:
+    """Список черновиков — то, что лежит, а не то, что помним."""
+    for name in ("speedtest", "uptime"):
+        folder = tmp_path / author.DRAFTS / name
+        folder.mkdir(parents=True)
+        (folder / "skill.py").write_text("# скилл", encoding="utf-8")
+    # Каталог без файла скилла — не черновик, а мусор после переноса.
+    (tmp_path / author.DRAFTS / "empty").mkdir()
+
+    assert author.draft_names(tmp_path) == ["speedtest", "uptime"]
+    assert author.draft_names(tmp_path / "нет такого") == []

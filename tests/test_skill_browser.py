@@ -821,3 +821,23 @@ def test_recency_works_without_a_current_tab() -> None:
     ]
 
     assert browser.by_proximity(tabs, None)[0]["tabId"] == 2
+
+
+# --- карты ------------------------------------------------------------------
+
+
+def test_maps_are_not_just_search() -> None:
+    """«Открой в Google картах» — это карты, а не поиск.
+
+    Живой запуск 12.09.2026: лестница находила по началу просто «гугл» и
+    открывала google.com. Название карт длиннее, и оно должно выигрывать.
+    """
+    assert browser.site_url("в Google картах", browser.SITES).endswith("/maps")
+    assert browser.site_url("гугл карты", browser.SITES).endswith("/maps")
+    assert browser.site_url("google maps", browser.SITES).endswith("/maps")
+
+
+def test_plain_search_engines_still_work() -> None:
+    """Карты не должны перетянуть на себя обычные «гугл» и «яндекс»."""
+    assert not browser.site_url("гугл", browser.SITES).endswith("/maps")
+    assert not browser.site_url("яндекс", browser.SITES).endswith("/maps")

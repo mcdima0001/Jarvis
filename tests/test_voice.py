@@ -1563,3 +1563,60 @@ async def test_unsolicited_speech_stays_out_of_the_talk(registry, events) -> Non
     )
 
     assert talk.turns() == ()
+
+
+# --- язык разговора не сбивается латиницей -----------------------------------
+
+
+def test_mixed_phrase_does_not_switch_the_language() -> None:
+    """Латиница в названии файла — не смена языка разговора.
+
+    Живой запуск 12.09.2026: «открой папку Photostock. Jpg» дало тринадцать
+    латинских букв против одиннадцати кириллических, язык объявился английским,
+    и ассистент ответил «I don't know a program called папку Photostock. Jpg».
+    Так же ушли в английский «Working on it» и «No draft named…».
+    """
+    from jarvis.core.contracts import detect_language, dominant_language
+
+    mixed = "открой папку Photostock. Jpg"
+    assert detect_language(mixed) == "en", "простое большинство ошибается именно так"
+    assert dominant_language(mixed) == "", "а явного перевеса тут нет"
+
+
+def test_clear_phrases_name_their_language() -> None:
+    """Где перевес очевиден, язык называется прямо."""
+    from jarvis.core.contracts import dominant_language
+
+    assert dominant_language("какая сегодня погода в Твери") == "ru"
+    assert dominant_language("what is the weather like today") == "en"
+
+
+def test_short_phrase_keeps_quiet() -> None:
+    """Короткое языка разговора не меняет: «ОК» и «Steam» не аргумент."""
+    from jarvis.core.contracts import dominant_language
+
+    assert dominant_language("ОК") == ""
+    assert dominant_language("Steam") == ""
+    assert dominant_language("") == ""
+
+
+def test_conversation_language_sticks(registry, events) -> None:
+    """Разговор остаётся русским, пока язык не сменят явно."""
+    pipeline = _pipeline(registry, events)
+
+    assert pipeline._language_of("какая сегодня погода в Твери") == "ru"
+    assert pipeline._language_of("открой папку Photostock. Jpg") == "ru", (
+        "смешанная фраза увела разговор в английский"
+    )
+    assert pipeline._language_of("ОК") == "ru"
+    # А явная английская просьба язык меняет — и дальше он держится.
+    assert pipeline._language_of("what is the weather like today") == "en"
+    assert pipeline._language_of("открой Photostock") == "en"
+
+
+def test_first_command_falls_back_to_the_transcript(registry, events) -> None:
+    """Пока разговора нет, верим тому, что сказало распознавание."""
+    pipeline = _pipeline(registry, events)
+
+    assert pipeline._language_of("ОК", fallback="en") == "en"
+    assert pipeline._language_of("ОК") == "ru", "без подсказок отвечаем по-русски"
