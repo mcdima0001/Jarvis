@@ -844,3 +844,116 @@ async def test_other_failures_are_still_an_honest_shrug(tmp_path: Path) -> None:
 
     assert not answer.ok
     assert "деньги" not in (answer.error or "")
+
+
+# --- сколько ждать ответа ----------------------------------------------------
+
+
+def test_both_tools_ask_for_more_time_than_usual() -> None:
+    """Предел ожидания тут свой, и он больше общего.
+
+    Цепочка длинная и вся из чужих служб: прочитать снимок, найти город,
+    спросить у Overpass все надписи разом, при нужде сверить со спутником.
+    Замер 13.09.2026 на лондонском снимке — 5.5 с даже без чтения, а на медленном
+    зеркале было 17.6. «Инструмент не ответил за тридцать секунд» на просьбу
+    найти место хуже, чем подождать: ассистент всё равно скажет «секунду».
+    """
+    from jarvis.core.tools import collect_tools
+
+    skill = place.PhotoPlaceSkill.__new__(place.PhotoPlaceSkill)
+    limits = {tool.spec.name: tool.timeout for tool in collect_tools(skill, namespace="p")}
+
+    assert limits["p.photo_place"] == 60.0
+    assert limits["p.place_on_map"] == 60.0, "внутри та же цепочка"
+
+
+def test_the_faster_mirror_is_asked_first() -> None:
+    """Порядок зеркал выбран замером, а не вкусом.
+
+    На одном запросе по Лондону: зеркало Mail.ru — 3.9 и 4.7 с на двух попытках
+    подряд, главный сервер — 7.5 с и 429 «слишком часто» на второй.
+    """
+    assert len(place.OVERPASS) == 2, "одно зеркало — это отказ при первой занятости"
+    assert "mail.ru" in place.OVERPASS[0]
+
+
+# --- путь через экран: картинки на руках нет ---------------------------------
+
+
+class _Reader(place.PhotoPlaceSkill):  # type: ignore[misc, valid-type]
+    """Скилл с подставленной картой: сети нет, ответы заданы."""
+
+    log = _Silent()
+    found: tuple = ()
+    area: dict | None = None
+
+    async def _find(self, guess):
+        return self.area
+
+    async def _overpass(self, names, box):
+        return self.found
+
+    async def _named(self, point):
+        return {"display_name": "Найденное место, Лондон"}
+
+    async def _verify(self, photo, point, code):
+        raise AssertionError("без картинки сверять нечего")
+
+
+def _london() -> dict:
+    return {
+        "lat": "51.5", "lon": "-0.12",
+        "boundingbox": ["51.28", "51.69", "-0.51", "0.33"],
+        "place_rank": 16, "osm_type": "relation",
+    }
+
+
+async def test_screen_path_still_uses_the_signs() -> None:
+    """С экрана картинки на руках нет, а надписи всё равно ищутся.
+
+    Снимок экрана по правилу проекта нигде не сохраняется и живёт ровно на время
+    запроса, поэтому сверять со спутником нечего. Согласие надписей спутника не
+    требует — значит, экранному пути оно доступно целиком.
+    """
+    skill = _Reader.__new__(_Reader)
+    skill.area = _london()
+    skill.found = (
+        place.Hit("The Gatehouse", (51.5714, -0.1500), "pub", ("The Gatehouse",)),
+        place.Hit("Upstairs at the Gatehouse", (51.5714, -0.1499), "theatre",
+                  ("UPSTAIRS AT GATEHOUSE",)),
+    )
+
+    answer = await skill._answer(
+        "ТЕКСТЫ: UPSTAIRS AT GATEHOUSE\n"
+        "ЗАВЕДЕНИЕ: The Gatehouse\n"
+        "СТРАНА: Великобритания\n"
+        "ГОРОД: Лондон",
+        "ru",
+    )
+
+    assert answer.ok
+    value = answer.value
+    assert value["agreed"] == 2
+    assert abs(value["latitude"] - 51.5714) < 0.001
+    assert "сошлись" in answer.speech_for("ru").lower()
+
+
+async def test_lonely_sign_without_a_picture_is_not_an_answer() -> None:
+    """Одна надпись и нечем сверить — честнее отдать дело лестнице.
+
+    Совпадение имени внутри города бывает случайным: по слову «POLITIE» нашлась
+    полицейская вывеска в четырёх километрах от места съёмки (замер 13.09.2026).
+    """
+    skill = _Reader.__new__(_Reader)
+    skill.area = _london()
+    skill.found = (
+        place.Hit("The Gatehouse", (51.5714, -0.1500), "pub", ("The Gatehouse",)),
+    )
+
+    answer = await skill._answer(
+        "ЗАВЕДЕНИЕ: The Gatehouse\nСТРАНА: Великобритания\nГОРОД: Лондон", "ru"
+    )
+
+    assert answer.ok, "город назвать всё равно надо"
+    assert answer.value["agreed"] == 1
+    assert answer.value["source"] == "версия", "одинокая надпись вести не должна"
