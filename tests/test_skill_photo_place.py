@@ -195,59 +195,120 @@ def test_only_pictures_are_accepted(tmp_path: Path) -> None:
     assert place.resolve_photo(f'"{picture}"') == picture
 
 
-# --- зацепки и версии --------------------------------------------------------
+# --- лестница ответа ---------------------------------------------------------
 
-_ANSWER = """ЗАЦЕПКИ: турецкий язык на вывесках, силуэт гор Бейдаглары, жёлтые такси
-1) Анталия, Турция | Antalya, Turkey | 36.8969, 30.7133
-2) Пляж Коньяалты | Konyaalti Beach, Antalya | нет
-3) Старый город Калеичи | Kaleici, Antalya | 36.88, 30.70"""
+_LADDER = """ЗАЦЕПКИ: турецкий текст на вывесках, номер машины на 07, кипарисы
+СТРАНА: Турция
+ГОРОД: Анталья
+РАЙОН: Коньяалты
+МЕСТО: Пляж Коньяалты
+МЕСТНОЕ: Konyaalti Beach"""
 
 
-def test_clues_and_guesses_are_read() -> None:
-    """Из ответа вынимаются и зацепки, и все три версии с их полями."""
-    reading = place.parse_reading(_ANSWER)
+def test_steps_go_from_specific_to_general() -> None:
+    """Версии строятся от частного к общему: это порядок доверия модели."""
+    reading = place.parse_reading(_LADDER)
 
-    assert "жёлтые такси" in reading.clues
+    assert "кипарисы" in reading.clues
     assert [guess.name for guess in reading.guesses] == [
-        "Анталия, Турция",
         "Пляж Коньяалты",
-        "Старый город Калеичи",
+        "Коньяалты, Анталья",
+        "Анталья, Турция",
     ]
-    assert reading.guesses[0].point == (36.8969, 30.7133)
-    assert reading.guesses[1].point is None, "«нет» — это не координаты"
 
 
-def test_local_name_is_asked_first() -> None:
-    """Геокодер спрашивается местным написанием раньше русского.
+def test_wider_name_is_appended_for_the_geocoder() -> None:
+    """«Коньяалты» без города найдётся где угодно, с городом — где нужно."""
+    reading = place.parse_reading(_LADDER)
 
-    Замер 12.09.2026: «пляж Конъяалты, Анталия» и «отель Rixos Downtown
-    Antalya» по-русски не находятся вовсе, а по-английски находятся.
+    assert reading.guesses[0].local == "Konyaalti Beach, Анталья"
+    assert place._with_city("Анталья", "Турция") == "Анталья, Турция"
+    assert place._with_city("Анталья, Турция", "Турция") == "Анталья, Турция"
+    assert place._with_city("", "Турция") == ""
+
+
+@pytest.mark.parametrize("said", ["нет", "Нет", "no", "none", "-", "неизвестно"])
+def test_empty_step_is_not_a_place(said: str) -> None:
+    """Незаполненная ступень значит «не знаю», и выдумывать за модель нечего."""
+    assert place.is_empty(said)
+
+
+def test_empty_step_does_not_become_a_guess() -> None:
+    """Живой прогон 12.09.2026: модель честно ответила «нет» на три ступени.
+
+    Разбор принял «нет» за название, и в геокодер уехало «нет, Анталья».
     """
-    guess = place.Guess(name="Пляж Коньяалты", local="Konyaalti Beach")
+    answer = _LADDER.replace("РАЙОН: Коньяалты", "РАЙОН: нет")
+    answer = answer.replace("МЕСТО: Пляж Коньяалты", "МЕСТО: нет")
+    answer = answer.replace("МЕСТНОЕ: Konyaalti Beach", "МЕСТНОЕ: нет")
 
-    assert guess.queries == ("Konyaalti Beach", "Пляж Коньяалты")
-    assert place.Guess(name="Тверь").queries == ("Тверь",)
-    assert place.Guess(name="Тверь", local="Тверь").queries == ("Тверь",)
-
-
-def test_more_than_three_guesses_are_cut() -> None:
-    """Четвёртая версия — уже перебор, и каждая стоит запроса к чужому сервису."""
-    many = "\n".join(f"{n}) Версия {n} | Guess {n} | нет" for n in range(1, 6))
-
-    assert len(place.parse_reading(many).guesses) == place.MAX_CANDIDATES
+    assert [guess.name for guess in place.parse_reading(answer).guesses] == [
+        "Анталья, Турция"
+    ]
 
 
-def test_sloppy_format_still_gives_something() -> None:
-    """Формат не соблюдён — но ответ есть, и терять его нельзя."""
-    assert place.parse_reading("Это точно Анталия").guesses == ()
-    assert place.clean_place("Это точно Анталия") == "Это точно Анталия"
+def test_empty_marker_is_matched_whole_not_by_prefix() -> None:
+    """«No» началом совпало бы с Новосибирском, а «нет» — с Нетанией."""
+    assert not place.is_empty("Novosibirsk")
+    assert not place.is_empty("Нетания")
+    assert not place.is_empty("Норвегия")
 
 
-def test_refusal_inside_a_guess_is_skipped() -> None:
-    """«Не знаю» версией не считается, даже если стоит под номером."""
-    reading = place.parse_reading("1) не знаю | unknown | нет\n2) Тверь | Tver | нет")
+# --- выдуманный адрес --------------------------------------------------------
 
-    assert [guess.name for guess in reading.guesses] == ["Тверь"]
+
+@pytest.mark.parametrize(
+    "invented",
+    [
+        "Перекресток D400 и улицы 2500. Sk",
+        "D400 and 2500. Sk. intersection",
+        "пересечение улиц Ататюрка и Джумхуриет",
+        "шоссе E87",
+    ],
+)
+def test_invented_address_is_dropped(invented: str) -> None:
+    """Выдуманный адрес вреднее честного города: он звучит точно и уводит далеко.
+
+    Живой прогон 12.09.2026: по фотографии дороги под Анталией модель выдала
+    «перекрёсток D400 и улицы 2500. Sk» с координатами, промахнулась на
+    двенадцать километров и **не назвала город** — хотя сама же прочитала на
+    вывеске «ANTALYA BÜYÜKŞEHİR BELEDİYESİ» и номер машины на 07.
+    """
+    answer = _LADDER.replace("МЕСТО: Пляж Коньяалты", f"МЕСТО: {invented}")
+
+    names = [guess.name for guess in place.parse_reading(answer).guesses]
+    assert invented not in names
+    assert names[-1] == "Анталья, Турция", "честный город обязан остаться"
+
+
+@pytest.mark.parametrize(
+    "real", ["Пляж Коньяалты", "Эйфелева башня", "Antalya Expo Center", "Красная площадь"]
+)
+def test_real_landmark_survives(real: str) -> None:
+    """Настоящее место фильтр не трогает: он ловит адреса, а не названия."""
+    answer = _LADDER.replace("МЕСТО: Пляж Коньяалты", f"МЕСТО: {real}")
+
+    assert place.parse_reading(answer).guesses[0].name == real
+
+
+def test_country_alone_is_still_an_answer() -> None:
+    """Узнал только страну — это тоже ответ, и он верен."""
+    answer = """СТРАНА: Турция
+ГОРОД: нет
+РАЙОН: нет
+МЕСТО: нет"""
+
+    assert [g.name for g in place.parse_reading(answer).guesses] == ["Турция"]
+
+
+def test_nothing_recognised_gives_nothing() -> None:
+    """Все ступени пусты — версий нет, и придумывать нечего."""
+    answer = """СТРАНА: нет
+ГОРОД: нет
+РАЙОН: нет
+МЕСТО: нет"""
+
+    assert place.parse_reading(answer).empty
 
 
 @pytest.mark.parametrize(
@@ -263,10 +324,7 @@ def test_refusal_inside_a_guess_is_skipped() -> None:
     ],
 )
 def test_coordinates_are_read_or_refused(said: str, expected) -> None:
-    """Координаты берём только тогда, когда это правда координаты.
-
-    Перепутанные местами или выдуманные числа уехали бы в океан молча.
-    """
+    """Координаты берём только тогда, когда это правда координаты."""
     assert place.parse_point(said) == expected
 
 
@@ -290,8 +348,7 @@ def test_point_object_is_judged_by_its_rank() -> None:
     """У метки рамка всегда одиннадцать метров и не значит ничего.
 
     Замер 12.09.2026: одинаковые одиннадцать метров у отеля, у семикилометрового
-    пляжа и у Средиземного моря. По рамке метка неотличима от здания, по рангу —
-    отличима сразу.
+    пляжа и у Средиземного моря.
     """
     hotel = {"osm_type": "node", "place_rank": 30, "boundingbox": ["36.8", "36.8", "30.7", "30.7"]}
     city = {"osm_type": "node", "place_rank": 16, "boundingbox": ["36.8", "36.8", "30.7", "30.7"]}
@@ -328,26 +385,15 @@ def test_longitude_shrinks_towards_the_poles() -> None:
     assert north < equator * 0.6
 
 
-# --- какая версия побеждает --------------------------------------------------
+def test_prompt_allows_an_honest_city() -> None:
+    """Подсказка обязана разрешать общий ответ: иначе модель сочиняет адрес.
 
-
-def test_the_most_precise_guess_wins_not_the_first() -> None:
-    """Вероятная и точная — разные вещи, и владельцу нужна точная.
-
-    Модель ставит первой самую вероятную версию: «Анталия» вернее «отеля
-    Rixos», а толку от неё меньше — город владелец и сам найдёт.
+    На требовании «дай точку» модель выдумала перекрёсток и выбросила город,
+    который сама же доказала вывеской и номером машины.
     """
-    assert place.tighter(100.0, 25_000.0)
-    assert not place.tighter(25_000.0, 100.0)
-    assert place.tighter(100.0, None), "известная точность лучше неизвестной"
-    assert not place.tighter(None, 25_000.0)
-
-
-def test_prompt_demands_a_spot_not_a_city() -> None:
-    """Подсказка обязана требовать точку: на этом скилл и переделывали."""
     russian = " ".join(place._ASK["ru"].split())
     english = " ".join(place._ASK["en"].split())
 
-    assert "ТОЧКА, а не город" in russian
-    assert "SPOT, not a city" in english
+    assert "хуже честного города" in russian
+    assert "worse than an honest city" in english
     assert "ЗАЦЕПКИ" in russian, "без зацепок модель отвечает страной"
