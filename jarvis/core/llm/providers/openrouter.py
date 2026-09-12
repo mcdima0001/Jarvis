@@ -17,9 +17,13 @@ from typing import Any
 import httpx
 
 from jarvis.core.config import ProviderConfig
-from jarvis.core.errors import LLMError, LLMNotConfigured
+from jarvis.core.errors import LLMError, LLMNotConfigured, LLMOutOfCredits
 
 from ..protocol import LLMRequest, LLMResponse, ToolCall
+
+#: Код «нужно заплатить». OpenRouter отвечает им и когда счёт пуст, и когда на
+#: остаток не влезает запрошенный `max_tokens` — для нас это одно и то же.
+PAYMENT_REQUIRED = 402
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +87,10 @@ class OpenRouterProvider:
             data = response.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[:400]
+            if exc.response.status_code == PAYMENT_REQUIRED:
+                raise LLMOutOfCredits(
+                    f"На счету OpenRouter кончились деньги: {detail}"
+                ) from exc
             raise LLMError(f"OpenRouter вернул {exc.response.status_code}: {detail}") from exc
         except httpx.HTTPError as exc:
             raise LLMError(f"Сеть недоступна при обращении к OpenRouter: {exc}") from exc

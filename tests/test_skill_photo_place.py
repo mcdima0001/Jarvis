@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from fractions import Fraction
 from pathlib import Path
@@ -482,106 +483,364 @@ def test_missing_tile_does_not_cancel_the_check() -> None:
         assert sewn.getpixel((384, 384)) == (128, 128, 128), "дырка должна быть серой"
 
 
-class _Checker:
-    """Скилл с подставленными выбором версии и сверкой."""
-
-    def __init__(self, weighed, scores):
-        self._weighed = list(weighed)
-        self._scores = list(scores)
-        self.verified: list[str] = []
-        self.log = _Log()
-
-    async def _weigh(self, guesses):
-        for item in self._weighed:
-            if item[0] in guesses:
-                return item
-        return None
-
-    async def _verify(self, photo, point, code):
-        self.verified.append(photo)
-        return self._scores.pop(0) if self._scores else None
+# --- надписи со снимка: что вообще ищем на карте -----------------------------
 
 
-class _Log:
+def test_signs_are_kept_apart_from_guesses() -> None:
+    """Надпись — списанный факт, версия — мнение, и держатся они врозь.
+
+    Весь день 12.09.2026 скилл верил мнению модели о месте и четырежды подряд
+    ошибался на километры. Вывеска же либо есть на снимке, либо нет.
+    """
+    reading = place.parse_reading(
+        "ЗАЦЕПКИ: английский язык\n"
+        "ТЕКСТЫ: THE GATEHOUSE; UPSTAIRS AT GATEHOUSE; BAR\n"
+        "УЛИЦА: North Road\n"
+        "ДОМ: 1\n"
+        "ЗАВЕДЕНИЕ: The Gatehouse\n"
+        "СТРАНА: Великобритания\n"
+        "ГОРОД: Лондон\n"
+        "МЕСТО: нет"
+    )
+
+    assert reading.named[0] == "North Road 1", "адрес с домом точнее всего"
+    assert "The Gatehouse" in reading.named
+    assert "BAR" not in reading.named, "три буквы найдутся в любом городе"
+    assert [guess.name for guess in reading.guesses] == ["Лондон, Великобритания"]
+
+
+def test_repeated_sign_is_written_once() -> None:
+    """Повтор не множится.
+
+    На японском снимке модель выписала одну вывеску сорок раз подряд и упёрлась
+    в предел ответа, так и не дойдя до ступеней (замер 13.09.2026).
+    """
+    same = "; ".join(["目黒川桜まつり"] * 40)
+    reading = place.parse_reading(f"ТЕКСТЫ: {same}\nГОРОД: Токио")
+
+    assert reading.texts == ("目黒川桜まつり",)
+
+
+def test_nothing_written_is_not_a_sign() -> None:
+    """«Нет» в строке надписей — это отказ, а не название."""
+    assert place.parse_reading("ТЕКСТЫ: нет\nГОРОД: Вена").texts == ()
+
+
+# --- терпимое сравнение с картой ---------------------------------------------
+
+
+def test_sign_and_map_spell_the_same_place_differently() -> None:
+    """«UPSTAIRS AT GATEHOUSE» обязано находить «Upstairs at the Gatehouse».
+
+    Замер 13.09.2026: с точным образцом место не нашлось вовсе, с терпимым —
+    нашлось в двадцати метрах. Разница была в одном артикле.
+    """
+    rule = re.compile(place.loose("UPSTAIRS AT GATEHOUSE"), re.IGNORECASE)
+
+    assert rule.search("Upstairs at the Gatehouse")
+    assert not rule.search("The Gatehouse")
+
+
+def test_generic_words_stay_in_the_pattern() -> None:
+    """Родовое слово выбрасывать нельзя.
+
+    «North Road» без слова «road» вырождается в «north» и находит
+    Нортумберленд.
+    """
+    assert "road" in place.loose("North Road")
+    assert "набережная" in place.loose("Бережковская набережная")
+
+
+def test_too_short_a_sign_is_not_searched() -> None:
+    """Короткий кусок найдётся где угодно и только засорит выбор."""
+    assert place.loose("BAR") == ""
+    assert place.loose("the") == ""
+
+
+def test_query_cannot_be_broken_by_what_is_written_on_a_photo() -> None:
+    """Название приходит из чужого текста на снимке — экранируем.
+
+    Собирать запрос из прочитанного без оглядки — то же самое, что подставлять
+    его в SQL.
+    """
+    written = 'Кафе "У Ани"\n];out;'
+
+    query = place.overpass_query((written, "North Road"), (55.0, 37.0, 56.0, 38.0))
+
+    assert query.count("out center tags") == 1, "второй `out` означал бы вставку"
+    assert query.count('"') == 4, "кавычек ровно столько, сколько поставили мы"
+    assert "\n" not in query
+
+
+# --- сходятся ли надписи в одном месте ---------------------------------------
+
+
+def _hit(name: str, lat: float, lon: float, kind: str, *clues: str) -> Any:
+    """Объект на карте, найденный по названным надписям."""
+    return place.Hit(name=name, point=(lat, lon), kind=kind, clues=tuple(clues))
+
+
+def test_two_different_signs_in_one_spot_win() -> None:
+    """Две разные надписи с одного снимка в одной точке — это не случайность.
+
+    Замер 13.09.2026 по лондонскому снимку: паб «The Gatehouse» и театр
+    «Upstairs at the Gatehouse» сошлись в четырёх метрах, и до настоящей точки
+    съёмки оттуда сорок три метра.
+    """
+    found = place.places((
+        _hit("The Gatehouse", 51.5714, -0.1500, "pub", "THE GATEHOUSE"),
+        _hit("Upstairs at the Gatehouse", 51.5714, -0.1499, "theatre",
+             "THE GATEHOUSE", "UPSTAIRS AT GATEHOUSE"),
+        _hit("Gatehouse School", 51.53, -0.05, "school", "THE GATEHOUSE"),
+    ))
+
+    assert len(found[0].clues) == 2, "верное место должно идти первым"
+    assert found[0].spread < 10
+    assert abs(found[0].point[0] - 51.5714) < 0.001
+
+
+def test_one_sign_in_many_names_is_not_agreement() -> None:
+    """Одна надпись, откликнувшаяся на несколько имён, — всё ещё одна надпись.
+
+    На московском снимке обрывок «1-й КУТУЗ» нашёл станцию, бильярдный клуб и
+    автосалон в одном квартале. По именам это выглядело бы трёхкратным
+    подтверждением, по надписям — однократным.
+    """
+    found = place.places((
+        _hit("Кутузовская", 55.74, 37.53, "station", "1-й КУТУЗ"),
+        _hit("Бильярдный клуб Кутузовский", 55.7401, 37.5301, "leisure", "1-й КУТУЗ"),
+        _hit("Форд центр Кутузовский", 55.7402, 37.5302, "shop", "1-й КУТУЗ"),
+    ))
+
+    assert len(found[0].names) == 3
+    assert len(found[0].clues) == 1, "подтверждать себя надпись не может"
+
+
+def test_a_sign_scattered_over_the_city_cannot_lead() -> None:
+    """Надпись, рассыпанная по всему городу, — свидетель, но не улика."""
+    scattered = tuple(
+        _hit("Аренда", 55.7 + step / 100, 37.5 + step / 100, "shop", "АРЕНДА")
+        for step in range(place.TOO_COMMON + 1)
+    )
+
+    found = place.places(scattered)
+
+    assert not any(spot.solid for spot in found)
+
+
+def test_a_common_sign_still_confirms_a_rare_one() -> None:
+    """Частая надпись негодна как улика, но годна как свидетель.
+
+    «GATEHOUSE» в Лондоне нашлось два десятка раз. Выбросив её, верное место
+    осталось бы с единственной надписью, то есть без подтверждения.
+    """
+    everywhere = tuple(
+        _hit("Gatehouse", 51.4 + step / 50, -0.3 + step / 50, "", "THE GATEHOUSE")
+        for step in range(place.TOO_COMMON + 1)
+    )
+
+    found = place.places((
+        *everywhere,
+        _hit("The Gatehouse", 51.5714, -0.1500, "pub", "THE GATEHOUSE"),
+        _hit("Upstairs at the Gatehouse", 51.5714, -0.1499, "theatre",
+             "THE GATEHOUSE", "UPSTAIRS AT GATEHOUSE"),
+    ))
+
+    assert found[0].solid and len(found[0].clues) == 2
+    assert abs(found[0].point[0] - 51.5714) < 0.001
+
+
+def test_a_street_is_not_a_building() -> None:
+    """Совпадение с улицей говорит о районе, с кафе — о доме."""
+    street = place.places((_hit("North Road", 51.57, -0.15, "secondary", "NORTH ROAD"),))
+    pub = place.places((_hit("The Gatehouse", 51.57, -0.15, "pub", "THE GATEHOUSE"),))
+
+    assert street[0].metres >= place.STREET
+    assert pub[0].metres <= place.STREET / 2
+
+
+def test_spot_is_never_promised_tighter_than_the_floor() -> None:
+    """Надписи сошлись в точку, а снимал человек всё равно с другой стороны."""
+    together = place.places((
+        _hit("A", 51.5714, -0.1500, "pub", "A"),
+        _hit("B", 51.5714, -0.1500, "cafe", "B"),
+    ))
+
+    assert together[0].metres == place.FLOOR
+
+
+def test_overpass_answer_is_matched_to_the_signs_that_found_it() -> None:
+    """Overpass ищет все имена разом и не говорит, какое сработало."""
+    answer = {"elements": [
+        {"lat": 51.5714, "lon": -0.15, "tags": {"name": "Upstairs at the Gatehouse",
+                                                "amenity": "theatre"}},
+        {"center": {"lat": 51.57, "lon": -0.149}, "tags": {"name": "North Road",
+                                                           "highway": "secondary"}},
+        {"lat": 51.5, "lon": -0.1, "tags": {}},
+    ]}
+
+    hits = place.read_hits(answer, ("THE GATEHOUSE", "North Road"))
+
+    assert hits[0].clues == ("THE GATEHOUSE",)
+    assert hits[1].clues == ("North Road",) and not hits[1].spot
+    assert hits[2].clues == (), "безымянный объект ничего не подтверждает"
+
+
+# --- область поиска ----------------------------------------------------------
+
+
+def test_area_is_trimmed_so_the_search_can_finish() -> None:
+    """На рамке провинции Overpass отвечает 504 и не отвечает вовсе.
+
+    Замер 13.09.2026: «Анталья, Турция» — это полтораста километров по стороне,
+    и поиск по ней срывался целиком.
+    """
+    huge = ["36.0", "37.5", "29.5", "32.5"]
+
+    box = place.bounds(huge, (36.87, 30.81))
+
+    assert box is not None
+    south, west, north, east = box
+    assert (north - south) * 111_320 <= place.MAX_AREA + 1, "рамка не ужалась"
+    assert south <= 36.87 <= north and west <= 30.81 <= east, "точка выпала из рамки"
+
+
+def test_small_area_is_left_as_it_is() -> None:
+    """Город меньше предела резать незачем.
+
+    Дмитров — двенадцать километров по стороне, и обрезать там нечего. Лондон,
+    для сравнения, сорок пять, то есть под нож попадает и он: это не ошибка, а
+    цена возможности вообще получить ответ.
+    """
+    dmitrov = ["56.30", "56.38", "37.46", "37.58"]
+
+    box = place.bounds(dmitrov)
+
+    assert box is not None
+    assert [round(value, 2) for value in box] == [56.30, 37.46, 56.38, 37.58]
+
+
+def test_broken_box_is_not_a_crash() -> None:
+    """Геокодер может не дать рамки, и это не повод падать."""
+    assert place.bounds(None) is None
+    assert place.bounds(["юг", "север", "запад", "восток"]) is None
+
+
+# --- опознание из нескольких мест --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("said", "expected"),
+    [
+        ("СНИМОК: 2\nСХОДСТВО: 8\nПОЧЕМУ: мост на месте", (2, 8)),
+        ("IMAGE: 1\nMATCH: 10\nWHY: same square", (1, 10)),
+        ("СНИМОК: нет\nСХОДСТВО: 0", (None, 0)),
+        ("СНИМОК: 9\nСХОДСТВО: 7", (None, 7)),
+        ("не понял вопрос", (None, None)),
+    ],
+)
+def test_choice_is_read(said: str, expected: Any) -> None:
+    """Номер вне списка читается как отказ.
+
+    Назвавший девятый снимок из трёх ничего не опознал.
+    """
+    assert place.read_choice(said, 3) == expected
+
+
+def test_lineup_asks_which_one_not_whether_it_looks_alike() -> None:
+    """Вопрос намеренно другой, чем при сверке одного места.
+
+    На «похоже ли» железнодорожный мост отвечает «да» в любом городе: так
+    подтвердилось место за шестьсот километров от верного (замер 13.09.2026).
+    """
+    asked = place._LINEUP["ru"].format(count=3)
+
+    assert "одно из них" in asked
+    assert "может и не быть ни одного" in asked
+    assert "СНИМОК:" in asked
+
+
+# --- что говорится вслух -----------------------------------------------------
+
+
+def test_agreement_is_said_out_loud() -> None:
+    """«Похоже на» и «сошлись надписи» — разные обещания.
+
+    Владелец по ним решает, ехать туда или проверять ещё раз.
+    """
+    agreed = place.Candidate(
+        name="The Gatehouse", point=(51.57, -0.15), metres=80.0,
+        source="вывеска", agreed=2,
+    )
+
+    said = place._speech(agreed, ", с точностью до здания")["ru"]
+
+    assert "сошлись" in said.lower()
+    assert "похоже" not in said.lower()
+
+
+def test_a_bare_guess_is_said_as_a_guess() -> None:
+    """Неподтверждённая версия обязана звучать догадкой."""
+    bare = place.Candidate(
+        name="Анталья", point=(36.88, 30.70), metres=25_000.0, source="версия"
+    )
+
+    assert place._speech(bare, "")["ru"].startswith("Похоже на")
+
+
+class _Silent:
+    """Журнал, который никуда не пишет: у скилла без контекста его нет."""
+
     def info(self, *args: object) -> None: ...
     def debug(self, *args: object) -> None: ...
     def warning(self, *args: object) -> None: ...
+    def error(self, *args: object) -> None: ...
 
 
-def _checker(weighed, scores):
-    """Скилл без контекста: `log` подменяем на классе, иначе он лезет в контекст."""
-    helper = _Checker(weighed, scores)
-
-    class _Quiet(place.PhotoPlaceSkill):  # type: ignore[misc, valid-type]
-        log = helper.log  # type: ignore[assignment]
-
-    skill = _Quiet.__new__(_Quiet)
-    skill._weigh = helper._weigh  # type: ignore[method-assign]
-    skill._verify = helper._verify  # type: ignore[method-assign]
-    return skill, helper
+# --- пустой счёт: сбой, о котором надо сказать прямо --------------------------
 
 
-async def test_confirmed_guess_is_kept() -> None:
-    """Сошлась со спутником — версия остаётся и объявляется сверенной."""
-    spot = place.Guess(name="Дмитровский кремль")
-    skill, helper = _checker([(spot, (56.34, 37.52), 100.0)], [10])
+async def test_empty_account_is_named_out_loud(tmp_path: Path) -> None:
+    """Кончились деньги — так и говорим, а не «не узнаю это место».
 
-    best, checked = await skill._checked((spot,), "data:image/jpeg;base64,x", "ru")
-
-    assert best is not None and best[0] is spot
-    assert checked and helper.verified
-
-
-async def test_rejected_guess_falls_through_to_the_wider_one() -> None:
-    """Не сошлась — берём следующую ступень, более общую.
-
-    Ровно этого шага не хватало весь день: «остановка EXPO» и «здание
-    муниципалитета» звучали точно, находились на карте и уводили на десять
-    километров (живые прогоны 12.09.2026).
+    Ночью 13.09.2026 замер выдал шестнадцать «не узнаю» подряд, и выглядело это
+    провалом механизма. На деле OpenRouter отвечал «можешь позволить себе 105
+    токенов из запрошенных 300». Сбой, о котором ассистент говорит не своими
+    словами, стоит часов поисков не там.
     """
-    wrong = place.Guess(name="Остановка EXPO")
-    city = place.Guess(name="Анталья, Турция")
-    skill, _ = _checker(
-        [(wrong, (36.94, 30.87), 100.0), (city, (36.88, 30.70), 25_000.0)], [0]
-    )
+    from jarvis.core.errors import LLMOutOfCredits
 
-    best, checked = await skill._checked((wrong, city), "data:image/jpeg;base64,x", "ru")
+    photo = _photo(tmp_path / "вид.jpg")
 
-    assert best is not None and best[0] is city
-    assert not checked, "город не сверяли, объявлять его сверенным нельзя"
+    class _Broke(place.PhotoPlaceSkill):  # type: ignore[misc, valid-type]
+        log = _Silent()
 
+        async def _ask_model(self, image: str, code: str, hint: str) -> str | None:
+            raise LLMOutOfCredits("На счету OpenRouter кончились деньги")
 
-async def test_wide_guess_is_not_checked_at_all() -> None:
-    """Город со спутником не сверяют: на снимке сверху у него нет геометрии."""
-    city = place.Guess(name="Анталья, Турция")
-    skill, helper = _checker([(city, (36.88, 30.70), 25_000.0)], [0])
+    skill = _Broke.__new__(_Broke)
 
-    best, checked = await skill._checked((city,), "data:image/jpeg;base64,x", "ru")
+    answer = await skill._by_file(str(photo), "ru", "")
 
-    assert best is not None and not checked
-    assert not helper.verified, "широкую версию зря погнали в сверку"
+    assert not answer.ok
+    assert "деньги" in (answer.error or "")
+    said = answer.speech_for("ru")
+    assert "OpenRouter" in said and "Пополни" in said
 
 
-async def test_silent_satellite_does_not_reject() -> None:
-    """Сверка не состоялась — это не «не похоже», а «не проверили».
+async def test_other_failures_are_still_an_honest_shrug(tmp_path: Path) -> None:
+    """Сеть отвалилась — это по-прежнему «модель не ответила», не про деньги."""
+    photo = _photo(tmp_path / "вид.jpg")
 
-    Молчание спутника ничего не доказывает: тайлы могли не прийти.
-    """
-    spot = place.Guess(name="Дмитровский кремль")
-    skill, _ = _checker([(spot, (56.34, 37.52), 100.0)], [None])
+    class _Mute(place.PhotoPlaceSkill):  # type: ignore[misc, valid-type]
+        log = _Silent()
 
-    best, checked = await skill._checked((spot,), "data:image/jpeg;base64,x", "ru")
+        async def _ask_model(self, image: str, code: str, hint: str) -> str | None:
+            return None
 
-    assert best is not None and best[0] is spot
-    assert not checked
+    skill = _Mute.__new__(_Mute)
 
+    answer = await skill._by_file(str(photo), "ru", "")
 
-async def test_without_a_photo_nothing_is_checked() -> None:
-    """Нет картинки — нечего и сверять; версия идёт как есть."""
-    spot = place.Guess(name="Дмитровский кремль")
-    skill, helper = _checker([(spot, (56.34, 37.52), 100.0)], [0])
-
-    best, checked = await skill._checked((spot,), "", "ru")
-
-    assert best is not None and not checked
-    assert not helper.verified
+    assert not answer.ok
+    assert "деньги" not in (answer.error or "")

@@ -1,50 +1,73 @@
 """Где снято: место по фотографии — на экране или в файле.
 
-Скилл появился из живого разбора 12.09.2026 и за день переделывался трижды.
-Каждая переделка — отдельное возражение владельца, и порядок их важен.
+Скилл появился из живого разбора 12.09.2026 и переделывался пять раз. Каждая
+переделка — отдельное возражение владельца или отдельный замер, и порядок их
+важен.
 
 **«EXIF не всегда есть».** Первая версия читала координаты из файла. Проверка
-подтвердила возражение буквально: из сорока снимков на машине владельца GPS не
+подтвердила возражение буквально: из 874 снимков на машине владельца GPS не
 оказалось **ни у одного**. Мессенджеры вырезают его при отправке, у скриншота
 его нет по построению, а именно их ассистенту и показывают. EXIF остался, но
 как удача, а не опора: когда он есть, он точен.
 
 **«Город я и сам найду».** Вторая версия просила у модели до трёх версий, каждую
 точкой, и выбирала ту, что нашлась на карте точнее. Живой прогон показал, что
-это **худшее из возможных решений**: по фотографии дороги под Анталией модель
-выдала «перекрёсток D400 и улицы 2500. Sk» с координатами, промахнулась на
-двенадцать километров — и **не назвала город**, хотя сама же прочитала на
-вывеске «ANTALYA BÜYÜKŞEHİR BELEDİYESİ» и номер машины на 07. Требование «дай
-точку» не делает модель точнее, оно заставляет её сочинять.
+это худшее из возможных решений: по фотографии дороги под Анталией модель выдала
+«перекрёсток D400 и улицы 2500. Sk» с координатами, промахнулась на двенадцать
+километров — и **не назвала город**, хотя сама же прочитала на вывеске «ANTALYA
+BÜYÜKŞEHİR BELEDİYESİ». Требование «дай точку» не делает модель точнее, оно
+заставляет её сочинять.
 
-**Отсюда нынешнее устройство — лестница.** Модель перечисляет зацепки, а потом
-заполняет ступени от страны к месту, и **на каждой имеет право написать «нет»**.
-Проверяются они от частного к общему, и берётся первая, которую знает геокодер:
-порядок ступеней — это порядок доверия самой модели, спорить с ним нечем.
-Ступень МЕСТО дополнительно просеивается от выдуманных адресов.
+**Отсюда лестница.** Модель заполняет ступени от страны к месту и **на каждой
+имеет право написать «нет»**. Берётся первая, которую знает геокодер: порядок
+ступеней — это порядок доверия самой модели. Лестница честна, но потолок у неё
+город, и владельцу этого мало.
+
+**«Хотя бы 500 метров».** Пятая версия, и она про другое. Догадка модели о месте
+— это **мнение**, и день замеров показал, чего оно стоит. А надпись на снимке —
+**списанный факт**: вывеска либо есть, либо нет. Искать надпись по всему миру
+бесполезно, а внутри уже найденного города — попадает в десятки метров.
+
+Поэтому модель отдельно выписывает всё читаемое, и найденное ищется в OSM через
+Overpass — **одним запросом на все надписи разом**. Дальше найденное собирается
+в места, и решает **согласие**: две разные надписи с одного снимка, сошедшиеся в
+трёхстах метрах, случайностью быть перестают. Замер 13.09.2026 на лондонском
+снимке: паб «The Gatehouse» и театр «Upstairs at the Gatehouse» сошлись в
+четырёх метрах, до настоящей точки съёмки сорок три метра.
+
+Согласие обставлено тремя условиями, и каждое куплено ошибкой:
+
+* **Считаются надписи, а не найденные имена.** Обрывок «1-й КУТУЗ» на московском
+  снимке откликнулся на станцию, поликлинику, бильярдный клуб и автосалон —
+  шесть имён от одной надписи, и по именам это выглядело бы шестикратным
+  подтверждением.
+* **Среди сошедшихся обязано быть название** — вывеска, остановка, табличка
+  улицы, а не случайный текст. Слова «POLITIE» и «Amsterdam-Amstelland» с
+  полицейского объявления тоже сошлись на карте, в четырёх километрах от места.
+* **Надпись, рассыпанная по городу, — свидетель, но не улика.** «GATEHOUSE» в
+  Лондоне нашлось в двух десятках мест. Выбрасывать такую нельзя (без неё верное
+  место осталось бы без подтверждения), но и вести ею поиск не годится.
+
+**Одинокая надпись сама по себе не ответ.** Сошлось только одно имя — выбор
+делает спутник, и вопрос ему задаётся **сравнительный**: не «похоже ли это
+место», а «которое из них». Разница измерена: на «похоже ли» железнодорожный
+мост отвечает «да» в любом городе, и так подтвердилось место за шестьсот
+километров от верного.
 
 **Точность измеряется, а не обещается**, и говорится вслух: «с точностью до
-здания», «только до города». У протяжённого объекта её даёт рамка, у точечного —
-ранг геокодера; рамка у метки всегда одиннадцать метров, что у отеля, что у
-Средиземного моря. На том же снимке ответ стал «Анталья, только до города» с
-обещанной точностью в двадцать пять километров и настоящим промахом в десять:
-общо, зато честно и в пределах обещанного.
-
-**Версия проверяется спутником, и это единственное, что превращает догадку в
-ответ.** Выбранное место показывается зрячей модели рядом с фотографией: сходится
-ли план — дороги, крыши, граница зелени. Не сошлось — версия отбрасывается, и
-берётся следующая ступень, более общая. Замер на Дмитровском кремле: десять
-баллов верному месту и ноль трём чужим, разделение полное.
-
-Две оговорки, обе из замеров. **Спутник отстаёт от карты на годы**: под Анталией
-съёмка оказалась старше самой дороги со снимка, там теплицы и просёлок — сверять
-было не с чем, и модель честно поставила ноль. Поэтому молчание спутника версию
-не отвергает: «не проверили» и «не похоже» — разные вещи. И **общие версии не
-сверяются вовсе**: у города на снимке сверху нет той геометрии, что видна на
-фотографии.
+здания», «до квартала», «только до города». Мера у каждого пути своя: у
+согласия — разброс сошедшихся надписей, у протяжённого объекта — его рамка, у
+точечного — ранг геокодера. Улица при этом никогда не обещает дом, как бы мала
+ни была её рамка: геокодер отдаёт не всю улицу, а тот кусок, который счёл
+подходящим, и по 68-метровому куску набережной скилл однажды пообещал точность
+до здания с промахом в два километра.
 
 **Догадку и замер не путаем.** Координаты из файла — «снято здесь», узнавание по
-виду — «похоже на», сверенная версия — «сверил со спутником, сходится».
+виду — «похоже на», сошедшиеся надписи — «сошлись две надписи», сверенная
+версия — «сверил со спутником, сходится».
+
+Мерить всё это есть чем: `tools/photo_bench/` собирает набор снимков с
+известными координатами камеры и считает промах в метрах.
 """
 
 from __future__ import annotations
@@ -54,14 +77,15 @@ import base64
 import io
 import math
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from jarvis.core.contracts import ToolResult
-from jarvis.core.errors import LLMNotConfigured
+from jarvis.core.errors import LLMNotConfigured, LLMOutOfCredits
 from jarvis.core.llm import Message
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.tools import tool
@@ -79,6 +103,10 @@ USER_AGENT = "Jarvis voice assistant (github.com/mcdima0001/Jarvis)"
 
 #: Сколько ждать геокодер. Ответ нужен внутри голосовой команды.
 GEOCODE_TIMEOUT = 8.0
+
+#: Пауза между запросами к геокодеру, секунд. Их правило — не чаще раза в
+#: секунду, и за нарушение закрывают доступ целиком.
+PAUSE = 1.1
 
 #: Сколько версий проверять. Каждая стоит запроса к чужому сервису, а правило
 #: Nominatim — не чаще раза в секунду, то есть версии ещё и растягивают ответ.
@@ -103,15 +131,26 @@ _ASK = {
 силуэт гор, растительность, дорожная разметка и знаки, номера машин, тип столбов
 и ограждений, положение солнца.
 
-
 Часть зацепок называет место прямо, а не намёком: код на автомобильном номере,
 вывеска местного органа власти, телефонный код, название на дорожном указателе.
 Если такая зацепка есть — выведи из неё область и город, это не догадка.
 
-Потом ответь по ступеням, от общего к частному. Заполняй только те ступени, в
-которых **уверен**; на остальных пиши слово нет.
+**Отдельно выпиши всё, что на снимке написано.** Названия магазинов, кафе и
+фирм, таблички с улицами, номера домов, названия остановок и станций — это то,
+что потом ищется на карте и даёт точку. Читай внимательно, включая мелкое и
+частично закрытое, и пиши **ровно то, что видно**: теми же буквами, без
+перевода и без догадок.
+
+Потом ответь по ступеням. Заполняй только те, в которых **уверен**; на
+остальных пиши слово нет.
 
 ЗАЦЕПКИ: <через запятую>
+ТЕКСТЫ: <до восьми разных надписей со снимка через точку с запятой; повторы не
+        нужны, одну и ту же надпись пиши один раз; нечего читать — нет>
+УЛИЦА: <название улицы с таблички или указателя, иначе нет>
+ДОМ: <номер дома с таблички, иначе нет>
+ОСТАНОВКА: <название остановки, станции, платформы, иначе нет>
+ЗАВЕДЕНИЕ: <название магазина, кафе, отеля, фирмы с вывески, иначе нет>
 СТРАНА: <страна или нет>
 ГОРОД: <город или нет>
 РАЙОН: <район, посёлок или нет>
@@ -124,7 +163,8 @@ _ASK = {
 
 **Выдуманная улица или перекрёсток хуже честного города.** Не называй адрес,
 номер дороги или пересечение улиц, если не узнаёшь место по виду: точный на вид
-ответ, взятый наугад, вреднее общего, но верного.""",
+ответ, взятый наугад, вреднее общего, но верного. Списанное с таблички — не
+догадка, его и пиши в УЛИЦА и ДОМ.""",
     "en": """Work out where this photo was taken. Answer like a person who looks
 into it properly, not at first glance.
 
@@ -132,15 +172,26 @@ First list the clues: language and text on signs, architecture, terrain and
 mountain silhouette, vegetation, road markings and signs, number plates, poles
 and railings, the position of the sun.
 
-
 Some clues name the place outright rather than hint at it: the code on a number
 plate, a local government sign, a phone code, a name on a road sign. If you have
 such a clue, derive the region and city from it — that is not guesswork.
 
-Then answer in steps, from general to specific. Fill in only the steps you are
-**sure** about; write no on the others.
+**Separately, write out everything written in the photo.** Shop, cafe and
+company names, street plates, house numbers, stop and station names — these are
+what a map is then searched for, and they are what gives a point. Read
+carefully, including small and partly hidden text, and write **exactly what you
+see**: the same letters, no translation and no guessing.
+
+Then answer in steps. Fill in only the ones you are **sure** about; write no on
+the others.
 
 CLUES: <comma separated>
+TEXTS: <up to eight different inscriptions from the photo, separated by
+        semicolons; no repeats, write each one once; nothing to read — no>
+STREET: <street name from a plate or sign, otherwise no>
+HOUSE: <house number from a plate, otherwise no>
+STOP: <name of a stop, station or platform, otherwise no>
+VENUE: <name of a shop, cafe, hotel or company from a sign, otherwise no>
 COUNTRY: <country or no>
 CITY: <city or no>
 DISTRICT: <district, suburb or no>
@@ -152,7 +203,8 @@ LOCAL: <the PLACE name in the local language, otherwise no>
 
 **An invented street or crossroads is worse than an honest city.** Do not give an
 address, road number or street intersection unless you recognise the place by
-sight: a precise-looking guess is more harmful than a general but correct one.""",
+sight: a precise-looking guess is more harmful than a general but correct one.
+What you copied off a plate is not a guess — put that in STREET and HOUSE.""",
 }
 
 #: Подпись строки с зацепками. Обе раскладки: модель отвечает на языке вопроса.
@@ -165,7 +217,21 @@ _FIELDS = {
     "district": ("район:", "district:"),
     "place": ("место:", "place:"),
     "local": ("местное:", "local:"),
+    "street": ("улица:", "street:"),
+    "house": ("дом:", "house:"),
+    "stop": ("остановка:", "stop:"),
+    "venue": ("заведение:", "venue:"),
+    "texts": ("тексты:", "texts:"),
 }
+
+#: Сколько надписей со снимка вообще рассматриваем. Предел не от жадности: на
+#: японском снимке модель повторила одну и ту же вывеску сорок раз подряд и
+#: упёрлась в предел ответа, так и не дойдя до ступеней.
+MAX_TEXTS = 8
+
+#: Короче этого надпись искать бессмысленно: «BAR», «OPEN», номер маршрута
+#: найдутся в любом городе тысячей штук и только засорят выбор.
+MIN_TEXT = 4
 
 #: Признаки выдуманного места. Модель, которую заставляют назвать точку, не
 #: отказывается — она сочиняет адрес, и звучит он убедительно. В живом прогоне
@@ -251,6 +317,95 @@ VERIFY_MIN = 5
 #: которую видно на фотографии, и сверка выродится в угадывание.
 VERIFY_BELOW = 2_000.0
 
+#: Сколько надписей со снимка искать на карте. Все уходят **одним** запросом к
+#: Overpass, так что предел тут не про вежливость, а про длину запроса.
+MAX_PINS = 6
+
+#: Сколько совпадений брать по одной надписи у Nominatim.
+PIN_MATCHES = 3
+
+#: Прямой доступ к данным OSM: в отличие от геокодера отдаёт **все** объекты с
+#: таким именем внутри рамки, а не самый «важный».
+#:
+#: Разница решающая, и она измерена. По вывеске «The Gatehouse» геокодер внутри
+#: Лондона отдаёт три паба, и верного среди них нет: он считает его менее
+#: важным. Overpass отдаёт всё — и паб на North Road в сорока метрах от места
+#: съёмки, и театр «Upstairs at the Gatehouse» в двадцати, и саму North Road в
+#: тридцати. Три надписи с одного снимка сошлись в одной точке, и это ответ.
+#: Зеркал два, и второе не роскошь: главное отвечает отказом, когда занято, и в
+#: замере 13.09.2026 ровно на нём потерялся единственный снимок, который
+#: механизм умел разгадать. Оба открытые, оба просят честно представиться.
+OVERPASS = (
+    "https://overpass-api.de/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+)
+
+#: Сколько ждать Overpass. Он медленнее геокодера: запрос по всему городу
+#: занимает секунды, потому что это настоящий поиск по базе, а не индекс имён.
+OVERPASS_TIMEOUT = 25.0
+
+#: Сколько объектов вообще забирать у Overpass. Предел щедрый намеренно: он
+#: режет **по порядку ответа, а не по полезности**, и на московском снимке
+#: обрывок «1-й КУТУЗ» своими двумя десятками заведений вытеснил бы из выдачи
+#: ту самую набережную, ради которой всё и затевалось. Лишнее отсеет `winnow`.
+MAX_HITS = 200
+
+#: Насколько близко должны стоять объекты, чтобы считаться одним местом.
+CLUSTER = 300.0
+
+#: В скольких **разных местах** города надпись ещё считается уликой. Больше —
+#: значит, она не про место: обрывок «1-й КУТУЗ» откликнулся на два десятка
+#: заведений со словом «Кутузовский», а «GATEHOUSE» в Лондоне — на два десятка
+#: сторожек и школ. Длинная улица тоже попадает сюда, и это верно: пять
+#: километров проспекта места не называют.
+TOO_COMMON = 5
+
+#: Какую область вообще просматривать, метров по стороне. На рамке провинции
+#: Анталья (полтораста километров) Overpass отвечает 504 и не отвечает вовсе.
+#: Сорок километров закрывают любой город с окраинами.
+MAX_AREA = 40_000.0
+
+#: Точнее этого не обещаем никогда. Сойтись в одну точку надписи могут, а вот
+#: снимал человек всё равно с другой стороны улицы.
+FLOOR = 80.0
+
+#: Во что оценивать попадание в одну лишь улицу, метров. Названная городская
+#: улица — это от полукилометра до трёх, и точка на ней говорит «где-то тут», а
+#: не «вот здесь». Полтора километра выбраны так, чтобы вслух это звучало «с
+#: точностью до квартала»: «до здания» тут ложь, «только до города» — наговор
+#: на себя. Длинный проспект всё равно длиннее, и это признанная слабость: у
+#: геокодера не спросишь, где кончается улица.
+STREET = 1_500.0
+
+#: Служебные слова, которые на вывеске и на карте пишут по-разному или не
+#: пишут вовсе. Выбрасываются из образца поиска: «UPSTAIRS AT GATEHOUSE» должно
+#: находить «Upstairs at the Gatehouse».
+#: Только артикли и предлоги, и это осознанно узко. Родовые слова — «Road»,
+#: «набережная», «Cafe» — выбрасывать нельзя: без них «North Road» вырождается
+#: в «north» и находит Нортумберленд, а с ними находит саму улицу.
+_STOP = frozenset({
+    "the", "and", "der", "die", "das", "und", "van", "den", "del", "della",
+    "des", "les", "las", "los", "sur", "aux", "una", "uno",
+})
+
+#: Что считается улицей, а не местом. Совпадение с улицей говорит о районе, с
+#: кафе — о доме, и смешивать их нельзя.
+_ROADS = frozenset({
+    "motorway", "trunk", "primary", "secondary", "tertiary", "unclassified",
+    "residential", "service", "living_street", "pedestrian", "track", "road",
+    "footway", "path", "cycleway", "steps",
+})
+
+#: Сколько мест сверять со спутником. Сверка идёт разом, но каждая стоит
+#: запроса к модели и девяти тайлов.
+VERIFY_TOP = 4
+
+#: Насколько близко должны оказаться две **разные** зацепки, чтобы считать, что
+#: они говорят об одном месте. Порог из смысла: соседние дома на одной улице
+#: стоят десятки метров друг от друга, а случайный тёзка в том же городе —
+#: километры.
+TOGETHER = 400.0
+
 #: О чём спрашивать при сверке. Главное тут — предупредить о смене ракурса:
 #: без этой оговорки модель искала на снимке СВЕРХУ горы на горизонте и на их
 #: отсутствии отвечала «не совпадает» (замер 12.09.2026).
@@ -284,6 +439,43 @@ WHY: <one short phrase>""",
 #: Подпись строки с оценкой сходства.
 _MATCH = ("сходство:", "match:")
 
+#: О чём спрашивать при опознании из нескольких мест. Вопрос намеренно другой,
+#: чем при сверке одного: не «похоже ли», а «которое из них». На первый вопрос
+#: типовая застройка отвечает «да» где угодно, на второй — нет.
+_LINEUP = {
+    "ru": """Первая картинка — фотография, снятая с земли, обычным объективом.
+Следующие {count} — спутниковые снимки СВЕРХУ, каждый вокруг своего места. Все
+они найдены по надписям с самой фотографии, и одно из них — то самое место, где
+она снята. Но может и не быть ни одного.
+
+Ракурсы разные, и это главное. Сверху по построению НЕ ВИДНО ни гор на
+горизонте, ни неба, ни фасадов — их отсутствие ничего не доказывает. Сравнивать
+можно только план: рисунок дорог и перекрёстков, форму крыш и расположение
+построек, границу застройки и зелени, реку, мост, площадь.
+
+Ответь тремя строками:
+СНИМОК: <номер спутникового снимка от 1 до {count}, или слово нет>
+СХОДСТВО: <число от 0 до 10: насколько уверен в выборе>
+ПОЧЕМУ: <одна короткая фраза>""",
+    "en": """The first picture is a photo taken from the ground with an ordinary
+lens. The next {count} are satellite views FROM ABOVE, each around a different
+place. All of them were found from text on the photo itself, and one of them is
+the place where it was taken. Or possibly none of them is.
+
+The viewpoints differ, and that is the point. From above you by construction see
+no mountains on the horizon, no sky and no facades — their absence proves
+nothing. Compare only the plan: roads and junctions, roof shapes and building
+layout, the edge between built-up land and greenery, a river, a bridge, a square.
+
+Answer in three lines:
+IMAGE: <the number of the satellite view from 1 to {count}, or the word no>
+MATCH: <a number from 0 to 10: how sure you are of the choice>
+WHY: <one short phrase>""",
+}
+
+#: Подпись строки с выбранным снимком.
+_CHOICE = ("снимок:", "image:")
+
 #: Части адреса от точной к общей — для ответа по координатам из файла.
 _ADDRESS = (
     "tourism", "attraction", "building", "amenity", "road",
@@ -313,15 +505,129 @@ class Guess:
 
 @dataclass(frozen=True, slots=True)
 class Reading:
-    """Что модель вычитала из снимка: зацепки и версии."""
+    """Что модель вычитала со снимка: зацепки, надписи и ступени.
+
+    Надписи держатся отдельно от версий намеренно. Версия — это догадка модели
+    о месте, а надпись — **списанный факт**: вывеска «THE GATEHOUSE» либо есть
+    на снимке, либо нет, и спорить тут не о чем. Из фактов и получается точка:
+    искать название по всему миру бесполезно, а внутри известного города —
+    попадает в десятки метров (замер 13.09.2026).
+    """
 
     clues: str = ""
     guesses: tuple[Guess, ...] = field(default_factory=tuple)
+    texts: tuple[str, ...] = field(default_factory=tuple)
+    street: str = ""
+    house: str = ""
+    stop: str = ""
+    venue: str = ""
 
     @property
     def empty(self) -> bool:
         """Нечего проверять."""
-        return not self.guesses
+        return not self.guesses and not self.named
+
+    @property
+    def strong(self) -> tuple[str, ...]:
+        """Надписи, про которые модель прямо сказала, что это **название**.
+
+        Табличка улицы, номер дома, остановка, вывеска заведения — всё это
+        названия по своей природе, и найденное по ним место есть место.
+
+        Отличать их от прочих надписей пришлось после замера 13.09.2026. На
+        снимке дорожного щита в Амстердаме читались «POLITIE» и
+        «Amsterdam-Amstelland» — служебные слова с полицейского объявления. На
+        карте они честно сошлись: отделение полиции и штаб округа в тридцати
+        метрах друг от друга. И то и другое существует, вот только сняли щит в
+        четырёх километрах оттуда.
+        """
+        found: list[str] = []
+        if self.street and self.house:
+            found.append(f"{self.street} {self.house}")
+        for name in (self.stop, self.venue, self.street):
+            if name:
+                found.append(name)
+        return tuple(dict.fromkeys(found))
+
+    @property
+    def named(self) -> tuple[str, ...]:
+        """Надписи, которые стоит искать на карте, от точной к общей.
+
+        Порядок — это порядок надёжности. Адрес с табличкой дома точнее всего;
+        остановка и заведение стоят на одном месте и попадают в здание;
+        остальные надписи идут последними, потому что среди них и реклама, и
+        объявления, и слоганы.
+        """
+        found = [*self.strong]
+        for text in self.texts:
+            if len(text) >= MIN_TEXT:
+                found.append(text)
+        return tuple(dict.fromkeys(found))[:MAX_TEXTS]
+
+
+@dataclass(frozen=True, slots=True)
+class Hit:
+    """Объект на карте, найденный по надписи со снимка."""
+
+    name: str
+    point: tuple[float, float]
+    #: Что это за объект: `pub`, `bus_stop`, `secondary`. Пусто — без разбору.
+    kind: str = ""
+    #: Какие надписи со снимка на него откликнулись. Считаем именно их, а не
+    #: названия объектов: две надписи с одного снимка в одном месте — это
+    #: подтверждение, а один и тот же «Gatehouse» на двух табличках — нет.
+    clues: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def spot(self) -> bool:
+        """Точечное ли это место.
+
+        Улица тянется на километры, и совпадение с ней говорит только о районе;
+        кафе, остановка и магазин стоят там, где стоят.
+        """
+        return self.kind not in _ROADS
+
+
+@dataclass(frozen=True, slots=True)
+class Spot:
+    """Место, в котором сошлось несколько надписей со снимка."""
+
+    point: tuple[float, float]
+    names: tuple[str, ...]
+    spread: float
+    spotted: bool = True
+    #: Сколько **разных надписей со снимка** сюда попало. Это и есть мера
+    #: доверия: одна — совпадение имени, две — уже не случайность.
+    clues: tuple[str, ...] = field(default_factory=tuple)
+    #: Есть ли среди них хоть одна редкая. Место, собранное из одних только
+    #: частых надписей, — это совпадение слов, а не место.
+    solid: bool = True
+
+    @property
+    def metres(self) -> float:
+        """Насколько точно это место, метров.
+
+        Разброс сошедшихся объектов — честная мера: три вывески в тридцати
+        метрах друг от друга дают тридцать метров, а одинокая улица — свою
+        длину. Ниже `FLOOR` не опускаемся: точнее камера и не стоит.
+        """
+        if not self.spotted:
+            return max(self.spread, STREET)
+        return max(self.spread, FLOOR)
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """Место, которым можно ответить: название, точка и чем оно подтверждено."""
+
+    name: str
+    point: tuple[float, float]
+    metres: float | None
+    source: str
+    #: Оценка сверки со спутником, 0..10. ``None`` — не сверяли.
+    score: int | None = None
+    #: Сколько независимых зацепок сошлось на этом месте.
+    agreed: int = 1
 
 
 def is_refusal(answer: str) -> bool:
@@ -408,7 +714,30 @@ def parse_reading(answer: str) -> Reading:
         steps.append(Guess(name=_with_city(city, country) or city))
     elif country:
         steps.append(Guess(name=country))
-    return Reading(clues=clues, guesses=tuple(steps[:MAX_CANDIDATES]))
+    return Reading(
+        clues=clues,
+        guesses=tuple(steps[:MAX_CANDIDATES]),
+        texts=split_texts(said.get("texts", "")),
+        street=said.get("street", ""),
+        house=said.get("house", ""),
+        stop=said.get("stop", ""),
+        venue=said.get("venue", ""),
+    )
+
+
+def split_texts(line: str) -> tuple[str, ...]:
+    """Строку надписей — в список, без повторов и без мусора.
+
+    Повторы снимаются не из аккуратности: на японском снимке модель выписала
+    одну и ту же вывеску сорок раз подряд и упёрлась в предел ответа, так и не
+    дойдя до ступеней (замер 13.09.2026).
+    """
+    parts = (piece.strip(_EDGES) for piece in re.split(r"[;\n]", line))
+    seen: dict[str, None] = {}
+    for part in parts:
+        if len(part) >= MIN_TEXT and not is_empty(part):
+            seen.setdefault(part, None)
+    return tuple(seen)[:MAX_TEXTS]
 
 
 
@@ -487,6 +816,13 @@ def precision_of(found: dict[str, Any]) -> float | None:
     """
     rank = found.get("place_rank")
     box = span_metres(found.get("boundingbox"))
+    if str(found.get("category") or found.get("class") or "").lower() == "highway":
+        # **Улица — это не точка, какой бы маленькой ни пришла её рамка.**
+        # Геокодер отдаёт не всю улицу, а тот её отрезок, который счёл
+        # подходящим: «Бережковская набережная» пришла куском в 68 метров, и
+        # скилл пообещал по нему точность до здания, промахнувшись на два с
+        # лишним километра (замер 13.09.2026).
+        return max(box or 0.0, STREET)
     if str(found.get("osm_type", "")).lower() in ("way", "relation") and box is not None:
         return box
     return metres_for_rank(rank)
@@ -512,6 +848,241 @@ def describe_precision(metres: float | None, language: str = "ru") -> str:
         if metres <= limit:
             return english if language == "en" else russian
     return ""
+
+
+def metres_between(first: tuple[float, float], second: tuple[float, float]) -> float:
+    """Расстояние между точками по большому кругу, метров."""
+    radius = 6_371_000.0
+    lat1, lon1 = math.radians(first[0]), math.radians(first[1])
+    lat2, lon2 = math.radians(second[0]), math.radians(second[1])
+    inner = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    )
+    return 2 * radius * math.asin(min(1.0, math.sqrt(inner)))
+
+
+def common_clues(spots: tuple[Spot, ...], most: int = TOO_COMMON) -> frozenset[str]:
+    """Надписи, раскиданные по всему городу, а не указывающие на место.
+
+    Полезная вывеска в городе редка: паб «The Gatehouse» один, «Upstairs at the
+    Gatehouse» тем более. А обрывок вроде «1-й КУТУЗ» откликается на станцию,
+    поликлинику, бильярдный клуб и автосалон разом — и все про разные места
+    (замер 13.09.2026, московский снимок).
+
+    **Считаются места, а не объекты**, и это не мелочь. Улица лежит в OSM
+    десятком отрезков с одним именем, и по объектам «Бережковская набережная»
+    выглядела бы такой же расхожей, как «Кутузовский», — хотя лежит она в одном
+    месте, а «Кутузовский» рассыпан по двадцати.
+
+    **Выбрасывать частую надпись целиком нельзя.** «GATEHOUSE» в Лондоне тоже
+    нашлось два десятка раз, и без него верное место осталось бы с единственной
+    надписью, то есть без подтверждения. Частая надпись негодна как **улика**,
+    но годна как **свидетель**: сама места не называет, а сказанное другой
+    надписью подтверждает.
+    """
+    counted = Counter(clue for spot in spots for clue in spot.clues)
+    return frozenset(clue for clue, places in counted.items() if places > most)
+
+
+def places(hits: tuple[Hit, ...], apart: float = CLUSTER) -> tuple[Spot, ...]:
+    """Собрать объекты в места и расставить по убедительности.
+
+    Два прохода, и второй нужен: расхожесть надписи видна только после того,
+    как объекты разложены по местам.
+    """
+    spots = cluster(hits, apart=apart)
+    common = common_clues(spots)
+    marked = tuple(
+        replace(spot, solid=any(clue not in common for clue in spot.clues))
+        for spot in spots
+    )
+    return tuple(sorted(
+        marked,
+        key=lambda spot: (not spot.solid, -len(spot.clues), -len(spot.names), spot.spread),
+    ))
+
+
+def cluster(hits: tuple[Hit, ...], apart: float = CLUSTER) -> tuple[Spot, ...]:
+    """Собрать найденные объекты в места и отсортировать по убеждительности.
+
+    **Это и есть весь механизм точности.** Одна надпись, найденная на карте, —
+    совпадение имени и ничего больше: «North Road» в Лондоне висит на полусотне
+    остановок. Но когда в трёхстах метрах сходятся три **разные** надписи с
+    одного снимка — паб, театр и улица, — случайностью это быть перестаёт.
+
+    Сортировка по числу **разных надписей со снимка**, а при равенстве — по
+    тесноте. Считать надо именно надписи, и это не придирка: в Лондоне по одной
+    вывеске «GATEHOUSE» рядом нашлись «St Bartholomew's Gatehouse» и «St
+    Bartholomew’s Gatehouse» — одно место, два написания апострофа. По числу
+    имён такая пара обходила верный ответ; по числу надписей — нет.
+    """
+    spots: list[Spot] = []
+    used: set[int] = set()
+    for index, first in enumerate(hits):
+        if index in used:
+            continue
+        near = [
+            (other_index, other) for other_index, other in enumerate(hits)
+            if other_index not in used
+            and metres_between(first.point, other.point) <= apart
+        ]
+        used.update(other_index for other_index, _ in near)
+        members = [item for _, item in near]
+        names = tuple(dict.fromkeys(item.name for item in members))
+        point = (
+            sum(item.point[0] for item in members) / len(members),
+            sum(item.point[1] for item in members) / len(members),
+        )
+        spread = max(
+            (metres_between(point, item.point) for item in members), default=0.0
+        )
+        found = tuple(dict.fromkeys(clue for item in members for clue in item.clues))
+        spots.append(Spot(
+            point=point,
+            names=names,
+            spread=spread,
+            spotted=any(item.spot for item in members),
+            clues=found,
+        ))
+    return tuple(spots)
+
+
+def overpass_query(names: tuple[str, ...], box: tuple[float, float, float, float]) -> str:
+    """Запрос к Overpass: все объекты с такими именами внутри рамки.
+
+    Имена уходят в **регулярное выражение**, поэтому всё, что в нём значимо,
+    экранируется, а кавычки и обратные слеши выбрасываются вовсе: названия
+    приходят из чужого текста на фотографии, и собирать из них запрос без
+    оглядки — это то же самое, что подставлять их в SQL.
+    """
+    safe = [loose(name) for name in names]
+    pattern = "|".join(item for item in safe if item)
+    south, west, north, east = box
+    return (
+        f"[out:json][timeout:{int(OVERPASS_TIMEOUT)}];"
+        f'nwr["name"~"({pattern})",i]({south:.5f},{west:.5f},{north:.5f},{east:.5f});'
+        f"out center tags {MAX_HITS};"
+    )
+
+
+def loose(name: str) -> str:
+    """Название с вывески — в терпимый образец для поиска. Пусто — искать нечего.
+
+    **Вывеска и карта пишут одно и то же по-разному, и это не мелочь.** На
+    снимке из Лондона написано «UPSTAIRS AT GATEHOUSE», а в OSM объект зовётся
+    «Upstairs at the Gatehouse» — один артикль, и точное совпадение не находит
+    ничего. Замер 13.09.2026: с точным образцом место не нашлось вовсе, с
+    терпимым — нашлось в двадцати метрах.
+
+    Поэтому служебные слова выбрасываются, а между значащими ставится «что
+    угодно». Осталось меньше `MIN_TEXT` букв — образца нет: короткий кусок
+    найдётся где угодно и только засорит выбор.
+    """
+    words = [
+        word for word in re.split(r"\W+", clean_name(name).lower(), flags=re.UNICODE)
+        if len(word) >= 3 and word not in _STOP
+    ]
+    if not words:
+        return ""
+    pattern = ".*".join(re.escape(word) for word in words)
+    return pattern if len(pattern.replace(".*", "")) >= MIN_TEXT else ""
+
+
+def clean_name(name: str) -> str:
+    """Убрать из названия всё, чем можно сломать запрос."""
+    return re.sub(r'["\\\n\r]', " ", name).strip()
+
+
+def read_hits(answer: Any, names: tuple[str, ...] = ()) -> tuple[Hit, ...]:
+    """Разобрать ответ Overpass в список объектов.
+
+    Заодно отмечаем, какая надпись со снимка на объект откликнулась: Overpass
+    ищет все имена одним запросом и не говорит, какое из них сработало, а
+    считать их потом придётся.
+    """
+    probes = [
+        (name, re.compile(pattern, re.IGNORECASE))
+        for name, pattern in ((name, loose(name)) for name in names)
+        if pattern
+    ]
+    found: list[Hit] = []
+    elements = answer.get("elements") if isinstance(answer, dict) else None
+    for element in elements or ():
+        if not isinstance(element, dict):
+            continue
+        middle = element.get("center") or element
+        tags = element.get("tags") or {}
+        try:
+            point = (float(middle["lat"]), float(middle["lon"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        kind = next(
+            (
+                str(tags[key]) for key in
+                ("amenity", "shop", "tourism", "railway", "public_transport",
+                 "office", "leisure", "highway")
+                if tags.get(key)
+            ),
+            "",
+        )
+        name = str(tags.get("name", ""))
+        found.append(Hit(
+            name=name,
+            point=point,
+            kind=kind,
+            clues=tuple(probe for probe, rule in probes if rule.search(name)),
+        ))
+    return tuple(found)
+
+
+def bounds(
+    box: Any, around: tuple[float, float] | None = None, limit: float = MAX_AREA
+) -> tuple[float, float, float, float] | None:
+    """Рамка Nominatim — в четвёрку «юг, запад, север, восток», с ограничением.
+
+    Рамка ужимается до `limit` вокруг центра, и это не оптимизация, а условие
+    работоспособности: на рамке провинции Анталья (полтораста километров)
+    Overpass отвечает 504 и не отвечает вовсе. Обрезанная рамка хуже полной
+    только тем, что надпись с дальней окраины в неё не попадёт, — а без обрезки
+    не попадёт ни одна.
+    """
+    try:
+        south, north, west, east = (float(value) for value in box)
+    except (TypeError, ValueError):
+        return None
+    middle = around or ((south + north) / 2, (west + east) / 2)
+    half = limit / 2 / 111_320
+    wide = half / max(math.cos(math.radians(middle[0])), 0.01)
+    return (
+        max(south, middle[0] - half),
+        max(west, middle[1] - wide),
+        min(north, middle[0] + half),
+        min(east, middle[1] + wide),
+    )
+
+
+def _speech(best: Candidate, tail: str) -> dict[str, str]:
+    """Что сказать вслух. Формулировка держится за то, чем место подтверждено.
+
+    Разница не косметическая. «Похоже на», «сошлись три надписи» и «сверил со
+    спутником» — это разные обещания, и владелец по ним решает, ехать туда или
+    проверять ещё раз.
+    """
+    if best.agreed > 1:
+        return {
+            "ru": f"{best.name}{tail}. Сошлись {best.agreed} надписи со снимка.",
+            "en": f"{best.name}{tail}. {best.agreed} signs from the photo agree.",
+        }
+    if best.score is not None and best.score >= VERIFY_MIN:
+        return {
+            "ru": f"{best.name}{tail}. Сверил со спутником, сходится.",
+            "en": f"{best.name}{tail}. Checked against satellite, it matches.",
+        }
+    return {
+        "ru": f"Похоже на {best.name}{tail}.",
+        "en": f"Looks like {best.name}{tail}.",
+    }
 
 
 def tighter(candidate: float | None, current: float | None) -> bool:
@@ -639,6 +1210,24 @@ def read_match(answer: str) -> int | None:
     return None
 
 
+def read_choice(answer: str, count: int) -> tuple[int | None, int | None]:
+    """Выбор и уверенность из ответа при опознании.
+
+    Возвращает «какой снимок» и «насколько уверен». Номер вне списка читается
+    как отказ: модель, назвавшая шестой из четырёх, ничего не опознала.
+    """
+    choice: int | None = None
+    for line in answer.splitlines():
+        low = line.strip().lower()
+        for mark in _CHOICE:
+            if low.startswith(mark):
+                digits = re.search(r"\d+", low[len(mark) :])
+                if digits:
+                    number = int(digits.group())
+                    choice = number if 1 <= number <= count else None
+    return choice, read_match(answer)
+
+
 def resolve_photo(path: str) -> Path | None:
     """Файл фотографии по сказанному пути. ``None`` — не нашли или не картинка."""
     cleaned = path.strip().strip('"').strip("'")
@@ -656,13 +1245,15 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.4.0",
+        version="0.5.0",
         spoken=("место по фото", "где снято", "photo place"),
     )
 
     async def on_setup(self) -> None:
-        """Приготовить клиент геокодера."""
+        """Приготовить клиент геокодера и очередь к нему."""
         self._client: httpx.AsyncClient | None = None
+        self._gate = asyncio.Lock()
+        self._last_call = 0.0
 
     async def on_stop(self) -> None:
         """Закрыть соединения."""
@@ -822,7 +1413,19 @@ class PhotoPlaceSkill(Skill):
                     "en": "I could not open that photo.",
                 },
             )
-        said = await self._ask_model(image, code, hint)
+        try:
+            said = await self._ask_model(image, code, hint)
+        except LLMOutOfCredits as empty:
+            self.log.error("Определить место не на что: %s", empty)
+            return ToolResult.failure(
+                "кончились деньги на OpenRouter",
+                speech={
+                    "ru": "Не могу посмотреть на фотографию: кончились деньги "
+                          "на OpenRouter. Пополни счёт, и я разберусь.",
+                    "en": "I cannot look at the photo: the OpenRouter account is "
+                          "out of credits. Top it up and I will sort it out.",
+                },
+            )
         if said is None:
             return ToolResult.failure(
                 "зрячая модель не ответила",
@@ -845,10 +1448,17 @@ class PhotoPlaceSkill(Skill):
         return f"{head}: {clue}\n\n{asked}"
 
     async def _ask_model(self, image: str, code: str, hint: str) -> str | None:
-        """Показать картинку зрячей модели и получить зацепки с версиями."""
+        """Показать картинку зрячей модели и получить зацепки с версиями.
+
+        Пустые деньги пробрасываются наружу, а не глотаются. Проверено дорого:
+        ночью 13.09.2026 замер выдал шестнадцать «не узнаю» подряд, и выглядело
+        это провалом механизма — а счёт на OpenRouter просто кончился.
+        """
         messages = [Message.user(self._question(code, hint), images=(image,))]
         try:
             response = await self.context.llm.complete(messages, task=VISION_TASK)
+        except LLMOutOfCredits:
+            raise
         except Exception as exc:  # noqa: BLE001 — сеть и тариф, не наша вина
             self.log.warning("Зрячая модель не ответила: %s", exc)
             return None
@@ -874,7 +1484,7 @@ class PhotoPlaceSkill(Skill):
         if reading.clues:
             self.log.info("Зацепки на снимке: %s", reading.clues)
 
-        best, checked = await self._checked(reading.guesses, photo, code)
+        best = await self._decide(reading, photo, code)
         if best is None:
             return ToolResult.failure(
                 "версии не подтвердились",
@@ -883,123 +1493,263 @@ class PhotoPlaceSkill(Skill):
                     "en": "I would rather not guess, nothing checks out.",
                 },
             )
-        guess, point, metres = best
-        accuracy = describe_precision(metres, code)
+        accuracy = describe_precision(best.metres, code)
         payload: dict[str, Any] = {
-            "place": guess.name,
-            "local": guess.local,
+            "place": best.name,
+            "source": best.source,
             "clues": reading.clues,
+            "texts": list(reading.named),
             "guesses": [item.name for item in reading.guesses],
             "exact": False,
-            "checked": checked,
-            "accuracy_m": round(metres) if metres is not None else None,
-            "latitude": point[0] if point else None,
-            "longitude": point[1] if point else None,
-            "map_url": map_url(*point) if point else "",
+            "checked": best.score is not None and best.score >= VERIFY_MIN,
+            "agreed": best.agreed,
+            "accuracy_m": round(best.metres) if best.metres is not None else None,
+            "latitude": best.point[0],
+            "longitude": best.point[1],
+            "map_url": map_url(*best.point),
         }
         self.log.info(
-            "Место по снимку: %r, точка %s, точность %s м (версии: %s)",
-            guess.name,
-            point,
-            round(metres) if metres is not None else "?",
-            ", ".join(item.name for item in reading.guesses),
+            "Место по снимку: %r, точка %s, точность %s м (по зацепке %r)",
+            best.name,
+            best.point,
+            round(best.metres) if best.metres is not None else "?",
+            best.source,
         )
-        if point is None:
-            return ToolResult.success(
-                payload,
-                speech={
-                    "ru": f"Похоже на {guess.name}. На карте показать не смогу.",
-                    "en": f"Looks like {guess.name}. I cannot put it on the map though.",
-                },
-            )
         # Точность говорится вслух: владельцу нужна точка, и услышать «только до
         # города» ему важнее, чем услышать название города.
         tail = f", {accuracy}" if accuracy else ""
-        # Сверенная версия — уже не догадка, и говорить о ней надо иначе.
-        if checked:
-            return ToolResult.success(
-                payload,
-                speech={
-                    "ru": f"{guess.name}{tail}. Сверил со спутником, сходится.",
-                    "en": f"{guess.name}{tail}. Checked against satellite, it matches.",
-                },
-            )
-        return ToolResult.success(
-            payload,
-            speech={
-                "ru": f"Похоже на {guess.name}{tail}.",
-                "en": f"Looks like {guess.name}{tail}.",
-            },
+        return ToolResult.success(payload, speech=_speech(best, tail))
+
+    async def _decide(
+        self, reading: Reading, photo: str, code: str
+    ) -> Candidate | None:
+        """Выбрать место: сперва по надписям, и только потом по догадке.
+
+        Порядок здесь и есть весь смысл переделки. Догадка модели о месте — это
+        мнение, и день замеров показал, чего оно стоит: остановка трамвая вместо
+        выставочного центра, выдуманный перекрёсток, здание муниципалитета по
+        баннеру. Надпись же — **списанный факт**: вывеска либо есть на снимке,
+        либо нет. Искать её по всему миру бесполезно, а внутри найденного
+        города она попадает в десятки метров (замер 13.09.2026: «The Gatehouse»
+        в Лондоне — 40 м, «Бережковская набережная» в Москве — 50 м).
+        """
+        area = await self._area(reading)
+        spots = await self._spots(reading, area) if area is not None else ()
+        named = set(reading.strong)
+        together = next(
+            (
+                spot for spot in spots
+                if spot.solid and len(spot.clues) > 1 and named.intersection(spot.clues)
+            ),
+            None,
         )
+        if together is not None:
+            # Несколько разных надписей, сошедшихся в одной точке, — лучшее, что
+            # тут бывает: совпасть случайно они не могли, и стоит это ноль
+            # запросов к модели.
+            #
+            # Считаются именно **надписи со снимка**, а не найденные имена, и
+            # цена ошибки тут измерена: на московском снимке обрывок «1-й
+            # КУТУЗ» откликнулся на станцию, поликлинику, бильярдный клуб и
+            # автосалон — шесть имён от одной надписи, и по именам это
+            # выглядело бы шестикратным подтверждением.
+            #
+            # И среди сошедшихся обязано быть **название** (`strong`), а не
+            # одни только случайные надписи: слова «POLITIE» и
+            # «Amsterdam-Amstelland» с полицейского объявления тоже сошлись на
+            # карте — в четырёх километрах от места съёмки.
+            self.log.info(
+                "Надписи сошлись в одном месте: %s (разброс %.0f м)",
+                ", ".join(together.clues), together.spread,
+            )
+            return Candidate(
+                name=await self._name_of(together.point) or ", ".join(together.names),
+                point=together.point,
+                metres=together.metres,
+                source=", ".join(together.clues),
+                agreed=len(together.clues),
+            )
+        alone = await self._best_spot(spots, photo, code)
+        if alone is not None:
+            return alone
+        return await self._by_ladder(reading, area, photo, code)
 
-    async def _checked(
-        self, guesses: tuple[Guess, ...], photo: str, code: str
-    ) -> tuple[tuple[Guess, tuple[float, float] | None, float | None] | None, bool]:
-        """Выбрать версию и, если она достаточно точная, сверить со спутником.
+    async def _spots(
+        self, reading: Reading, area: dict[str, Any]
+    ) -> tuple[Spot, ...]:
+        """Найти надписи со снимка на карте и собрать их в места."""
+        names = reading.named[:MAX_PINS]
+        box = bounds(area.get("boundingbox"), _coordinates(area))
+        if not names or box is None:
+            return ()
+        hits = await self._overpass(tuple(names), box)
+        if not hits:
+            return ()
+        spots = places(hits)
+        self.log.info(
+            "Надписи на карте: %d объект(ов) в %d мест(ах)", len(hits), len(spots)
+        )
+        return spots
 
-        Не сошлась — версия отбрасывается, и берётся следующая ступень, более
-        общая. Именно этого шага не хватало весь день: «остановка EXPO» и
-        «здание муниципалитета» звучали точно, находились на карте и уводили на
-        десять километров. Сверка отвечает на единственный вопрос, которого не
-        задавали, — а похоже ли вообще.
+    async def _best_spot(
+        self, spots: tuple[Spot, ...], photo: str, code: str
+    ) -> Candidate | None:
+        """Единственная надпись нашлась в нескольких местах — опознать нужное.
 
-        Общие версии (город, область) не сверяются: у города на снимке сверху
-        нет той геометрии, которую видно на фотографии.
+        Сюда попадает случай, когда сойтись было нечему: на снимке одна
+        читаемая вывеска. Тогда выбор делает спутник, и вопрос ему задаётся
+        сравнительный — «которое из них», а не «похоже ли».
         """
-        remaining = guesses
-        while remaining:
-            best = await self._weigh(remaining)
-            if best is None:
-                return None, False
-            guess, point, metres = best
-            precise = point is not None and metres is not None and metres <= VERIFY_BELOW
-            if not photo or not precise:
-                return best, False
-            score = await self._verify(photo, point, code)  # type: ignore[arg-type]
-            if score is None or score >= VERIFY_MIN:
-                # Сверка не состоялась — это не повод отвергать версию: молчание
-                # спутника ничего не доказывает, в отличие от его «не похоже».
-                return best, score is not None
-            self.log.info("Версия %r со спутником не сошлась — беру следующую", guess.name)
-            index = remaining.index(guess)
-            remaining = remaining[index + 1 :]
-        return None, False
-
-    async def _weigh(
-        self, guesses: tuple[Guess, ...]
-    ) -> tuple[Guess, tuple[float, float] | None, float | None] | None:
-        """Пройти ступени от частного к общему и взять первую, что нашлась.
-
-        **Порядок ступеней — это порядок доверия модели, и спорить с ним не
-        нужно.** Прежняя версия выбирала ту версию, что нашлась на карте
-        точнее, и это оказалось ровно наоборот: выдуманный «перекрёсток D400»
-        находился как объект на сто метров и побеждал честный город, промахиваясь
-        на двенадцать километров (живой прогон 12.09.2026).
-
-        **Частное обязано лежать внутри общего.** Самая широкая ступень (город
-        или страна) ищется первой и служит границей: вывеска, найденная в другом
-        конце страны, отбрасывается. Без этой проверки любое совпадение названия
-        уводит ответ куда угодно — именно так «EXPO 2016» нашлось остановкой
-        трамвая в десяти километрах от места.
-        """
-        if not guesses:
+        exact = [spot for spot in spots if spot.spotted and spot.solid][:VERIFY_TOP]
+        if not photo or not exact:
             return None
-        area = await self._find(guesses[-1]) if len(guesses) > 1 else None
-        for guess in guesses[:-1] if area is not None else guesses:
+        pins = [
+            Candidate(
+                name=", ".join(spot.names),
+                point=spot.point,
+                metres=spot.metres,
+                source=spot.names[0],
+            )
+            for spot in exact
+        ]
+        best = await self._best_pin(tuple(pins), photo, code)
+        if best is None or best.score is None:
+            # **Одна надпись без подтверждения — это не ответ.** Совпадение
+            # имени внутри города бывает случайным: по слову «POLITIE» нашлась
+            # полицейская вывеска в четырёх километрах от места, и скилл
+            # объявил её точкой с точностью до здания (замер 13.09.2026).
+            # Не сверили — отдаём дело лестнице, она честно скажет «город».
+            self.log.info("Одинокая надпись не подтвердилась — беру ступень пошире")
+            return None
+        return replace(best, name=await self._name_of(best.point) or best.name)
+
+    async def _name_of(self, point: tuple[float, float]) -> str:
+        """Как это место называется на карте — чтобы было что сказать вслух."""
+        answer = await self._named(point)
+        return spoken_address(answer) if answer else ""
+
+    async def _overpass(
+        self, names: tuple[str, ...], box: tuple[float, float, float, float]
+    ) -> tuple[Hit, ...]:
+        """Спросить у OSM все объекты с такими именами внутри рамки."""
+        query = overpass_query(names, box)
+        for host in OVERPASS:
+            try:
+                response = await self._http().post(
+                    host, data={"data": query}, timeout=OVERPASS_TIMEOUT
+                )
+                response.raise_for_status()
+                answer = response.json()
+            except (httpx.HTTPError, ValueError) as error:
+                # Занятое зеркало отвечает отказом сразу, поэтому следующее
+                # пробуем тут же: ждать нечего, а второй попытки хватает.
+                self.log.debug("Overpass %s не ответил: %s", host, error)
+                continue
+            return read_hits(answer, names)
+        self.log.warning("Overpass не ответил ни на одном зеркале")
+        return ()
+
+    async def _area(self, reading: Reading) -> dict[str, Any] | None:
+        """Самая широкая уверенная ступень — граница для всего остального.
+
+        Без границы любое совпадение названия уводит куда угодно: «EXPO 2016»
+        нашлось остановкой трамвая в десяти километрах, «Финляндский мост» —
+        вообще в другом городе (замеры 12 и 13.09.2026).
+        """
+        if not reading.guesses:
+            return None
+        return await self._find(reading.guesses[-1])
+
+    async def _best_pin(
+        self, pins: tuple[Candidate, ...], photo: str, code: str
+    ) -> Candidate | None:
+        """Сверить найденные по надписям места со спутником и взять лучшее.
+
+        Сверка тут **сравнительная, а не пороговая**, и это важнее, чем кажется.
+        Порог отвечает на вопрос «похоже ли», и на нём скилл уже обжёгся:
+        железнодорожный мост похож на железнодорожный мост в любом городе, и
+        сверка подтвердила место за шестьсот километров от верного (замер
+        13.09.2026). Выбор из нескольких спрашивает другое — «какое из них», —
+        и на этот вопрос у картинок есть разные ответы.
+        """
+        worth = [pin for pin in pins if pin.metres is None or pin.metres <= VERIFY_BELOW]
+        if not photo or not worth:
+            return worth[0] if worth else None
+        if len(worth) == 1:
+            score = await self._verify(photo, worth[0].point, code)
+            if score is not None and score < VERIFY_MIN:
+                self.log.info("Единственная надпись со спутником не сошлась")
+                return None
+            return replace(worth[0], score=score)
+        return await self._lineup(worth[:VERIFY_TOP], photo, code)
+
+    async def _lineup(
+        self, pins: list[Candidate], photo: str, code: str
+    ) -> Candidate | None:
+        """Показать спутниковые виды всех мест разом и спросить, которое из них.
+
+        Одним запросом, а не четырьмя, и причина не только в деньгах. Порознь
+        каждому месту задаётся вопрос «похоже ли», а на него железнодорожный
+        мост отвечает «да» в любом городе — так подтвердилось место за
+        шестьсот километров от верного (замер 13.09.2026). Опознание — другой
+        вопрос: не «похоже ли», а «которое из них», и тут у картинок есть
+        разные ответы.
+        """
+        views = [await self._satellite(pin.point) for pin in pins]
+        ready = [(pin, view) for pin, view in zip(pins, views, strict=True) if view]
+        if not ready:
+            # Спутник промолчал целиком: съёмка устарела или тайлы не пришли.
+            # Это не повод отвергать надписи — просто выбираем первую.
+            return pins[0]
+        if len(ready) == 1:
+            score = await self._verify(photo, ready[0][0].point, code)
+            return replace(ready[0][0], score=score) if score is None or score >= VERIFY_MIN else None
+        asked = _LINEUP[code].format(count=len(ready))
+        try:
+            response = await self.context.llm.complete(
+                [Message.user(asked, images=(photo, *(view for _, view in ready)))],
+                task=VISION_TASK,
+            )
+        except Exception as exc:  # noqa: BLE001 — сеть и тариф, не наша вина
+            self.log.warning("Опознание не состоялось: %s", exc)
+            return ready[0][0]
+        choice, score = read_choice(response.text, len(ready))
+        self.log.info(
+            "Опознание из %d: снимок %s, уверенность %s",
+            len(ready), choice if choice else "ни один", score if score is not None else "?",
+        )
+        if choice is None or (score is not None and score < VERIFY_MIN):
+            return None
+        winner = ready[choice - 1][0]
+        return replace(winner, score=score)
+
+    async def _by_ladder(
+        self, reading: Reading, area: dict[str, Any] | None, photo: str, code: str
+    ) -> Candidate | None:
+        """Старая лестница: догадка модели о месте, потом район, потом город.
+
+        Остаётся запасным путём, и запас этот нужен: на снимке без единой
+        надписи — парк, берег реки, горная дорога — искать нечего, и честный
+        город лучше молчания.
+        """
+        for guess in reading.guesses:
             found = await self._find(guess)
             if found is None:
-                if guess.point is not None and _inside(area, guess.point):
-                    return guess, guess.point, None
                 continue
             point = _coordinates(found)
             if point is None or not _inside(area, point):
-                self.log.debug("Версия %r нашлась вне города — отбрасываю", guess.name)
+                self.log.debug("Версия %r нашлась вне области — отбрасываю", guess.name)
                 continue
-            return guess, point, precision_of(found)
-        if area is None:
-            return None
-        point = _coordinates(area)
-        return (guesses[-1], point, precision_of(area)) if point else None
+            metres = precision_of(found)
+            precise = metres is not None and metres <= VERIFY_BELOW
+            if photo and precise:
+                score = await self._verify(photo, point, code)
+                if score is not None and score < VERIFY_MIN:
+                    self.log.info("Версия %r со спутником не сошлась", guess.name)
+                    continue
+                return Candidate(guess.name, point, metres, "версия", score)
+            return Candidate(guess.name, point, metres, "версия")
+        return None
 
     async def _by_coordinates(
         self, point: tuple[float, float], photo: Path
@@ -1081,6 +1831,7 @@ class PhotoPlaceSkill(Skill):
     async def _find(self, guess: Guess) -> dict[str, Any] | None:
         """Название — в объект на карте. ``None`` — геокодер такого не знает."""
         for query in guess.queries:
+            await self._polite()
             try:
                 response = await self._http().get(
                     f"{NOMINATIM}/search",
@@ -1095,8 +1846,22 @@ class PhotoPlaceSkill(Skill):
                 return found[0]
         return None
 
+    async def _polite(self) -> None:
+        """Выдержать паузу перед следующим запросом к геокодеру.
+
+        Правило Nominatim — не чаще раза в секунду, и оно не пожелание: за
+        нарушение закрывают доступ целиком. Раньше запрос был один на команду и
+        вопрос не стоял; теперь их до полудюжины, и очередь стала обязательной.
+        """
+        async with self._gate:
+            waiting = PAUSE - (asyncio.get_running_loop().time() - self._last_call)
+            if waiting > 0:
+                await asyncio.sleep(waiting)
+            self._last_call = asyncio.get_running_loop().time()
+
     async def _named(self, point: tuple[float, float]) -> dict[str, Any] | None:
         """Точка — в название. ``None`` — геокодер промолчал."""
+        await self._polite()
         try:
             response = await self._http().get(
                 f"{NOMINATIM}/reverse",
