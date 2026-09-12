@@ -12,7 +12,14 @@ from jarvis.core.meter import Meter
 from .devices import SoundDeviceSink, SoundDeviceSource, list_devices
 from .echo import EchoCancellingSource
 from .null import AlwaysActiveWakeWord, NullAudioSink, NullAudioSource, PassthroughVAD
-from .protocol import VAD, AudioFrame, AudioSink, AudioSource, WakeWord
+from .protocol import (
+    VAD,
+    AudioFrame,
+    AudioSink,
+    AudioSource,
+    StreamingAudioSink,
+    WakeWord,
+)
 from .silero import SileroVAD
 from .sound import load_sound, trim_silence
 from .vad import EnergyVAD, frame_rms
@@ -263,6 +270,7 @@ __all__ = [
     "SileroVAD",
     "SoundDeviceSink",
     "SoundDeviceSource",
+    "StreamingAudioSink",
     "WakeWord",
     "build_audio",
     "frame_rms",

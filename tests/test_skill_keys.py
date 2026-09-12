@@ -167,6 +167,52 @@ def test_no_reaction_without_a_pattern() -> None:
     assert [c for c in (react.feed(ch, now=0.0) for ch in "просто текст") if c] == []
 
 
+# --- реплики, сочинённые моделью впрок ---------------------------------------
+
+
+def test_written_line_joins_the_rotation() -> None:
+    """Сочинённое моделью становится в общий круг с заданным в конфиге."""
+    react = keys.Reactions({"баг": ("Это не баг, сэр.",)}, cooldown_s=0.0)
+    assert react.learn("баг", "Занятно, сэр.")
+    assert react.options("баг") == ("Это не баг, сэр.", "Занятно, сэр.")
+    quips = [react.feed_pattern("баг", now=0.0).quip for _ in range(2)]  # type: ignore[union-attr]
+    assert quips == ["Это не баг, сэр.", "Занятно, сэр."]
+
+
+def test_the_same_line_is_not_learned_twice() -> None:
+    """Повтор не копится: иначе круг выродился бы в одну реплику."""
+    react = keys.Reactions({"баг": ("Это не баг, сэр.",)})
+    assert react.learn("баг", "Занятно, сэр.")
+    assert not react.learn("баг", "  Занятно,   сэр. ")
+    assert not react.learn("баг", "Это не баг, сэр."), "повторили реплику из конфига"
+    assert len(react.options("баг")) == 2
+
+
+def test_unknown_word_is_not_learned() -> None:
+    """Реплика на слово, за которым не следят, никому не нужна."""
+    react = keys.Reactions({"баг": ("Это не баг, сэр.",)})
+    assert not react.learn("дедлайн", "Оптимистично, сэр.")
+    assert not react.learn("баг", "   ")
+
+
+def test_owner_list_survives_the_model() -> None:
+    """Вытесняется только сочинённое: список владельца — то, чему он доверяет."""
+    react = keys.Reactions({"баг": ("Это не баг, сэр.",)})
+    for number in range(keys.LEARNED_PER_WORD + 3):
+        react.learn("баг", f"Реплика {number}.")
+    options = react.options("баг")
+    assert options[0] == "Это не баг, сэр."
+    assert len(options) == 1 + keys.LEARNED_PER_WORD
+    assert options[-1] == f"Реплика {keys.LEARNED_PER_WORD + 2}."
+
+
+def test_written_line_is_asked_about_the_word_not_the_sentence() -> None:
+    """Реплика пишется на слово: звучать она будет в другой раз и в другом месте."""
+    prompt = keys._REACT_PROMPT.format(keyword="дедлайн", context="опять дедлайн")
+    assert "дедлайн" in prompt
+    assert "в любой раз" in prompt, "модель просят ответить на конкретную фразу"
+
+
 # --- «дословно»: не переписывать --------------------------------------------
 
 

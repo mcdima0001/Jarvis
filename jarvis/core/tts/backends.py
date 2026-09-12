@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Iterator, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -48,6 +48,25 @@ class SpeechBackend(Protocol):
 
     def synthesize(self, text: str, voice: str, language: str) -> tuple[bytes, int]:
         """Синтезировать речь. Возвращает моно-PCM 16 бит и частоту."""
+        ...
+
+
+@runtime_checkable
+class StreamingBackend(Protocol):
+    """Движок, отдающий звук по мере синтеза, а не одним куском.
+
+    Отдельный протокол, а не метод в `SpeechBackend`: поток умеет облако, а
+    местные движки синтезируют реплику целиком и делить им нечего. Кто умеет —
+    того и спрашивают, остальные идут обычным путём.
+    """
+
+    @property
+    def stream_rate(self) -> int:
+        """Частота потока: у потока её неоткуда взять, кроме как спросить."""
+        ...
+
+    def stream(self, text: str, voice: str, language: str) -> Iterator[bytes]:
+        """Синтезировать, выдавая моно-PCM 16 бит кусками по мере готовности."""
         ...
 
 
@@ -596,19 +615,7 @@ class FishBackend:
         import httpx
 
         self.prepare(voice, language)
-        payload: dict[str, Any] = {
-            "text": text,
-            "format": self._FORMAT,
-            "sample_rate": self._SAMPLE_RATE,
-            # Реплику ждёт человек, а не файл на диске: низкая задержка важнее
-            # ровности потока.
-            "latency": "low",
-            "normalize": True,
-        }
-        # Голос — идентификатор из библиотеки Fish. Пусто означает «голос по
-        # умолчанию»: так можно послушать сервис, ещё не выбрав ничего.
-        if voice:
-            payload["reference_id"] = voice
+        payload = self._payload(text, voice, self._FORMAT)
 
         try:
             response = self._client.post(self._URL, json=payload)
@@ -622,6 +629,61 @@ class FishBackend:
             raise RuntimeError(f"Сеть недоступна при обращении к Fish Audio: {exc}") from exc
 
         return _read_wav(response.content)
+
+    def _payload(self, text: str, voice: str, fmt: str) -> dict[str, Any]:
+        """Тело запроса. Одно на оба пути, чтобы они не разъехались по настройкам."""
+        payload: dict[str, Any] = {
+            "text": text,
+            "format": fmt,
+            "sample_rate": self._SAMPLE_RATE,
+            # Реплику ждёт человек, а не файл на диске: низкая задержка важнее
+            # ровности потока.
+            "latency": "low",
+            "normalize": True,
+        }
+        # Голос — идентификатор из библиотеки Fish. Пусто означает «голос по
+        # умолчанию»: так можно послушать сервис, ещё не выбрав ничего.
+        if voice:
+            payload["reference_id"] = voice
+        return payload
+
+    @property
+    def stream_rate(self) -> int:
+        """Частота потока. Просим её сами, поэтому знаем заранее."""
+        return self._SAMPLE_RATE
+
+    def stream(self, text: str, voice: str, language: str) -> Iterator[bytes]:
+        """Синтезировать потоком: куски звука по мере готовности.
+
+        **Формат тут `pcm`, а не `wav`, и это не мелочь.** WAV самоописателен —
+        за то он и выбран для обычного пути, — но в потоке его заголовок
+        приезжает первым куском и объявляет длину, которой сервис ещё не знает:
+        `wave` читает оттуда бессмысленные девяносто тысяч секунд. Сырой PCM
+        описывать нечем, зато и врать ему нечем: частоту мы задали сами
+        (`stream_rate`), разрядность и число каналов у сервиса одни.
+
+        Клиент держит ответ открытым, пока генератор не дочитан, поэтому
+        прерывать поток на середине можно — соединение закроется само.
+        """
+        import httpx
+
+        self.prepare(voice, language)
+        payload = self._payload(text, voice, "pcm")
+        try:
+            with self._client.stream(
+                "POST", self._URL, json=payload
+            ) as response:
+                response.raise_for_status()
+                yield from response.iter_bytes()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.read()[:200].decode("utf-8", "replace")
+            raise RuntimeError(
+                f"Fish Audio вернул {exc.response.status_code}: {detail}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"Сеть недоступна при обращении к Fish Audio: {exc}"
+            ) from exc
 
 
 def build_backend(

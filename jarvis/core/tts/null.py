@@ -45,6 +45,9 @@ class NullTTS:
             language=language or "",
         )
 
+    async def prewarm(self, text: str, *, language: str | None = None) -> None:
+        """Готовить нечего: синтеза нет."""
+
     async def say(self, text: str, *, language: str | None = None) -> None:
         """Записать реплику в лог."""
         logger.info("[TTS%s] %s", f" {language}" if language else "", text)

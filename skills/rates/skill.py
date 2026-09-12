@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 
 from jarvis.core.contracts import ToolResult
@@ -21,6 +23,11 @@ from jarvis.core.tts.normalize import plural_form
 
 #: Дневные курсы ЦБ в рублях. Без ключа, отдаёт JSON.
 CBR_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
+
+#: Сколько держать полученные курсы, секунд. Центробанк публикует их раз в
+#: сутки, так что час — запас с большим избытком: он есть ровно затем, чтобы
+#: новые курсы подхватились сами, без разбора полуночи и перевода часов.
+CACHE_TTL_S = 3600.0
 
 #: Как валюту называют вслух → код в ответе ЦБ. Для сравнения текст в нижнем
 #: регистре; проверяется вхождением, чтобы падеж не мешал («доллара», «евро»).
@@ -113,6 +120,9 @@ class RatesSkill(Skill):
         """Прочитать таймаут и приготовить клиент."""
         self._timeout = float(self.context.setting("timeout", 15.0))
         self._client: httpx.AsyncClient | None = None
+        #: Курсы на сегодня и когда их взяли: ЦБ обновляет их раз в сутки.
+        self._cached: dict | None = None
+        self._cached_at = 0.0
 
     async def on_stop(self) -> None:
         """Закрыть соединения."""
@@ -149,9 +159,7 @@ class RatesSkill(Skill):
         """
         codes = pick_currencies(what)
         try:
-            response = await self._http().get(CBR_URL)
-            response.raise_for_status()
-            data = response.json()
+            data = await self._daily()
             # Сразу дёргаем курсы: недостающий код всплывёт тут, а не в речи.
             spoken = describe_ru(data, codes)
         except _RATE_ERRORS as error:
@@ -169,6 +177,28 @@ class RatesSkill(Skill):
             {"rates": rates, "date": data.get("Date", "")},
             speech={"ru": spoken, "en": spoken},
         )
+
+    async def _daily(self) -> dict:
+        """Курсы на сегодня: ходить за ними чаще раза в день незачем.
+
+        Центробанк публикует их **один раз в сутки**, и файл до следующего дня
+        не меняется. Запрос при этом стоит четверть секунды на разогретом
+        соединении и секунду с лишним на холодном (замер 12.09.2026) — заметная
+        доля того времени, что человек ждёт ответа на «курс доллара».
+
+        Срок годности считается не по календарю, а по часам: данные держатся
+        `CACHE_TTL_S`, после чего запрашиваются заново. Так публикация новых
+        курсов подхватывается сама, а перевод часов и полночь не требуют
+        отдельного разбора.
+        """
+        now = time.monotonic()
+        if self._cached is not None and now - self._cached_at < CACHE_TTL_S:
+            return self._cached
+        response = await self._http().get(CBR_URL)
+        response.raise_for_status()
+        data = response.json()
+        self._cached, self._cached_at = data, now
+        return data
 
     async def health(self) -> HealthStatus:
         """Здоров, пока источник курса на связи."""

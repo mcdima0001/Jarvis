@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 _ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -87,3 +89,60 @@ def test_basket_lists_both() -> None:
     """Корзина для «курса рубля» перечисляет обе валюты через запятую."""
     phrase = rates.describe_ru(_CBR, ("USD", "EUR"))
     assert phrase == "Доллар 92 рубля 50 копеек, Евро 100 рублей."
+
+
+# --- за курсом не ходят дважды ----------------------------------------------
+
+
+def _skill(handler: Any) -> Any:
+    """Скилл с поддельным HTTP: on_setup мимо, поля выставляем прямо."""
+    skill = rates.RatesSkill.__new__(rates.RatesSkill)
+    skill._timeout = 1.0
+    skill._cached = None
+    skill._cached_at = 0.0
+    skill._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return skill
+
+
+async def test_daily_rates_are_asked_once() -> None:
+    """ЦБ публикует курсы раз в сутки — ходить за ними на каждый вопрос незачем.
+
+    Замер 12.09.2026: запрос стоит 0.27 с на разогретом соединении и 1.2 с на
+    холодном, то есть заметную долю того, что человек ждёт после «курс доллара».
+    """
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_CBR)
+
+    skill = _skill(handler)
+    try:
+        first = await skill._daily()
+        second = await skill._daily()
+    finally:
+        await skill._client.aclose()
+
+    assert calls == 1, "за одними и теми же дневными курсами сходили дважды"
+    assert first is second
+
+
+async def test_stale_rates_are_asked_again() -> None:
+    """Срок годности есть: иначе новые курсы не подхватились бы до перезапуска."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_CBR)
+
+    skill = _skill(handler)
+    try:
+        await skill._daily()
+        skill._cached_at -= rates.CACHE_TTL_S + 1
+        await skill._daily()
+    finally:
+        await skill._client.aclose()
+
+    assert calls == 2

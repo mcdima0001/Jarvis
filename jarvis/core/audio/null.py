@@ -55,6 +55,19 @@ class NullAudioSink:
         """Записать факт воспроизведения в лог."""
         logger.debug("Пропущено %d байт аудио (вывод отключён)", len(audio))
 
+    async def play_stream(
+        self, chunks: AsyncIterator[bytes], *, sample_rate: int
+    ) -> None:
+        """Вычитать поток до конца и забыть.
+
+        Читать обязательно: тот, кто наполняет поток, иначе останется ждать, и
+        «работа без звука» превратится в зависание.
+        """
+        total = 0
+        async for chunk in chunks:
+            total += len(chunk)
+        logger.debug("Пропущено %d байт потока (вывод отключён)", total)
+
 
 class PassthroughVAD:
     """VAD, который считает речью любой непустой кадр."""

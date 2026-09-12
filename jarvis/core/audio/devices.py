@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 import time
 from typing import Any, AsyncIterator
 
@@ -17,6 +18,11 @@ from jarvis.core.config import AudioConfig
 from jarvis.core.errors import AudioError
 
 from .protocol import AudioFrame
+
+#: Сколько звука накопить, прежде чем начать играть поток, миллисекунд.
+#: Страховка от неровной сети: кусок, задержавшийся дольше, чем играет уже
+#: отданное, слышен щелчком. Платится один раз на реплику.
+PREBUFFER_MS = 250
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +197,100 @@ class SoundDeviceSink:
         # Реплики не должны накладываться друг на друга.
         async with self._lock:
             await asyncio.to_thread(self._play_sync, audio, sample_rate)
+
+    async def play_stream(
+        self, chunks: AsyncIterator[bytes], *, sample_rate: int
+    ) -> None:
+        """Играть моно-PCM 16 бит по мере поступления.
+
+        Смысл в одном: не ждать, пока синтезируется вся реплика. Облако отдаёт
+        звук потоком, и начать его играть можно втрое раньше, чем он кончится.
+
+        **Начало придерживается на `PREBUFFER_MS`**, и это не перестраховка.
+        Куски приходят из сети неровно: стоит одному задержаться дольше, чем
+        играет уже отданное, — и звуковая карта доигрывает до пустоты, что
+        слышно щелчком посреди слова. Запас в четверть секунды дешевле: он
+        добавляется к задержке один раз, а щелчок портит каждую реплику, в
+        которой случился. Облако отдаёт звук быстрее реального времени, так что
+        дальше запас только растёт.
+
+        **Границы кусков к отсчётам не привязаны, и это главная ловушка тут.**
+        Сеть режет поток где придётся, поэтому кусок запросто приходит нечётной
+        длины — то есть половиной отсчёта. Отдать такую половину карте значит
+        сдвинуть на байт **всё, что идёт следом**: старший байт станет младшим,
+        и вместо речи польётся шум до конца реплики. Поэтому нечётный хвост
+        придерживается и приклеивается к началу следующего куска.
+
+        Ошибку вывода наверх не поднимаем по той же причине, что и в `play`:
+        сорванный звук не повод рвать разговор.
+        """
+        async with self._lock:
+            pipe: queue.Queue[bytes | None] = queue.Queue()
+            player: asyncio.Task[None] | None = None
+            prebuffer = b""
+            carry = b""
+            need = int(sample_rate * 2 * PREBUFFER_MS / 1000)
+            try:
+                async for chunk in chunks:
+                    if not chunk:
+                        continue
+                    chunk = carry + chunk
+                    if len(chunk) % 2:
+                        chunk, carry = chunk[:-1], chunk[-1:]
+                    else:
+                        carry = b""
+                    if not chunk:
+                        continue
+                    if player is None:
+                        prebuffer += chunk
+                        if len(prebuffer) < need:
+                            continue
+                        pipe.put(prebuffer)
+                        prebuffer = b""
+                        player = asyncio.ensure_future(
+                            asyncio.to_thread(self._play_stream_sync, pipe, sample_rate)
+                        )
+                    else:
+                        pipe.put(chunk)
+            finally:
+                # Поток ждёт метку конца, чем бы ни кончился разбор потока:
+                # без неё он остался бы висеть на пустой очереди навсегда.
+                if player is None and prebuffer:
+                    pipe.put(prebuffer)
+                    player = asyncio.ensure_future(
+                        asyncio.to_thread(self._play_stream_sync, pipe, sample_rate)
+                    )
+                pipe.put(None)
+                if player is not None:
+                    await player
+
+    def _play_stream_sync(self, pipe: "queue.Queue[bytes | None]", sample_rate: int) -> None:
+        """Синхронная часть потокового вывода — в отдельном потоке.
+
+        `write` блокирующего потока сам держит темп: он возвращается только
+        когда звуковой карте есть куда принять следующий кусок. Поэтому никакой
+        своей синхронизации по времени тут не нужно — очередь разбирается ровно
+        со скоростью речи.
+        """
+        sd = _import_sounddevice()
+        try:
+            with sd.RawOutputStream(
+                samplerate=sample_rate,
+                device=self._config.output_device,
+                channels=1,
+                dtype="int16",
+            ) as stream:
+                while True:
+                    chunk = pipe.get()
+                    if chunk is None:
+                        break
+                    stream.write(chunk)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Не удалось воспроизвести поток: %s: %s", type(exc).__name__, exc)
+            # Очередь дочитываем до метки конца: иначе тот, кто её наполняет,
+            # упрётся в неразобранные куски и будет ждать нас вечно.
+            while pipe.get() is not None:
+                pass
 
     def _play_sync(self, audio: bytes, sample_rate: int) -> None:
         """Синхронное воспроизведение — выполняется в отдельном потоке."""

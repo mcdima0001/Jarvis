@@ -16,12 +16,13 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
+from typing import AsyncIterator
 
-from jarvis.core.audio import AudioSink
+from jarvis.core.audio import AudioSink, StreamingAudioSink
 from jarvis.core.config import TTSConfig
 from jarvis.core.runtime import BlockingWorker
 
-from .backends import SpeechBackend, build_backend, parse_voice
+from .backends import SpeechBackend, StreamingBackend, build_backend, parse_voice
 from .cache import SpeechCache, worth_caching
 from .normalize import normalize_for_speech
 from .protocol import Speech
@@ -307,8 +308,136 @@ class CompositeTTS:
             return None
         return self._spare_language, spare_engine, spare_voice
 
+    async def prewarm(self, text: str, *, language: str | None = None) -> None:
+        """Приготовить реплику заранее: синтезировать в кеш, ничего не произнося.
+
+        Нужно там, где известно, что скажем, но неизвестно когда: ироничные
+        реплики, сочинённые моделью впрок, служебные фразы после смены голоса.
+        Синтез свежего текста стоит полторы секунды (замер 12.09.2026), и вся
+        разница между «живо» и «медленно» в том, потрачены они заранее или на
+        глазах у человека.
+
+        Сбой глотаем намеренно: приготовление — услуга, а не обещание. Не
+        получилось — реплика просто синтезируется в свой черёд, как раньше.
+        """
+        if not text.strip() or self._cache is None:
+            return
+        with suppress(Exception):
+            await self.synthesize(text, language=language)
+
     async def say(self, text: str, *, language: str | None = None) -> None:
         """Синтезировать и отправить в аудиовыход."""
+        if await self._say_streaming(text, language=language):
+            return
         speech = await self.synthesize(text, language=language)
         if not speech.empty:
             await self._sink.play(speech.audio, sample_rate=speech.sample_rate)
+
+    async def _say_streaming(self, text: str, *, language: str | None) -> bool:
+        """Произнести потоком, если и движку, и выводу это по силам.
+
+        Смысл: облако отдаёт звук кусками, и начать говорить можно втрое раньше,
+        чем реплика синтезирована вся (замер 12.09.2026 — первый кусок через
+        0.97 с, последний через 2.45 с). На длинных ответах разница больше:
+        время до первого звука перестаёт зависеть от длины реплики.
+
+        :return: ``True`` — реплика произнесена (или сорвалась на середине, и
+            переигрывать нечего). ``False`` — потоком не вышло, говорите как
+            раньше; это же ответ на кеш, запасной голос и местные движки.
+        """
+        if not text.strip():
+            return False
+        code, engine, voice = self.resolve(language)
+        # Основной голос недавно отказал: запасной — местный, потока у него нет,
+        # и решать это одному месту (`synthesize`), а не двум.
+        if self._spare(engine, voice) is not None and time.monotonic() < self._blocked_until:
+            return False
+        backend = self._backend(engine)
+        if not isinstance(backend, StreamingBackend):
+            return False
+        if not isinstance(self._sink, StreamingAudioSink):
+            return False
+
+        spoken = normalize_for_speech(text, self._config.pronounce, language=code)
+        speed = self._config.length_scale
+        if self._cache is not None and worth_caching(spoken):
+            # Готовая реплика звучит мгновенно — поток ей только помешал бы.
+            if self._cache.get(spoken, engine, voice, code, speed) is not None:
+                return False
+        try:
+            await self._ensure(code, engine, voice)
+        except Exception:  # noqa: BLE001 — разбираться с отказом умеет synthesize
+            return False
+
+        loop = asyncio.get_running_loop()
+        # Очередь без предела намеренно: `put_nowait` зовётся из чужого потока и
+        # на полной очереди упал бы, а реплика весит сотни килобайт — не та
+        # величина, ради которой стоит городить обратное давление.
+        parts: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue()
+
+        def produce() -> None:
+            """Тянуть куски из движка в петлю. Синхронно — движок такой и есть."""
+            try:
+                for chunk in backend.stream(spoken, voice, code):
+                    loop.call_soon_threadsafe(parts.put_nowait, chunk)
+            except BaseException as exc:  # noqa: BLE001 — отказ передаём как значение
+                loop.call_soon_threadsafe(parts.put_nowait, exc)
+            else:
+                loop.call_soon_threadsafe(parts.put_nowait, None)
+
+        collected = bytearray()
+        failure: BaseException | None = None
+        started = time.monotonic()
+        first: float | None = None
+
+        async def chunks() -> AsyncIterator[bytes]:
+            nonlocal failure, first
+            while True:
+                item = await parts.get()
+                if item is None:
+                    return
+                if isinstance(item, BaseException):
+                    failure = item
+                    return
+                if first is None:
+                    first = time.monotonic() - started
+                collected.extend(item)
+                yield item
+
+        producer = asyncio.ensure_future(asyncio.to_thread(produce))
+        try:
+            await self._sink.play_stream(chunks(), sample_rate=backend.stream_rate)
+        finally:
+            await producer
+
+        if failure is not None and not collected:
+            # Не начали звучать — значит ещё можно отступить на обычный путь,
+            # а он умеет и запасной голос, и паузу после отказа.
+            logger.debug("Поток синтеза не открылся (%s) — говорю обычным путём", failure)
+            return False
+        if failure is not None:
+            # Половина реплики уже прозвучала: повторять её целиком хуже, чем
+            # оборвать, — человек услышал бы начало дважды.
+            logger.warning("Поток синтеза оборвался на середине: %s", failure)
+            return True
+
+        logger.debug(
+            "Реплика потоком: первый звук через %.2f с, вся за %.2f с",
+            first or 0.0,
+            time.monotonic() - started,
+        )
+        if self._cache is not None and worth_caching(spoken):
+            # Хвост в один байт — половина отсчёта: в файл он не годится по той
+            # же причине, по какой не годится в колонки.
+            whole = bytes(collected[: len(collected) - len(collected) % 2])
+            await asyncio.to_thread(
+                self._cache.put,
+                spoken,
+                engine,
+                voice,
+                code,
+                speed,
+                whole,
+                backend.stream_rate,
+            )
+        return True
