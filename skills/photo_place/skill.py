@@ -69,9 +69,13 @@ USER_AGENT = "Jarvis voice assistant (github.com/mcdima0001/Jarvis)"
 #: Сколько ждать геокодер. Ответ нужен внутри голосовой команды.
 GEOCODE_TIMEOUT = 8.0
 
-#: Сколько версий проверять. Больше трёх — это уже не проверка версий, а
-#: перебор, и каждая стоит запроса к чужому сервису.
-MAX_CANDIDATES = 3
+#: Сколько версий проверять. Каждая стоит запроса к чужому сервису, а правило
+#: Nominatim — не чаще раза в секунду, то есть версии ещё и растягивают ответ.
+MAX_CANDIDATES = 5
+
+#: Запас за границей найденной области, метров. Снимок с окраины города вполне
+#: сделан за его чертой, и отбрасывать такую версию было бы неверно.
+MARGIN = 3_000.0
 
 #: Длинная сторона картинки для модели. Тот же предел, что у зрения.
 LIMIT = 1920
@@ -87,6 +91,11 @@ _ASK = {
 Сначала перечисли зацепки: язык и текст на вывесках, стиль архитектуры, рельеф и
 силуэт гор, растительность, дорожная разметка и знаки, номера машин, тип столбов
 и ограждений, положение солнца.
+
+
+Часть зацепок называет место прямо, а не намёком: код на автомобильном номере,
+вывеска местного органа власти, телефонный код, название на дорожном указателе.
+Если такая зацепка есть — выведи из неё область и город, это не догадка.
 
 Потом ответь по ступеням, от общего к частному. Заполняй только те ступени, в
 которых **уверен**; на остальных пиши слово нет.
@@ -108,6 +117,11 @@ into it properly, not at first glance.
 First list the clues: language and text on signs, architecture, terrain and
 mountain silhouette, vegetation, road markings and signs, number plates, poles
 and railings, the position of the sun.
+
+
+Some clues name the place outright rather than hint at it: the code on a number
+plate, a local government sign, a phone code, a name on a road sign. If you have
+such a clue, derive the region and city from it — that is not guesswork.
 
 Then answer in steps, from general to specific. Fill in only the steps you are
 **sure** about; write no on the others.
@@ -327,6 +341,33 @@ def parse_reading(answer: str) -> Reading:
     elif country:
         steps.append(Guess(name=country))
     return Reading(clues=clues, guesses=tuple(steps[:MAX_CANDIDATES]))
+
+
+
+def _coordinates(found: dict[str, Any]) -> tuple[float, float] | None:
+    """Точка из ответа геокодера."""
+    try:
+        return float(found["lat"]), float(found["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _inside(area: dict[str, Any] | None, point: tuple[float, float]) -> bool:
+    """Лежит ли точка внутри найденной области. Нет области — верим на слово.
+
+    Запас в `MARGIN` не от неточности рамки, а от края: снимок с окраины города
+    вполне сделан за его границей, и отбрасывать такую версию было бы неверно.
+    """
+    if area is None:
+        return True
+    box = area.get("boundingbox")
+    try:
+        south, north, west, east = (float(value) for value in box)
+    except (TypeError, ValueError):
+        return True
+    margin = MARGIN / 111_320
+    return (south - margin <= point[0] <= north + margin
+            and west - margin <= point[1] <= east + margin)
 
 
 def _with_city(name: str, wider: str) -> str:
@@ -785,24 +826,32 @@ class PhotoPlaceSkill(Skill):
         нужно.** Прежняя версия выбирала ту версию, что нашлась на карте
         точнее, и это оказалось ровно наоборот: выдуманный «перекрёсток D400»
         находился как объект на сто метров и побеждал честный город, промахиваясь
-        на двенадцать километров (живой прогон 12.09.2026). Точность найденного
-        объекта говорит о том, насколько подробно он нанесён на карту, а не о
-        том, верно ли его назвали.
+        на двенадцать километров (живой прогон 12.09.2026).
 
-        Координаты самой модели идут в дело только на той ступени, которую
-        геокодер не знает, и точность там объявляется неизвестной.
+        **Частное обязано лежать внутри общего.** Самая широкая ступень (город
+        или страна) ищется первой и служит границей: вывеска, найденная в другом
+        конце страны, отбрасывается. Без этой проверки любое совпадение названия
+        уводит ответ куда угодно — именно так «EXPO 2016» нашлось остановкой
+        трамвая в десяти километрах от места.
         """
-        for guess in guesses:
+        if not guesses:
+            return None
+        area = await self._find(guesses[-1]) if len(guesses) > 1 else None
+        for guess in guesses[:-1] if area is not None else guesses:
             found = await self._find(guess)
-            if found is not None:
-                try:
-                    point = (float(found["lat"]), float(found["lon"]))
-                except (KeyError, TypeError, ValueError):
-                    continue
-                return guess, point, precision_of(found)
-            if guess.point is not None:
-                return guess, guess.point, None
-        return None
+            if found is None:
+                if guess.point is not None and _inside(area, guess.point):
+                    return guess, guess.point, None
+                continue
+            point = _coordinates(found)
+            if point is None or not _inside(area, point):
+                self.log.debug("Версия %r нашлась вне города — отбрасываю", guess.name)
+                continue
+            return guess, point, precision_of(found)
+        if area is None:
+            return None
+        point = _coordinates(area)
+        return (guesses[-1], point, precision_of(area)) if point else None
 
     async def _by_coordinates(
         self, point: tuple[float, float], photo: Path

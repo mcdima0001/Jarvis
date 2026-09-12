@@ -397,3 +397,39 @@ def test_prompt_allows_an_honest_city() -> None:
     assert "хуже честного города" in russian
     assert "worse than an honest city" in english
     assert "ЗАЦЕПКИ" in russian, "без зацепок модель отвечает страной"
+
+
+def test_direct_clues_are_named_in_the_prompt() -> None:
+    """Номер машины и вывеска органа власти называют город прямо, а не намёком.
+
+    Без этой строки модель дважды из трёх прогонов останавливалась на стране,
+    хотя сама же прочитала на снимке «ANTALYA BÜYÜKŞEHİR BELEDİYESİ» и номер на
+    07 (живые прогоны 12.09.2026).
+    """
+    russian = " ".join(place._ASK["ru"].split())
+
+    assert "автомобильном номере" in russian
+    assert "это не догадка" in russian
+
+
+def test_signs_are_not_a_step_any_more() -> None:
+    """Вывески как отдельная ступень откачены: они дают уверенный промах.
+
+    Прогон 12.09.2026: модель прочитала на баннере «ANTALYA BÜYÜKŞEHİR
+    BELEDİYESİ», геокодер нашёл по этому имени **здание муниципалитета** в
+    центре города, и скилл пообещал «с точностью до здания», промахнувшись на
+    десять километров. Вывеска называет организацию, а не то место, где стоишь:
+    баннер, реклама и объявление о продаже висят где угодно.
+    """
+    assert "ВЫВЕСКИ" not in place._ASK["ru"]
+    assert "signs" not in place._FIELDS
+
+
+def test_specific_guess_must_lie_inside_the_wider_one() -> None:
+    """Частное обязано лежать внутри общего: иначе имя уводит куда угодно."""
+    city = {"boundingbox": ["36.75", "37.07", "30.55", "30.95"]}
+
+    assert place._inside(city, (36.88, 30.70))
+    assert place._inside(city, (36.74, 30.60)), "запас у границы обязан быть"
+    assert not place._inside(city, (39.93, 32.86)), "другой город прошёл проверку"
+    assert place._inside(None, (0.0, 0.0)), "нет области — верим на слово"
