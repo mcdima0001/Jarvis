@@ -154,6 +154,10 @@ def _steps_done(outcome: "Outcome", language: str) -> str:
     return f"Сделал шагов: {count}. "
 
 
+#: Формы слова «процент» под число: ответ произносится вслух.
+_PERCENT = ("процент", "процента", "процентов")
+
+
 class CoreTools:
     """Инструменты, которые ядро регистрирует само."""
 
@@ -551,13 +555,16 @@ class CoreTools:
 
     @tool(
         name="load",
+        # Фразы намеренно только про «тебя»: этот инструмент считает сам
+        # ассистент и больше ничего. «Что греет ноутбук» — вопрос про машину,
+        # и отвечает на него `windows.hogs`, иначе ответ «ем полпроцента»
+        # выдавался бы за ответ на вопрос, которого не задавали.
         phrases=[
             "сколько ты ешь",
-            "что греет",
-            "какая нагрузка",
-            "сколько процессора",
-            "how much cpu",
-            "what is heating",
+            "сколько ты жрёшь",
+            "какая у тебя нагрузка",
+            "сколько процессора ты ешь",
+            "how much cpu do you use",
         ],
         reversible=True,
     )
@@ -576,22 +583,39 @@ class CoreTools:
                     "en": "Load accounting is switched off in the settings.",
                 },
             )
-        load = self._meter.peek()
+        # Установившийся расход, а не за весь сеанс: в сеанс входит запуск с
+        # загрузкой моделей, и он один перевешивает часы тихой работы.
+        load = self._meter.recent()
         percent = round(load.share * 100)
+        machine = round(load.machine_share * 100)
+        # Слово «процент» при каждом числе: «имя 3, речь 2» на слух — загадка.
         spoken = ", ".join(
-            f"{name} {value * 100:.0f}" for name, value in load.shares()[:3]
+            f"{name} {round(value * 100)} {plural_form(round(value * 100), _PERCENT)}"
+            for name, value in load.shares()[:3]
+            if round(value * 100) > 0
+        )
+        # Доля всего процессора — то, ради чего вопрос и задают. Пока в ответе
+        # была одна доля ядра, «семь процентов» на двенадцати ядрах звучало
+        # уликой, хотя это полпроцента машины.
+        whole = (
+            f" Это {machine} {plural_form(machine, _PERCENT)} процессора."
+            if load.cores > 1
+            else ""
         )
         return ToolResult.success(
             {
                 "share": round(load.share, 4),
+                "machine_share": round(load.machine_share, 4),
+                "cores": load.cores,
+                "peak": round(self._meter.peak, 4),
                 "stages": {name: round(value, 4) for name, value in load.shares()},
                 "seconds": round(load.wall, 1),
             },
             speech={
                 "ru": (
-                    f"Ем {percent} "
-                    f"{plural_form(percent, ('процент', 'процента', 'процентов'))} ядра"
+                    f"Ем {percent} {plural_form(percent, _PERCENT)} ядра"
                     + (f". Больше всего: {spoken}." if spoken else ".")
+                    + whole
                 ),
                 "en": (
                     f"Using {load.share * 100:.0f} percent of a core"

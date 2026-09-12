@@ -42,6 +42,7 @@ from jarvis.core.contracts import (
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.text import closeness, romanize, skeleton, squash, touches
 from jarvis.core.tools import tool
+from jarvis.core.tts.normalize import plural_form
 
 #: Встроенные средства Windows: в меню «Пуск» лежат не все.
 BUILT_IN: dict[str, str] = {
@@ -594,6 +595,131 @@ def enum_windows() -> list[tuple[int, str]]:
 
     user32.EnumWindows(visit, 0)
     return found
+
+
+#: Сколько ждать между двумя снимками счётчиков, секунд. Меряется **разница**:
+#: у Windows на процесс копится время с его запуска, и без второго снимка вышел
+#: бы рейтинг долгожителей, а не рейтинг тех, кто греет прямо сейчас.
+CPU_SAMPLE_S = 1.0
+
+#: Формы слова «процент» под число. Вслух это звучит, а «4 процентов» режет ухо.
+PERCENT = ("процент", "процента", "процентов")
+
+
+def process_cpu() -> dict[int, tuple[str, float]]:
+    """Сколько процессорного времени накопил каждый процесс, по номерам.
+
+    Через ctypes, а не `tasklist`: тот про процессорное время не говорит вовсе,
+    а запуск чужой программы ради каждого снимка стоил бы дороже самого замера.
+
+    Процессы, к которым нет доступа (системные, чужого пользователя), молча
+    пропускаются: спрашивать о них права ради строки в отчёте незачем.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Без объявленных типов обработчик процесса на 64 битах обрезается до
+    # четырёх байт — та же грабля, что в скилле клавиатуры.
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+    count = 4096
+    pids = (wintypes.DWORD * count)()
+    needed = wintypes.DWORD()
+    if not psapi.EnumProcesses(ctypes.byref(pids), ctypes.sizeof(pids), ctypes.byref(needed)):
+        return {}
+    total = needed.value // ctypes.sizeof(wintypes.DWORD)
+
+    #: Право «спросить, но не трогать» — минимальное из подходящих.
+    query_limited = 0x1000
+    found: dict[int, tuple[str, float]] = {}
+    for index in range(total):
+        pid = pids[index]
+        if not pid:
+            continue
+        handle = kernel32.OpenProcess(query_limited, False, pid)
+        if not handle:
+            continue
+        try:
+            creation, exited = wintypes.FILETIME(), wintypes.FILETIME()
+            kernel, user = wintypes.FILETIME(), wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                ctypes.c_void_p(handle),
+                ctypes.byref(creation),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                continue
+            # FILETIME — два слова по 32 бита, счёт в сотнях наносекунд.
+            spent = sum(
+                ((part.dwHighDateTime << 32) | part.dwLowDateTime) / 1e7
+                for part in (kernel, user)
+            )
+            size = wintypes.DWORD(260)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(
+                ctypes.c_void_p(handle), 0, buffer, ctypes.byref(size)
+            ):
+                name = buffer.value.rsplit("\\", 1)[-1]
+            else:
+                name = f"pid {pid}"
+            found[pid] = (name, spent)
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    return found
+
+
+def cpu_hogs(
+    before: Mapping[int, tuple[str, float]],
+    after: Mapping[int, tuple[str, float]],
+    seconds: float,
+    *,
+    cores: int = 1,
+) -> list[tuple[str, float]]:
+    """Кто ел процессор между двумя снимками, долей всего процессора.
+
+    Одноимённые процессы складываются: у браузера их полтора десятка, и по
+    отдельности каждый выглядит скромно, а вместе — как раз то, что грело.
+
+    :return: пары «имя, доля всего процессора», от жадного к скромному.
+    """
+    if seconds <= 0:
+        return []
+    grown: dict[str, float] = {}
+    for pid, (name, spent) in after.items():
+        was = before.get(pid)
+        # Процесса не было в прошлом снимке — он родился только что, и всё его
+        # время считать нашим отрезком нельзя: получился бы выброс на ровном месте.
+        if was is None:
+            continue
+        delta = spent - was[1]
+        if delta > 0:
+            grown[name] = grown.get(name, 0.0) + delta
+    share = {name: value / seconds / max(1, cores) for name, value in grown.items()}
+    return sorted(share.items(), key=lambda item: -item[1])
+
+
+def describe_hogs(hogs: Sequence[tuple[str, float]], *, limit: int = 3) -> str:
+    """Назвать вслух тех, кто греет. Пустой список — так и сказать.
+
+    Имя файла программы вслух не годится (`msedgewebview2.exe` синтез читает по
+    буквам), поэтому расширение снимается, а проценты округляются до целых:
+    десятые доли на слух не значат ничего.
+    """
+    named = [
+        (name.removesuffix(".exe").removesuffix(".EXE"), round(share * 100))
+        for name, share in hogs
+        if share >= 0.01
+    ][:limit]
+    if not named:
+        return ""
+    return ", ".join(
+        f"{name} {percent} {plural_form(percent, PERCENT)}" for name, percent in named
+    )
 
 
 def raise_window(title: str) -> bool:
@@ -1496,6 +1622,76 @@ class WindowsSkill(Skill):
             speech={
                 "ru": f"Запущено {len(processes)} программ, среди них {', '.join(visible)}.",
                 "en": f"{len(processes)} programs running, among them {', '.join(visible)}.",
+            },
+        )
+
+    @tool(
+        phrases=[
+            "что греет",
+            "что греет ноутбук",
+            "кто грузит процессор",
+            "какая нагрузка",
+            "что грузит процессор",
+            "кто жрёт процессор",
+            "что жрёт процессор",
+            "кто ест процессор",
+            "почему ноутбук греется",
+            "почему греется ноутбук",
+            "отчего греется ноутбук",
+            "what is eating the cpu",
+            "why is the laptop hot",
+        ],
+        reversible=True,
+    )
+    async def hogs(self) -> ToolResult:
+        """Назвать программы, которые прямо сейчас грузят процессор.
+
+        Отвечает на вопрос, на который `core.load` ответить не может: тот
+        считает **только сам ассистент**, и на жалобу «ноутбук греется» честно
+        говорит «я ем полпроцента». Кто ест остальное, до сих пор было не
+        спросить ни голосом, ни по логу.
+
+        Меряется разница двух снимков, а не накопленное: Windows копит
+        процессорное время с запуска программы, и без второго снимка вышел бы
+        рейтинг долгожителей — браузер, открытый с утра, обогнал бы что угодно.
+        """
+        before = await asyncio.to_thread(process_cpu)
+        if not before:
+            return ToolResult.failure(
+                "не удалось прочитать счётчики процессов",
+                speech={
+                    "ru": "Не смог посмотреть, кто грузит процессор.",
+                    "en": "I couldn't check what's loading the processor.",
+                },
+            )
+        started = time.monotonic()
+        await asyncio.sleep(CPU_SAMPLE_S)
+        after = await asyncio.to_thread(process_cpu)
+        cores = os.cpu_count() or 1
+        hogs = cpu_hogs(before, after, time.monotonic() - started, cores=cores)
+        spoken = describe_hogs(hogs)
+        busy = sum(share for _, share in hogs)
+        self.log.info(
+            "Процессор занят на %.0f%%, больше всего: %s",
+            busy * 100,
+            ", ".join(f"{name} {share * 100:.1f}%" for name, share in hogs[:5]) or "никто",
+        )
+        return ToolResult.success(
+            {
+                "busy": round(busy, 4),
+                "cores": cores,
+                "top": [(name, round(share, 4)) for name, share in hogs[:10]],
+            },
+            speech={
+                "ru": (
+                    f"Процессор занят на {round(busy * 100)} "
+                    f"{plural_form(round(busy * 100), PERCENT)}. "
+                    + (f"Больше всего: {spoken}." if spoken else "Заметно никто не грузит.")
+                ),
+                "en": (
+                    f"The processor is {busy * 100:.0f} percent busy. "
+                    + (f"Mostly: {spoken}." if spoken else "Nothing stands out.")
+                ),
             },
         )
 

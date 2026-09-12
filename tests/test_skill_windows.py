@@ -1043,3 +1043,73 @@ def test_unknown_alias_is_left_as_written() -> None:
     from skills.windows.skill import resolve_alias
 
     assert resolve_alias("notepad", {"AyuGram": "x"}) is None
+
+
+# --- кто грузит процессор ----------------------------------------------------
+
+
+def test_hogs_measure_growth_not_lifetime() -> None:
+    """Считается разница двух снимков, а не накопленное за жизнь программы.
+
+    Windows копит процессорное время с запуска. Без второго снимка вышел бы
+    рейтинг долгожителей: браузер, открытый с утра, обогнал бы что угодно.
+    """
+    before = {1: ("browser.exe", 3600.0), 2: ("Code.exe", 1.0)}
+    after = {1: ("browser.exe", 3600.2), 2: ("Code.exe", 2.0)}
+
+    hogs = windows.cpu_hogs(before, after, 2.0, cores=1)
+
+    assert hogs[0][0] == "Code.exe", "долгожитель обогнал того, кто грузит сейчас"
+    assert round(hogs[0][1], 2) == 0.5
+    assert round(hogs[1][1], 2) == 0.1
+
+
+def test_same_program_adds_up() -> None:
+    """Одноимённые процессы складываются: у браузера их полтора десятка.
+
+    По отдельности каждый выглядит скромно, а вместе — как раз то, что грело.
+    """
+    before = {i: ("browser.exe", 0.0) for i in range(10)}
+    after = {i: ("browser.exe", 0.1) for i in range(10)}
+
+    hogs = windows.cpu_hogs(before, after, 1.0, cores=1)
+
+    assert len(hogs) == 1
+    assert hogs[0][0] == "browser.exe"
+    assert round(hogs[0][1], 6) == 1.0
+
+
+def test_share_is_of_the_whole_processor() -> None:
+    """Доля считается от всей машины: иначе число пугает без причины."""
+    before = {1: ("x.exe", 0.0)}
+    after = {1: ("x.exe", 1.0)}
+
+    assert windows.cpu_hogs(before, after, 1.0, cores=12)[0][1] == 1 / 12
+
+
+def test_newborn_process_is_skipped() -> None:
+    """Родившийся между снимками не считается: вышел бы выброс на ровном месте."""
+    before = {1: ("x.exe", 0.0)}
+    after = {1: ("x.exe", 0.0), 2: ("новый.exe", 5.0)}
+
+    assert windows.cpu_hogs(before, after, 1.0, cores=1) == []
+
+
+def test_hogs_are_named_aloud_without_the_extension() -> None:
+    """Вслух `.exe` читается по буквам, поэтому расширение снимается."""
+    said = windows.describe_hogs([("msedgewebview2.exe", 0.21), ("AyuGram.exe", 0.03)])
+
+    assert ".exe" not in said
+    assert "msedgewebview2 21 процент" in said
+
+
+def test_percent_agrees_with_the_number() -> None:
+    """«4 процентов» режет ухо: ответ произносят вслух."""
+    assert "2 процента" in windows.describe_hogs([("x.exe", 0.02)])
+    assert "5 процентов" in windows.describe_hogs([("x.exe", 0.05)])
+    assert "21 процент" in windows.describe_hogs([("x.exe", 0.21)])
+
+
+def test_quiet_machine_says_nothing() -> None:
+    """Мелочь по полпроцента называть незачем: это фон, а не виновник."""
+    assert windows.describe_hogs([("x.exe", 0.004), ("y.exe", 0.001)]) == ""

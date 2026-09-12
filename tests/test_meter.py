@@ -7,16 +7,17 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
-from jarvis.core.meter import Load, Meter
+from jarvis.core.meter import SUSPICIOUS_S, Load, Meter
 
 
 def burn(seconds: float) -> None:
     """Занять процессор на заданное время, а не поспать."""
-    end = time.thread_time() + seconds
-    while time.thread_time() < end:
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
         pass
 
 
@@ -44,26 +45,42 @@ def test_stages_accumulate_across_calls() -> None:
     assert meter.peek().stages["речь"] >= 0.01
 
 
-def test_waiting_is_not_counted() -> None:
-    """Ожидание не греет, и в счёт идти не должно.
+def test_wrapped_waiting_is_complained_about(caplog) -> None:
+    """Ожидание внутри звена не запретить, но и молчать о нём нельзя.
 
-    Звено, которое полсекунды ждёт сеть, ноутбук не греет; звено, которое
-    полсекунды считает, греет. Поэтому меряется процессорное время, а не время
-    по часам.
+    Раньше защитой была сама механика: процессорное время потока ожидание не
+    считало. Но у тех часов на Windows шаг 15.6 мс, и звено в доли миллисекунды
+    измерялось нулём — счёт занижался в 2.4 раза (замер 12.09.2026). Настоящие
+    часы это чинят, но ожидание теперь засчитают, поэтому правило «оборачивать
+    только счёт» обзавелось предохранителем: слишком долгий замер виден в логе.
     """
     meter = Meter()
-    with meter.stage("сеть"):
-        time.sleep(0.05)
+    with caplog.at_level(logging.WARNING, logger="jarvis.core.meter"):
+        with meter.stage("сеть"):
+            time.sleep(SUSPICIOUS_S + 0.05)
+        with meter.stage("сеть"):
+            time.sleep(SUSPICIOUS_S + 0.05)
 
-    assert meter.peek().stages.get("сеть", 0.0) < 0.01
+    assert "сеть" in caplog.text and "ожидание" in caplog.text
+    assert caplog.text.count("похоже") == 1, "о каждом звене предупреждаем один раз"
+
+
+def test_short_stages_are_silent(caplog) -> None:
+    """Обычное звено работает доли миллисекунды и в лог не лезет."""
+    meter = Meter()
+    with caplog.at_level(logging.WARNING, logger="jarvis.core.meter"):
+        for _ in range(50):
+            with meter.stage("имя"):
+                burn(0.001)
+
+    assert not caplog.text
 
 
 def test_other_threads_do_not_leak_into_the_stage() -> None:
     """Чужая работа в чужом потоке в счёт звена не попадает.
 
-    Ради этого и берётся время потока, а не процесса: петлевой захват живёт
-    отдельным потоком, и без такого разделения он приписывался бы голосовому
-    кругу.
+    Звенья названы по отдельности и меряются каждое у себя, поэтому петлевой
+    захват, живущий своим потоком, голосовому кругу не приписывается.
     """
     meter = Meter()
     noisy = threading.Thread(target=burn, args=(0.05,))
@@ -152,3 +169,113 @@ def test_empty_window_does_not_divide_by_zero() -> None:
     load = Load(wall=0.0, total=0.0, stages={})
     assert load.share == 0.0
     assert load.shares() == []
+
+
+# --- сеанс целиком ----------------------------------------------------------
+
+
+def test_session_survives_taking_the_window() -> None:
+    """Снятый отрезок не обнуляет счёт сеанса.
+
+    Пока их не различали, прощальная строка «Нагрузка за сеанс» показывала
+    последнюю минуту: отчёт раз в минуту звал `take`, а на выходе спрашивали
+    текущий отрезок — то есть остаток после последнего сброса.
+    """
+    meter = Meter()
+    for _ in range(3):
+        with meter.stage("имя"):
+            burn(0.01)
+        meter.take()
+
+    assert meter.peek().stages == {}, "отрезок обязан обнуляться"
+    assert meter.session().stages["имя"] >= 0.025, "а сеанс — копиться"
+
+
+def test_session_counts_the_open_window_too() -> None:
+    """Незакрытый отрезок входит в сеанс: иначе теряется последняя минута.
+
+    А это ровно та минута, после которой обычно и выключают.
+    """
+    meter = Meter()
+    with meter.stage("имя"):
+        burn(0.01)
+    meter.take()
+    with meter.stage("имя"):
+        burn(0.01)
+
+    assert meter.session().stages["имя"] >= 0.018
+
+
+def test_peak_remembers_the_heaviest_window() -> None:
+    """Средняя по вечеру прячет всплески, а греется ноутбук на них."""
+    meter = Meter()
+    assert meter.peak == 0.0
+
+    meter.take()
+    burn(0.02)
+    meter.take()
+    heavy = meter.peak
+    assert heavy > 0.0
+
+    time.sleep(0.05)
+    meter.take()
+    assert meter.peak == heavy, "тихий отрезок пик не сбрасывает"
+
+
+# --- ядро против процессора --------------------------------------------------
+
+
+def test_core_share_is_not_the_machine_share() -> None:
+    """Доля ядра и доля процессора — разные числа, и путать их нельзя.
+
+    Спор про нагрев решается именно этим: семь процентов ядра на двенадцати
+    ядрах — меньше процента машины, то есть заведомо не источник жара.
+    """
+    load = Load(wall=10.0, total=0.7, stages={}, cores=12)
+
+    assert round(load.share * 100) == 7
+    assert round(load.machine_share * 100, 1) == 0.6
+    assert "процессора" in load.describe()
+
+
+def test_single_core_machine_says_nothing_extra() -> None:
+    """На одном ядре два числа совпадают, и второе только мешало бы."""
+    load = Load(wall=10.0, total=0.7, stages={}, cores=1)
+
+    assert load.machine_share == load.share
+    assert "процессора" not in load.describe()
+
+
+def test_recent_falls_back_to_the_last_finished_window() -> None:
+    """Спросили сразу после сводки — отвечаем последней закрытой минутой.
+
+    Сеанс тут не годится: в него входит запуск с загрузкой моделей, и он один
+    перевешивает часы тихой работы (замер 12.09.2026: 27% против 7%).
+    """
+    meter = Meter()
+    with meter.stage("имя"):
+        burn(0.02)
+    finished = meter.take()
+
+    recent = meter.recent(least=10.0)
+    assert recent.stages == finished.stages
+    assert recent.wall == finished.wall
+
+
+def test_recent_prefers_the_window_it_has() -> None:
+    """Набралось достаточно — отвечаем текущим отрезком, он свежее."""
+    meter = Meter()
+    with meter.stage("имя"):
+        burn(0.01)
+
+    recent = meter.recent(least=0.0)
+    assert recent.stages["имя"] >= 0.008
+
+
+def test_recent_without_history_uses_the_session() -> None:
+    """В первую минуту закрытых отрезков ещё нет — берём что есть."""
+    meter = Meter()
+    with meter.stage("имя"):
+        burn(0.01)
+
+    assert meter.recent(least=1000.0).stages["имя"] >= 0.008
