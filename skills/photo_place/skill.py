@@ -30,10 +30,21 @@
 обещанной точностью в двадцать пять километров и настоящим промахом в десять:
 общо, зато честно и в пределах обещанного.
 
+**Версия проверяется спутником, и это единственное, что превращает догадку в
+ответ.** Выбранное место показывается зрячей модели рядом с фотографией: сходится
+ли план — дороги, крыши, граница зелени. Не сошлось — версия отбрасывается, и
+берётся следующая ступень, более общая. Замер на Дмитровском кремле: десять
+баллов верному месту и ноль трём чужим, разделение полное.
+
+Две оговорки, обе из замеров. **Спутник отстаёт от карты на годы**: под Анталией
+съёмка оказалась старше самой дороги со снимка, там теплицы и просёлок — сверять
+было не с чем, и модель честно поставила ноль. Поэтому молчание спутника версию
+не отвергает: «не проверили» и «не похоже» — разные вещи. И **общие версии не
+сверяются вовсе**: у города на снимке сверху нет той геометрии, что видна на
+фотографии.
+
 **Догадку и замер не путаем.** Координаты из файла — «снято здесь», узнавание по
-виду — «похоже на». Чего этот путь не даёт совсем, так это точки: место по виду
-узнаётся до города, а до дома — только поиском по картинке или сверкой со
-спутником, и это отдельная работа на минуты, а не на голосовой ответ.
+виду — «похоже на», сверенная версия — «сверил со спутником, сходится».
 """
 
 from __future__ import annotations
@@ -105,7 +116,10 @@ _ASK = {
 ГОРОД: <город или нет>
 РАЙОН: <район, посёлок или нет>
 МЕСТО: <конкретное узнаваемое место: здание, отель, пляж, достопримечательность
-        — ТОЛЬКО если правда его узнаёшь, иначе нет>
+        — ТОЛЬКО если правда его узнаёшь, иначе нет. Назови его так, как оно
+        подписано на карте: коротким общеизвестным названием, а не полным
+        официальным. «Дмитровский кремль», а не «Успенский собор Дмитровского
+        кремля»: длинное официальное название карта чаще всего не знает>
 МЕСТНОЕ: <название ступени МЕСТО на местном языке или по-английски, иначе нет>
 
 **Выдуманная улица или перекрёсток хуже честного города.** Не называй адрес,
@@ -131,7 +145,9 @@ COUNTRY: <country or no>
 CITY: <city or no>
 DISTRICT: <district, suburb or no>
 PLACE: <a specific recognisable place: building, hotel, beach, landmark — ONLY
-        if you truly recognise it, otherwise no>
+        if you truly recognise it, otherwise no. Name it the way a map labels
+        it: the short common name, not the full official one. A map usually
+        does not know long official titles>
 LOCAL: <the PLACE name in the local language, otherwise no>
 
 **An invented street or crossroads is worse than an honest city.** Do not give an
@@ -215,6 +231,58 @@ RANK_METRES = (
     (12, 60_000.0),
     (0, 500_000.0),
 )
+
+#: Спутниковые тайлы для сверки. Источник открытый, просит только честно
+#: представиться и не злоупотреблять.
+TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+
+#: Какой обзор показывать при сверке. z=16 при span=3 даёт участок около
+#: полутора километров — на нём замер 12.09.2026 дал чистое разделение:
+#: десять баллов верному месту и ноль трём чужим.
+VERIFY_ZOOM = 16
+VERIFY_SPAN = 3
+
+#: Ниже какого балла версия считается неподтверждённой. Разделение оказалось
+#: не пограничным, а полным (10 против 0), поэтому порог посередине и никакой
+#: тонкой настройки не просит.
+VERIFY_MIN = 5
+
+#: Версии крупнее этого не сверяем: у города на снимке сверху нет той геометрии,
+#: которую видно на фотографии, и сверка выродится в угадывание.
+VERIFY_BELOW = 2_000.0
+
+#: О чём спрашивать при сверке. Главное тут — предупредить о смене ракурса:
+#: без этой оговорки модель искала на снимке СВЕРХУ горы на горизонте и на их
+#: отсутствии отвечала «не совпадает» (замер 12.09.2026).
+_VERIFY = {
+    "ru": """Первая картинка — фотография, снятая с земли, обычным объективом.
+Вторая — тот же мир, но СВЕРХУ: спутниковый снимок небольшого участка.
+
+Ракурсы разные, и это главное. На снимке сверху по построению НЕ ВИДНО ни гор на
+горизонте, ни неба, ни фасадов — их отсутствие ничего не доказывает. Сравнивать
+можно только план: рисунок дорог и перекрёстков, форму крыш и расположение
+построек, границу застройки и зелени, характерные объекты.
+
+Ответь двумя строками:
+СХОДСТВО: <число от 0 до 10, где 0 — ничего общего, 10 — точно это место>
+ПОЧЕМУ: <одна короткая фраза>""",
+    "en": """The first picture is a photo taken from the ground with an ordinary
+lens. The second is the same world seen FROM ABOVE: a satellite view of a small
+area.
+
+The viewpoints differ, and that is the point. A top-down view by construction
+shows no mountains on the horizon, no sky and no facades — their absence proves
+nothing. Compare only the plan: roads and junctions, roof shapes and building
+layout, the edge between built-up land and greenery, distinctive objects.
+
+Answer in two lines:
+MATCH: <a number from 0 to 10, where 0 is nothing in common and 10 is certainly
+        this place>
+WHY: <one short phrase>""",
+}
+
+#: Подпись строки с оценкой сходства.
+_MATCH = ("сходство:", "match:")
 
 #: Части адреса от точной к общей — для ответа по координатам из файла.
 _ADDRESS = (
@@ -534,6 +602,43 @@ def picture_for_model(path: Path, *, limit: int = LIMIT) -> tuple[str, tuple[int
     return f"data:image/jpeg;base64,{body}", size
 
 
+def tile_of(latitude: float, longitude: float, zoom: int) -> tuple[float, float]:
+    """Номер тайла для точки в обычной схеме карт (Web Mercator)."""
+    count = 2 ** zoom
+    x = (longitude + 180.0) / 360.0 * count
+    y = (1 - math.asinh(math.tan(math.radians(latitude))) / math.pi) / 2 * count
+    return x, y
+
+
+def stitch(tiles: dict[tuple[int, int], bytes], span: int) -> bytes:
+    """Склеить сетку тайлов в одну картинку и отдать её JPEG.
+
+    Недостающий тайл оставляем серым, а не отменяем сверку: край области или
+    один сбойный запрос не повод отказываться от проверки целиком.
+    """
+    from PIL import Image
+
+    canvas = Image.new("RGB", (256 * span, 256 * span), (128, 128, 128))
+    for (column, row), body in tiles.items():
+        with Image.open(io.BytesIO(body)) as piece:
+            canvas.paste(piece.convert("RGB"), (column * 256, row * 256))
+    buffer = io.BytesIO()
+    canvas.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
+def read_match(answer: str) -> int | None:
+    """Оценка сходства из ответа модели. ``None`` — оценки нет."""
+    for line in answer.splitlines():
+        low = line.strip().lower()
+        for mark in _MATCH:
+            if low.startswith(mark):
+                digits = re.search(r"\d+", low[len(mark) :])
+                if digits:
+                    return max(0, min(10, int(digits.group())))
+    return None
+
+
 def resolve_photo(path: str) -> Path | None:
     """Файл фотографии по сказанному пути. ``None`` — не нашли или не картинка."""
     cleaned = path.strip().strip('"').strip("'")
@@ -551,7 +656,7 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.3.0",
+        version="0.4.0",
         spoken=("место по фото", "где снято", "photo place"),
     )
 
@@ -726,7 +831,7 @@ class PhotoPlaceSkill(Skill):
                     "en": "The model did not answer about this photo.",
                 },
             )
-        return await self._answer(said, code)
+        return await self._answer(said, code, photo=image)
 
     def _question(self, code: str, hint: str) -> str:
         """Что спросить у зрения, с учётом подсказки владельца."""
@@ -751,8 +856,8 @@ class PhotoPlaceSkill(Skill):
 
     # --- что делаем с версиями -----------------------------------------------
 
-    async def _answer(self, said: str, code: str) -> ToolResult:
-        """Проверить версии геокодером и выбрать ту, что нашлась точнее."""
+    async def _answer(self, said: str, code: str, *, photo: str = "") -> ToolResult:
+        """Выбрать версию по лестнице и, если есть чем, сверить её со спутником."""
         if is_refusal(said):
             return ToolResult.failure(
                 "модель места не узнала",
@@ -769,7 +874,7 @@ class PhotoPlaceSkill(Skill):
         if reading.clues:
             self.log.info("Зацепки на снимке: %s", reading.clues)
 
-        best = await self._weigh(reading.guesses)
+        best, checked = await self._checked(reading.guesses, photo, code)
         if best is None:
             return ToolResult.failure(
                 "версии не подтвердились",
@@ -786,6 +891,7 @@ class PhotoPlaceSkill(Skill):
             "clues": reading.clues,
             "guesses": [item.name for item in reading.guesses],
             "exact": False,
+            "checked": checked,
             "accuracy_m": round(metres) if metres is not None else None,
             "latitude": point[0] if point else None,
             "longitude": point[1] if point else None,
@@ -809,6 +915,15 @@ class PhotoPlaceSkill(Skill):
         # Точность говорится вслух: владельцу нужна точка, и услышать «только до
         # города» ему важнее, чем услышать название города.
         tail = f", {accuracy}" if accuracy else ""
+        # Сверенная версия — уже не догадка, и говорить о ней надо иначе.
+        if checked:
+            return ToolResult.success(
+                payload,
+                speech={
+                    "ru": f"{guess.name}{tail}. Сверил со спутником, сходится.",
+                    "en": f"{guess.name}{tail}. Checked against satellite, it matches.",
+                },
+            )
         return ToolResult.success(
             payload,
             speech={
@@ -816,6 +931,39 @@ class PhotoPlaceSkill(Skill):
                 "en": f"Looks like {guess.name}{tail}.",
             },
         )
+
+    async def _checked(
+        self, guesses: tuple[Guess, ...], photo: str, code: str
+    ) -> tuple[tuple[Guess, tuple[float, float] | None, float | None] | None, bool]:
+        """Выбрать версию и, если она достаточно точная, сверить со спутником.
+
+        Не сошлась — версия отбрасывается, и берётся следующая ступень, более
+        общая. Именно этого шага не хватало весь день: «остановка EXPO» и
+        «здание муниципалитета» звучали точно, находились на карте и уводили на
+        десять километров. Сверка отвечает на единственный вопрос, которого не
+        задавали, — а похоже ли вообще.
+
+        Общие версии (город, область) не сверяются: у города на снимке сверху
+        нет той геометрии, которую видно на фотографии.
+        """
+        remaining = guesses
+        while remaining:
+            best = await self._weigh(remaining)
+            if best is None:
+                return None, False
+            guess, point, metres = best
+            precise = point is not None and metres is not None and metres <= VERIFY_BELOW
+            if not photo or not precise:
+                return best, False
+            score = await self._verify(photo, point, code)  # type: ignore[arg-type]
+            if score is None or score >= VERIFY_MIN:
+                # Сверка не состоялась — это не повод отвергать версию: молчание
+                # спутника ничего не доказывает, в отличие от его «не похоже».
+                return best, score is not None
+            self.log.info("Версия %r со спутником не сошлась — беру следующую", guess.name)
+            index = remaining.index(guess)
+            remaining = remaining[index + 1 :]
+        return None, False
 
     async def _weigh(
         self, guesses: tuple[Guess, ...]
@@ -884,6 +1032,49 @@ class PhotoPlaceSkill(Skill):
                 "en": f"Taken here: {place}. That is from the photo itself, exact.",
             },
         )
+
+    # --- сверка со спутником -------------------------------------------------
+
+    async def _satellite(self, point: tuple[float, float]) -> str | None:
+        """Спутниковый вид вокруг точки одной картинкой. ``None`` — не вышло."""
+        centre_x, centre_y = tile_of(*point, VERIFY_ZOOM)
+        left, top = int(centre_x) - VERIFY_SPAN // 2, int(centre_y) - VERIFY_SPAN // 2
+        pieces: dict[tuple[int, int], bytes] = {}
+        for column in range(VERIFY_SPAN):
+            for row in range(VERIFY_SPAN):
+                url = TILES.format(z=VERIFY_ZOOM, x=left + column, y=top + row)
+                try:
+                    response = await self._http().get(url)
+                    response.raise_for_status()
+                except httpx.HTTPError as error:
+                    self.log.debug("Тайл %s не пришёл: %s", url, error)
+                    continue
+                pieces[(column, row)] = response.content
+        if not pieces:
+            return None
+        body = await asyncio.to_thread(stitch, pieces, VERIFY_SPAN)
+        return f"data:image/jpeg;base64,{base64.b64encode(body).decode('ascii')}"
+
+    async def _verify(self, photo: str, point: tuple[float, float], code: str) -> int | None:
+        """Сверить фотографию со спутниковым видом точки. ``None`` — не удалось.
+
+        Это тот шаг, которого не хватало весь день: догадка перестаёт быть
+        догадкой, когда её проверили. Замер 12.09.2026 на Дмитровском кремле дал
+        чистое разделение — десять баллов верному месту и ноль трём чужим.
+        """
+        view = await self._satellite(point)
+        if view is None:
+            return None
+        try:
+            response = await self.context.llm.complete(
+                [Message.user(_VERIFY[code], images=(photo, view))], task=VISION_TASK
+            )
+        except Exception as exc:  # noqa: BLE001 — сеть и тариф, не наша вина
+            self.log.warning("Сверка не состоялась: %s", exc)
+            return None
+        score = read_match(response.text)
+        self.log.info("Сверка со спутником: %s из 10", score if score is not None else "?")
+        return score
 
     # --- геокодер ------------------------------------------------------------
 

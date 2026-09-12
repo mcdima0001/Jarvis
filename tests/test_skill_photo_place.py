@@ -433,3 +433,155 @@ def test_specific_guess_must_lie_inside_the_wider_one() -> None:
     assert place._inside(city, (36.74, 30.60)), "запас у границы обязан быть"
     assert not place._inside(city, (39.93, 32.86)), "другой город прошёл проверку"
     assert place._inside(None, (0.0, 0.0)), "нет области — верим на слово"
+
+
+# --- сверка со спутником -----------------------------------------------------
+
+
+def test_tile_numbers_match_the_standard_scheme() -> None:
+    """Пересчёт точки в номер тайла — обычная схема карт, проверяем по месту."""
+    x, y = place.tile_of(56.3433, 37.5197, 16)
+
+    assert round(x) == 39598 and round(y) == 20295
+    # На нулевом масштабе весь мир — один тайл, и центр приходится на середину.
+    centre = place.tile_of(0.0, 0.0, 0)
+    assert round(centre[0], 3) == 0.5 and round(centre[1], 3) == 0.5
+
+
+@pytest.mark.parametrize(
+    ("said", "expected"),
+    [
+        ("СХОДСТВО: 10", 10),
+        ("сходство: 0\nПОЧЕМУ: ничего", 0),
+        ("MATCH: 7", 7),
+        ("СХОДСТВО: 99", 10),
+        ("ПОЧЕМУ: нет оценки", None),
+        ("", None),
+    ],
+)
+def test_match_score_is_read(said: str, expected) -> None:
+    """Оценка сходства вынимается из ответа и держится в своих границах."""
+    assert place.read_match(said) == expected
+
+
+def test_missing_tile_does_not_cancel_the_check() -> None:
+    """Один сбойный тайл не повод отказываться от сверки целиком."""
+    import io as _io
+
+    from PIL import Image
+
+    piece = _io.BytesIO()
+    Image.new("RGB", (256, 256), (10, 120, 10)).save(piece, format="PNG")
+    tiles = {(0, 0): piece.getvalue(), (2, 2): piece.getvalue()}
+
+    body = place.stitch(tiles, 3)
+
+    with Image.open(_io.BytesIO(body)) as sewn:
+        assert sewn.size == (768, 768)
+        assert sewn.getpixel((10, 10))[1] > 80, "положенный тайл не встал на место"
+        assert sewn.getpixel((384, 384)) == (128, 128, 128), "дырка должна быть серой"
+
+
+class _Checker:
+    """Скилл с подставленными выбором версии и сверкой."""
+
+    def __init__(self, weighed, scores):
+        self._weighed = list(weighed)
+        self._scores = list(scores)
+        self.verified: list[str] = []
+        self.log = _Log()
+
+    async def _weigh(self, guesses):
+        for item in self._weighed:
+            if item[0] in guesses:
+                return item
+        return None
+
+    async def _verify(self, photo, point, code):
+        self.verified.append(photo)
+        return self._scores.pop(0) if self._scores else None
+
+
+class _Log:
+    def info(self, *args: object) -> None: ...
+    def debug(self, *args: object) -> None: ...
+    def warning(self, *args: object) -> None: ...
+
+
+def _checker(weighed, scores):
+    """Скилл без контекста: `log` подменяем на классе, иначе он лезет в контекст."""
+    helper = _Checker(weighed, scores)
+
+    class _Quiet(place.PhotoPlaceSkill):  # type: ignore[misc, valid-type]
+        log = helper.log  # type: ignore[assignment]
+
+    skill = _Quiet.__new__(_Quiet)
+    skill._weigh = helper._weigh  # type: ignore[method-assign]
+    skill._verify = helper._verify  # type: ignore[method-assign]
+    return skill, helper
+
+
+async def test_confirmed_guess_is_kept() -> None:
+    """Сошлась со спутником — версия остаётся и объявляется сверенной."""
+    spot = place.Guess(name="Дмитровский кремль")
+    skill, helper = _checker([(spot, (56.34, 37.52), 100.0)], [10])
+
+    best, checked = await skill._checked((spot,), "data:image/jpeg;base64,x", "ru")
+
+    assert best is not None and best[0] is spot
+    assert checked and helper.verified
+
+
+async def test_rejected_guess_falls_through_to_the_wider_one() -> None:
+    """Не сошлась — берём следующую ступень, более общую.
+
+    Ровно этого шага не хватало весь день: «остановка EXPO» и «здание
+    муниципалитета» звучали точно, находились на карте и уводили на десять
+    километров (живые прогоны 12.09.2026).
+    """
+    wrong = place.Guess(name="Остановка EXPO")
+    city = place.Guess(name="Анталья, Турция")
+    skill, _ = _checker(
+        [(wrong, (36.94, 30.87), 100.0), (city, (36.88, 30.70), 25_000.0)], [0]
+    )
+
+    best, checked = await skill._checked((wrong, city), "data:image/jpeg;base64,x", "ru")
+
+    assert best is not None and best[0] is city
+    assert not checked, "город не сверяли, объявлять его сверенным нельзя"
+
+
+async def test_wide_guess_is_not_checked_at_all() -> None:
+    """Город со спутником не сверяют: на снимке сверху у него нет геометрии."""
+    city = place.Guess(name="Анталья, Турция")
+    skill, helper = _checker([(city, (36.88, 30.70), 25_000.0)], [0])
+
+    best, checked = await skill._checked((city,), "data:image/jpeg;base64,x", "ru")
+
+    assert best is not None and not checked
+    assert not helper.verified, "широкую версию зря погнали в сверку"
+
+
+async def test_silent_satellite_does_not_reject() -> None:
+    """Сверка не состоялась — это не «не похоже», а «не проверили».
+
+    Молчание спутника ничего не доказывает: тайлы могли не прийти.
+    """
+    spot = place.Guess(name="Дмитровский кремль")
+    skill, _ = _checker([(spot, (56.34, 37.52), 100.0)], [None])
+
+    best, checked = await skill._checked((spot,), "data:image/jpeg;base64,x", "ru")
+
+    assert best is not None and best[0] is spot
+    assert not checked
+
+
+async def test_without_a_photo_nothing_is_checked() -> None:
+    """Нет картинки — нечего и сверять; версия идёт как есть."""
+    spot = place.Guess(name="Дмитровский кремль")
+    skill, helper = _checker([(spot, (56.34, 37.52), 100.0)], [0])
+
+    best, checked = await skill._checked((spot,), "", "ru")
+
+    assert best is not None and not checked
+    assert not helper.verified
