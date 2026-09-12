@@ -404,3 +404,57 @@ def test_session_start_is_marked(tmp_path) -> None:
     logging.shutdown()
 
     assert "Запуск" in _written(tmp_path)
+
+
+# --- настройки скиллов рядом со скиллом -------------------------------------
+
+
+def _skill_file(tmp_path: Path, rel: str, text: str) -> None:
+    """Положить config.yaml скилла во временный проект."""
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_skill_config_lives_next_to_the_skill(tmp_path: Path) -> None:
+    """Настройки читаются из skills/<имя>/config.yaml, а не только из главного."""
+    _skill_file(tmp_path, "skills/foo/config.yaml", "greeting: привет\nlimit: 5\n")
+    config = load_config(_write(tmp_path, _MINIMAL))
+
+    assert config.skills.settings["foo"] == {"greeting": "привет", "limit": 5}
+
+
+def test_subskill_config_one_level_deep(tmp_path: Path) -> None:
+    """Подскилл держит свои настройки в своей вложенной папке."""
+    _skill_file(tmp_path, "skills/browser/page/config.yaml", "recipes: 3\n")
+    config = load_config(_write(tmp_path, _MINIMAL))
+
+    assert config.skills.settings["page"] == {"recipes": 3}
+
+
+def test_main_config_overrides_the_skill_file(tmp_path: Path) -> None:
+    """Централизованное skills.settings важнее файла скилла и сливается вглубь."""
+    _skill_file(
+        tmp_path, "skills/foo/config.yaml", "enabled: false\nnested:\n  a: 1\n  b: 2\n"
+    )
+    text = _MINIMAL.replace(
+        "  paths:\n    - skills\n",
+        "  paths:\n    - skills\n  settings:\n    foo:\n      enabled: true\n"
+        "      nested:\n        b: 9\n",
+    )
+    config = load_config(_write(tmp_path, text))
+
+    foo = config.skills.settings["foo"]
+    assert foo["enabled"] is True          # главный переопределил
+    assert foo["nested"] == {"a": 1, "b": 9}  # вглубь: a из файла, b из главного
+
+
+def test_env_expands_in_skill_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """В файле скилла работают те же ${VAR}, что и в главном конфиге."""
+    monkeypatch.setenv("TEST_SKILL_TOKEN", "s3cr3t")
+    _skill_file(tmp_path, "skills/foo/config.yaml", "token: ${TEST_SKILL_TOKEN:-}\n")
+    config = load_config(_write(tmp_path, _MINIMAL))
+
+    assert config.skills.settings["foo"]["token"] == "s3cr3t"

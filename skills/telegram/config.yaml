@@ -1,0 +1,20 @@
+# Настройки скилла «telegram». Живут рядом с кодом скилла.
+# Централизованно переопределить можно в config.yaml → skills.settings.telegram.
+# ${VAR} и ${VAR:-значение} подставляются из окружения и .env, как в главном.
+
+# Ключи приложения, а не бота: бот видит только те чаты, куда его
+# добавили. Берутся на my.telegram.org, вход делается один раз:
+#   python skills/telegram/login.py
+api_id: ${JARVIS_TELEGRAM_API_ID:-}
+api_hash: ${JARVIS_TELEGRAM_API_HASH:-}
+# Файл сессии равносилен входу в аккаунт — держим его в memory/,
+# который целиком в .gitignore.
+session: memory/telegram.session
+# Сообщать о входящих событием telegram.message.received в шину.
+notify: true
+# Проговаривать входящие вслух. Отдельно от notify: событие в шине
+# никому не мешает, а речь без вопроса мешает очень. Включишь — фильтром
+# займётся секция attention выше.
+announce: false
+# Сколько последних сообщений брать на пересказ.
+history: 50

@@ -150,6 +150,63 @@ def _persona_phrases(value: Any) -> dict[str, dict[str, tuple[str, ...]]]:
     return phrases
 
 
+def _deep_merge(base: dict[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
+    """Наложить `over` на `base`: вложенные словари сливаются, остальное — заменой."""
+    result = dict(base)
+    for key, value in over.items():
+        current = result.get(key)
+        if isinstance(current, dict) and isinstance(value, Mapping):
+            result[key] = _deep_merge(current, value)
+        else:
+            result[key] = value
+    return result
+
+
+def _skill_settings(
+    paths: tuple[Path, ...], *, overrides: Mapping[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Собрать настройки скиллов: файл рядом со скиллом плюс переопределения.
+
+    Настройки каждого скилла живут в ``skills/<имя>/config.yaml`` — рядом с его
+    кодом, чтобы главный конфиг оставался про ядро, а не рос с каждым скиллом.
+    Имя скилла — имя его папки (оно же совпадает с ``meta.name``). Ищем на один
+    уровень вложенности: столько же, сколько разрешено подскиллам.
+
+    Централизованное ``skills.settings.<имя>`` из главного конфига **важнее**
+    файла скилла и накладывается поверх — это способ переопределить настройку,
+    не трогая папку скилла.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for base in paths:
+        if not base.is_dir():
+            continue
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir():
+                continue
+            _adopt_skill_config(entry, found)
+            for nested in sorted(entry.iterdir()):
+                if nested.is_dir():
+                    _adopt_skill_config(nested, found)
+
+    for name, override in overrides.items():
+        found[name] = _deep_merge(found.get(name, {}), override)
+    return found
+
+
+def _adopt_skill_config(directory: Path, into: dict[str, dict[str, Any]]) -> None:
+    """Прочитать ``<directory>/config.yaml``, если он есть, под именем папки."""
+    path = directory / "config.yaml"
+    if not path.is_file():
+        return
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Не удалось разобрать {path}: {exc}") from exc
+    if not isinstance(raw, Mapping):
+        raise ConfigError(f"{path}: ожидался словарь настроек, а не {type(raw).__name__}")
+    into[directory.name] = _deep_merge(into.get(directory.name, {}), _expand(raw))
+
+
 def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
     """Собрать конфигурацию LLM: провайдеры и профили задач."""
     providers: dict[str, ProviderConfig] = {}
@@ -246,9 +303,17 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             meter_seconds=float(runtime.get("meter_seconds", 60.0)),
         ),
         skills=SkillsConfig(
-            paths=tuple(_resolve(project_root, p) for p in skills.get("paths", ["skills"])),
+            paths=(skill_paths := tuple(
+                _resolve(project_root, p) for p in skills.get("paths", ["skills"])
+            )),
             disabled=frozenset(str(n) for n in skills.get("disabled", ())),
-            settings={str(k): dict(v or {}) for k, v in (skills.get("settings") or {}).items()},
+            settings=_skill_settings(
+                skill_paths,
+                overrides={
+                    str(k): dict(v or {})
+                    for k, v in (skills.get("settings") or {}).items()
+                },
+            ),
         ),
         router=RouterConfig(
             confidence_threshold=float(router.get("confidence_threshold", 0.6)),
