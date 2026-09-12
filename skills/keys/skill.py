@@ -1,9 +1,19 @@
-"""Клавиатурный наблюдатель: ловит набранные ключевые фразы и отвечает.
+"""Клавиатура как вход и как выход: наблюдатель, реакции и голосовой ввод.
 
-«Пишу в браузере "курс рубля", и Джарвис отвечает, не дожидаясь Enter». По сути
-это **вейкворд для клавиатуры**: та же механика, что у голосового имени, только
-вход другой. Набранное копится в коротком буфере, буфер сверяется с закрытым
-списком фраз, и совпадение уходит в систему ровно как сказанная вслух команда.
+Три способности в одном скилле, все про клавиатуру:
+
+* **Наблюдатель.** «Пишу "курс рубля", и Джарвис отвечает, не дожидаясь Enter».
+  Вейкворд для клавиатуры: набранное копится в коротком буфере, буфер сверяется
+  с закрытым списком фраз, совпадение уходит в систему как сказанная вслух
+  команда (событие `CommandTyped`).
+* **Реакции.** Живость: на набранные слова («не работает», «дедлайн») ассистент
+  роняет ироничную реплику. Это речь, о которой не просили, поэтому она идёт
+  через политику `Announcer` — та и не даёт острить чаще раза в минуту. Список
+  реплик местный: наружу уходит только совпавшая фраза, не весь набор.
+* **Голосовой ввод.** «Впиши …», «набери …» — ассистент печатает продиктованное
+  в активное поле через SendInput. Enter не жмёт: вписать — его дело, отправить
+  решает человек. Свой же ввод помечен как «вставленный» и наблюдателем
+  пропускается, иначе ассистент среагировал бы на то, что напечатал сам.
 
 Устройство и границы, которые тут важнее кода:
 
@@ -40,7 +50,8 @@ from collections.abc import Callable, Mapping
 from ctypes import wintypes
 from typing import Any
 
-from jarvis.core.contracts import CommandTyped
+from jarvis.core.attention import LOW
+from jarvis.core.contracts import CommandTyped, ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.state import DEAF
 from jarvis.core.tools import tool
@@ -61,6 +72,21 @@ DEFAULT_TRIGGERS: dict[str, str] = {
     "курс доллара": "курс доллара",
     "курс евро": "курс евро",
     "какая погода": "какая погода",
+}
+
+#: Реакции по умолчанию: подстрока в наборе → ироничные реплики, из которых
+#: выбирается по очереди. Это не команды: их ассистент говорит сам, поэтому они
+#: идут через политику речи без вопроса (пауза между репликами, тихие часы) —
+#: она и не даёт ему острить каждые несколько секунд. Список нарочно короткий и
+#: правится в конфиге: живость — вкусовщина, и перебор надоедает быстрее всего.
+DEFAULT_REACTIONS: dict[str, tuple[str, ...]] = {
+    "не работает": ("Как всегда, сэр.", "Ожидаемо.", "Опять оно."),
+    "почему": ("Хороший вопрос, сэр.", "Вот и я думаю."),
+    "дедлайн": ("Звучит напряжённо.", "Оптимистично, сэр."),
+    "устал": ("Держитесь, сэр.", "Может, перерыв?"),
+    "кофе": ("Отличная идея, сэр.", "Одобряю."),
+    "гений": ("Скромность украшает, сэр.",),
+    "не понимаю": ("Присоединяюсь, сэр.",),
 }
 
 #: Окна, в которых не следим вовсе: их заголовки выдают ввод, который не должен
@@ -181,6 +207,108 @@ class Triggers:
         return result
 
 
+class Reactions:
+    """То же совпадение по буферу, но ответ — ироничная реплика, не команда.
+
+    Отличий от `Triggers` два, и оба по делу. Во-первых, на одну подстроку
+    приходится несколько реплик, и они выдаются по кругу — иначе живость
+    оборачивается попугаем. Во-вторых, пауза по умолчанию длиннее: острить на
+    каждое «почему» невыносимо, а редко — забавно. Глобально частоту всё равно
+    держит политика речи без вопроса, у которой своя пауза между репликами.
+    """
+
+    def __init__(
+        self,
+        mapping: Mapping[str, tuple[str, ...] | list[str]],
+        *,
+        window: int = DEFAULT_WINDOW,
+        cooldown_s: float = 60.0,
+    ) -> None:
+        self._quips = {
+            normalize(pattern): tuple(quips)
+            for pattern, quips in mapping.items()
+            if pattern.strip() and quips
+        }
+        self._patterns = sorted(self._quips, key=len, reverse=True)
+        longest = max((len(pattern) for pattern in self._patterns), default=0)
+        self._window = max(window, longest + 8)
+        self._cooldown = max(0.0, cooldown_s)
+        self._buffer = ""
+        self._fired: dict[str, float] = {}
+        #: Какую реплику выдали прошлый раз — чтобы идти по кругу, а не повторять.
+        self._turn: dict[str, int] = {}
+
+    @property
+    def patterns(self) -> tuple[str, ...]:
+        """Отслеживаемые подстроки, длинные первыми."""
+        return tuple(self._patterns)
+
+    def reset(self) -> None:
+        """Забыть накопленное — новая строка или чужое окно."""
+        self._buffer = ""
+
+    def backspace(self) -> None:
+        """Стереть последний символ."""
+        self._buffer = self._buffer[:-1]
+
+    def feed(self, char: str, *, now: float | None = None) -> str | None:
+        """Добавить символ и, если сложилась подстрока, вернуть реплику.
+
+        Буфер, в отличие от триггеров, **не чистится** после срабатывания:
+        подстрока живёт внутри слов и фраз, и стирать контекст незачем — от
+        повтора защищает пауза.
+        """
+        if not char:
+            return None
+        self._buffer = (self._buffer + char.lower())[-self._window :]
+        moment = time.monotonic() if now is None else now
+        for pattern in self._patterns:
+            if not self._buffer.endswith(pattern):
+                continue
+            last = self._fired.get(pattern)
+            if last is not None and moment - last < self._cooldown:
+                return None
+            self._fired[pattern] = moment
+            quips = self._quips[pattern]
+            index = self._turn.get(pattern, -1) + 1
+            self._turn[pattern] = index
+            return quips[index % len(quips)]
+        return None
+
+    def feed_pattern(self, text: str, *, now: float | None = None) -> str | None:
+        """Подать подстроку целиком — ярлык поверх `feed` для тестов и удобства.
+
+        :return: реплику, если по ходу набора сложилась подстрока; иначе ``None``.
+        """
+        result: str | None = None
+        for char in text:
+            got = self.feed(char, now=now)
+            if got is not None:
+                result = got
+        return result
+
+
+def unicode_events(text: str) -> list[tuple[int, bool]]:
+    """Разложить текст на события клавиатуры для ввода в поле.
+
+    Печатаем через юникод-события (KEYEVENTF_UNICODE): так символ попадает в
+    поле как есть, независимо от раскладки — кириллице это необходимо. Каждый
+    символ — код-юнит(ы) UTF-16, и на каждый два события: нажать и отпустить.
+    Символы вне BMP (эмодзи) занимают два код-юнита — суррогатную пару, — и оба
+    должны уйти, иначе вставится половина.
+
+    :return: список пар ``(код-юнит, отпускание ли)``.
+    """
+    events: list[tuple[int, bool]] = []
+    for char in text:
+        blob = char.encode("utf-16-le")
+        for i in range(0, len(blob), 2):
+            unit = int.from_bytes(blob[i : i + 2], "little")
+            events.append((unit, False))
+            events.append((unit, True))
+    return events
+
+
 # --- Захват: только Windows, проверяется живьём -----------------------------
 
 #: Низкоуровневый хук клавиатуры и коды сообщений — из WinUser.h.
@@ -192,6 +320,14 @@ _VK_BACK = 0x08
 _VK_RETURN = 0x0D
 _VK_SHIFT = 0x10
 _VK_CAPITAL = 0x14
+#: Событие клавиатуры вставлено программой, а не человеком. Свой же ввод (диктовка
+#: ниже) приходит с этим флагом — и его надо пропускать, иначе ассистент
+#: среагирует на то, что напечатал сам.
+_LLKHF_INJECTED = 0x10
+#: Ввод текста в поле: юникод-символ, нажать и отпустить.
+_INPUT_KEYBOARD = 1
+_KEYEVENTF_KEYUP = 0x0002
+_KEYEVENTF_UNICODE = 0x0004
 #: Как часто перепроверять, не сменилось ли активное окно, секунд. На каждое
 #: нажатие спрашивать ОС расточительно, а полсекунды хватает.
 _FOREGROUND_TTL = 0.5
@@ -207,6 +343,70 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
         ("time", wintypes.DWORD),
         ("dwExtraInfo", ctypes.c_void_p),
     )
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    """Одно событие клавиатуры для SendInput."""
+
+    _fields_ = (
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    )
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    """Не используется, но задаёт размер объединения INPUT — оно по мыши."""
+
+    _fields_ = (
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    )
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_ = (("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT))
+
+
+class _INPUT(ctypes.Structure):
+    """INPUT для SendInput. Размер объединения обязан быть от большего члена —
+    иначе на 64 бит структура короче, чем ждёт ОС, и ввод молча не проходит."""
+
+    _fields_ = (("type", wintypes.DWORD), ("u", _INPUTUNION))
+
+
+def type_text_os(text: str) -> int:
+    """Впечатать текст в активное поле через SendInput. Возвращает число событий.
+
+    Отдельная от хука функция и свой дескриптор user32: диктовать можно и при
+    выключенном наблюдателе. Enter не жмём намеренно — человек сам решит,
+    отправлять ли; наша задача только вписать.
+    """
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendInput.restype = wintypes.UINT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+
+    events = unicode_events(text)
+    if not events:
+        return 0
+    array = (_INPUT * len(events))()
+    for slot, (unit, is_up) in zip(array, events, strict=True):
+        slot.type = _INPUT_KEYBOARD
+        slot.u.ki = _KEYBDINPUT(
+            wVk=0,
+            wScan=unit,
+            dwFlags=_KEYEVENTF_UNICODE | (_KEYEVENTF_KEYUP if is_up else 0),
+            time=0,
+            dwExtraInfo=None,
+        )
+    sent = user32.SendInput(len(array), array, ctypes.sizeof(_INPUT))
+    return int(sent)
 
 
 def _configure(user32: Any, kernel32: Any) -> None:
@@ -268,11 +468,15 @@ class KeyboardWatcher:
         *,
         on_command: Callable[[str], None],
         to_loop: Callable[[Callable[[], None]], None],
+        reactions: Reactions | None = None,
+        on_react: Callable[[str], None] | None = None,
         skip: tuple[str, ...] = DEFAULT_SKIP,
     ) -> None:
         self._triggers = triggers
         self._on_command = on_command
         self._to_loop = to_loop
+        self._reactions = reactions
+        self._on_react = on_react
         self._skip = skip
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -352,6 +556,10 @@ class KeyboardWatcher:
         info = ctypes.cast(
             ctypes.c_void_p(lparam), ctypes.POINTER(_KBDLLHOOKSTRUCT)
         ).contents
+        if info.flags & _LLKHF_INJECTED:
+            # Свой же ввод (диктовка) или чужая программа — не человек. Иначе
+            # ассистент среагировал бы на то, что напечатал сам.
+            return
         vk = int(info.vkCode)
         down = wparam in (_WM_KEYDOWN, _WM_SYSKEYDOWN)
 
@@ -367,11 +575,15 @@ class KeyboardWatcher:
 
         if vk == _VK_BACK:
             self._triggers.backspace()
+            if self._reactions is not None:
+                self._reactions.backspace()
             return
         if vk == _VK_RETURN:
             # Enter завершает строку. До него мы и реагируем — в этом вся суть,
             # — а после него начинаем с чистого листа.
             self._triggers.reset()
+            if self._reactions is not None:
+                self._reactions.reset()
             return
 
         if self._foreground_sensitive():
@@ -383,7 +595,15 @@ class KeyboardWatcher:
             return
         command = self._triggers.feed(char)
         if command is not None:
+            # Команда важнее шутки: одно нажатие не делает и то, и другое.
             self._to_loop(lambda: self._on_command(command))
+            if self._reactions is not None:
+                self._reactions.reset()
+            return
+        if self._reactions is not None and self._on_react is not None:
+            quip = self._reactions.feed(char)
+            if quip is not None:
+                self._to_loop(lambda: self._on_react(quip))
 
     def _translate(self, vk: int) -> str:
         """Перевести виртуальную клавишу в символ с учётом раскладки и Shift."""
@@ -432,30 +652,37 @@ class KeysSkill(Skill):
     def __init__(self) -> None:
         super().__init__()
         self._triggers: Triggers | None = None
+        self._reactions: Reactions | None = None
         self._watcher: KeyboardWatcher | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._enabled = False
 
     async def on_setup(self) -> None:
-        """Собрать список триггеров и наблюдателя из настроек."""
+        """Собрать триггеры, реакции и наблюдателя из настроек."""
         mapping = self.context.setting("triggers", DEFAULT_TRIGGERS) or {}
         window = int(self.context.setting("window", DEFAULT_WINDOW))
         cooldown = float(self.context.setting("cooldown_seconds", DEFAULT_COOLDOWN))
         skip = tuple(self.context.setting("skip_windows", list(DEFAULT_SKIP)))
         self._enabled = bool(self.context.setting("enabled", False))
+        react = bool(self.context.setting("react", True))
+        quips = self.context.setting("reactions", DEFAULT_REACTIONS) or {}
 
         self._triggers = Triggers(mapping, window=window, cooldown_s=cooldown)
+        self._reactions = Reactions(quips, window=window) if react and quips else None
         if sys.platform == "win32":
             self._watcher = KeyboardWatcher(
                 self._triggers,
                 on_command=self._dispatch,
                 to_loop=self._from_thread,
+                reactions=self._reactions,
+                on_react=self._react,
                 skip=skip,
             )
         self.log.info(
-            "Клавиатурный наблюдатель: %s, триггеров %d",
+            "Клавиатурный наблюдатель: %s, триггеров %d, реакций %d",
             "включён" if self._enabled else "выключен",
             len(self._triggers.phrases),
+            len(self._reactions.patterns) if self._reactions else 0,
         )
 
     async def on_start(self) -> None:
@@ -488,6 +715,18 @@ class KeysSkill(Skill):
             return
         self.log.info("Сработал триггер: %r", command)
         self.events.emit(CommandTyped(source="keyboard", text=command))
+
+    def _react(self, quip: str) -> None:
+        """Ироничная реплика на набранное — через политику речи без вопроса.
+
+        Это не команда: ассистента об этом не просили. Поэтому реплика идёт в
+        `Announcer` важностью `LOW` и с `hold=False` — уместна только сейчас,
+        держать её на потом смысла нет. Пауза между репликами и тихие часы —
+        забота политики; здесь мы лишь предлагаем.
+        """
+        if self.modes.active(DEAF):
+            return
+        self.context.announcer.offer(quip, importance=LOW, hold=False)
 
     # --- голосовые переключатели ------------------------------------------
 
@@ -533,6 +772,55 @@ class KeysSkill(Skill):
         watching = self._watcher is not None and self._watcher.running
         phrases = list(self._triggers.phrases) if self._triggers else []
         return {"watching": watching, "enabled": self._enabled, "triggers": phrases}
+
+    # --- ввод текста голосом ----------------------------------------------
+
+    @tool(
+        phrases=[
+            "впиши {text}",
+            "впиши в поле {text}",
+            "набери {text}",
+            "напечатай {text}",
+            "введи {text}",
+            "type {text}",
+        ],
+        reversible=False,
+    )
+    async def type_text(self, text: str = "") -> ToolResult:
+        """Впечатать текст в активное поле — голосовой ввод в то, что в фокусе.
+
+        Enter не жмём: вписать — наше дело, отправлять решает человек. Глаголы
+        «напиши» тут нет намеренно — им уже владеет Telegram, и «напиши маме»
+        должно идти в сообщение, а не в поле под курсором.
+
+        :param text: что впечатать.
+        """
+        body = text.strip()
+        if not body:
+            return ToolResult.failure(
+                "нечего вписывать",
+                speech={"ru": "Что вписать, сэр?", "en": "What should I type?"},
+            )
+        if sys.platform != "win32":
+            return ToolResult.failure(
+                "ввод текста доступен только на Windows",
+                speech={"ru": "Вписывать текст я умею только на Windows.",
+                        "en": "I can only type text on Windows."},
+            )
+        try:
+            sent = await asyncio.to_thread(type_text_os, body)
+        except OSError as error:
+            self.log.warning("Не удалось впечатать текст: %s", error)
+            return ToolResult.failure(
+                f"ввод текста не прошёл: {error}",
+                speech={"ru": "Не получилось вписать.", "en": "I couldn't type it."},
+            )
+        self.log.info("Вписал %d символов", len(body))
+        return ToolResult.success(
+            {"typed": body, "events": sent},
+            speech={"ru": ("Готово, сэр.", "Вписал.", "Готово."),
+                    "en": ("Done, sir.", "Typed it.")},
+        )
 
     async def health(self) -> HealthStatus:
         """Здоровье: на своей платформе и включённый — должен и следить."""

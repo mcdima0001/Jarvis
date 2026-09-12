@@ -175,15 +175,31 @@ class Announcer:
     # --- произнесение ------------------------------------------------------
 
     def offer(
-        self, text: str, *, importance: str = NORMAL, language: str = "ru"
+        self,
+        text: str,
+        *,
+        importance: str = NORMAL,
+        language: str = "ru",
+        hold: bool = True,
     ) -> str:
-        """Предложить реплику. Возвращает принятое решение."""
+        """Предложить реплику. Возвращает принятое решение.
+
+        :param hold: придерживать ли, если сказать сейчас нельзя. Обычно да:
+            доклад о поручении ждали, и досказать его позже — правильно. Но
+            бывает речь, уместная **только сейчас**: ироничная реплика на то,
+            что человек набирает, через двадцать минут прозвучит невпопад.
+            Для неё ``hold=False`` — «сказать или забыть», без очереди.
+        """
         clean = text.strip()
         if not clean:
             return "drop"
 
         now = time.time()
         decision = self.verdict(importance, clean, now=now)
+        if decision == "hold" and not hold:
+            # Придержать нечего смысла: реплика привязана к моменту.
+            logger.debug("Не время и держать незачем, отбросил: %s", clean)
+            return "drop"
         if decision == "say":
             self._speak(clean, language, importance, now)
         elif decision == "hold":

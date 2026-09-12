@@ -127,6 +127,61 @@ def test_reset_forgets_the_line() -> None:
     assert _type(triggers, "рубля") == []
 
 
+# --- реакции (ирония на набранное) ------------------------------------------
+
+
+def test_reaction_fires_on_a_substring() -> None:
+    """Реакция срабатывает на подстроку в наборе, а не на команду."""
+    react = keys.Reactions({"не работает": ("Как всегда.",)})
+    fired = [react.feed(ch, now=0.0) for ch in "опять не работает"]
+    assert "Как всегда." in fired
+
+
+def test_reactions_rotate_through_variants() -> None:
+    """Варианты выдаются по кругу, а не один и тот же — иначе попугай."""
+    react = keys.Reactions({"почему": ("А.", "Б.")}, cooldown_s=0.0)
+    first = react.feed_pattern("почему", now=0.0)
+    second = react.feed_pattern("почему", now=0.0)
+    third = react.feed_pattern("почему", now=0.0)
+    assert (first, second, third) == ("А.", "Б.", "А.")
+
+
+def test_reaction_is_muted_during_cooldown() -> None:
+    """Одна и та же реакция не строчит: после срабатывания пауза."""
+    react = keys.Reactions({"кофе": ("Одобряю.",)}, cooldown_s=60.0)
+    assert react.feed_pattern("кофе", now=1.0) == "Одобряю."
+    assert react.feed_pattern("кофе", now=2.0) is None
+    assert react.feed_pattern("кофе", now=100.0) == "Одобряю."
+
+
+def test_no_reaction_without_a_pattern() -> None:
+    """Обычный текст реакций не будит."""
+    react = keys.Reactions({"кофе": ("Одобряю.",)})
+    assert [c for c in (react.feed(ch, now=0.0) for ch in "просто текст") if c] == []
+
+
+# --- ввод текста в поле -----------------------------------------------------
+
+
+def test_unicode_events_are_down_then_up() -> None:
+    """Каждый символ — код-юнит, на него нажатие и отпускание."""
+    events = keys.unicode_events("Ab")
+    assert events == [(0x41, False), (0x41, True), (0x62, False), (0x62, True)]
+
+
+def test_unicode_events_carry_cyrillic() -> None:
+    """Кириллица уходит своим код-юнитом — раскладка не при чём."""
+    events = keys.unicode_events("я")
+    assert events == [(0x044F, False), (0x044F, True)]
+
+
+def test_emoji_becomes_a_surrogate_pair() -> None:
+    """Символ вне BMP — два код-юнита, иначе вставится половина."""
+    events = keys.unicode_events("\U0001F600")  # 😀
+    units = [unit for unit, is_up in events if not is_up]
+    assert units == [0xD83D, 0xDE00]
+
+
 # --- пропуск чужих окон -----------------------------------------------------
 
 

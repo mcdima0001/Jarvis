@@ -105,6 +105,20 @@ def test_second_announcement_waits_out_the_gap() -> None:
     assert talker.offer("второе", importance=LOW) == "hold"
 
 
+def test_hold_false_drops_instead_of_queuing() -> None:
+    """Реплика, уместная только сейчас, не откладывается на потом.
+
+    Ироничная реакция на набранное через двадцать минут прозвучит невпопад.
+    Поэтому `hold=False` превращает «придержать» в «забыть», и в очередь ничего
+    не попадает.
+    """
+    talker = Announcer(min_gap_s=60.0)
+
+    assert talker.offer("первое", importance=LOW) == "say"
+    assert talker.offer("шутка на потом", importance=LOW, hold=False) == "drop"
+    assert talker.held == ()
+
+
 def test_urgent_ignores_the_gap() -> None:
     """Срочное паузы не ждёт."""
     talker = Announcer(min_gap_s=60.0)
