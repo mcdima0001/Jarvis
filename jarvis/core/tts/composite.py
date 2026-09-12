@@ -16,7 +16,7 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from typing import AsyncIterator
+from typing import AsyncIterator, Sequence
 
 from jarvis.core.audio import AudioSink, StreamingAudioSink
 from jarvis.core.config import TTSConfig
@@ -33,6 +33,49 @@ logger = logging.getLogger(__name__)
 #: за вечер, и ждать таймаут облака на каждой значит превратить обрыв связи в
 #: «ассистент задумывается перед каждым словом».
 RETRY_AFTER_S = 60.0
+
+#: Сколько букв должно быть в реплике, чтобы верить её алфавиту больше, чем
+#: языку вопроса. Короткое («ОК», «Spotify») судить по алфавиту нельзя: язык
+#: разговора оно не меняет, а голос сменило бы на полслова.
+ENOUGH_LETTERS = 8
+
+#: Во сколько раз один алфавит должен перевешивать другой. Смешанные реплики
+#: («Открываю AyuGram») обязаны остаться на голосе разговора: латиницу внутри
+#: русской фразы читает `normalize_for_speech`, и делает это правильно.
+CLEAR_MAJORITY = 2
+
+
+def voice_language(text: str, hint: str | None, available: Sequence[str]) -> str | None:
+    """На каком языке читать эту реплику: по её алфавиту или по языку вопроса.
+
+    Обычно верен язык вопроса — на нём и отвечают. Но он определяется по
+    услышанному, а услышанное бывает мусором: в живом запуске 12.09.2026
+    команда пришла как «Сек-Seven», язык посчитался английским, и **русский
+    ответ прочитал английский голос** — транслитерацией, «Ne mogu nayti
+    informatsiyu». Разобрать это на слух нельзя.
+
+    Поэтому правило простое: **голос обязан подходить тексту, который
+    произносит**. Когда реплика длинная и целиком написана другим алфавитом,
+    чем ожидалось, — верим ей, а не догадке о языке вопроса.
+
+    :param available: языки, для которых голос настроен; для остальных
+        переключаться некуда, и настаивать бессмысленно.
+    :return: язык для синтеза либо ``None`` — «оставить как есть».
+    """
+    cyrillic = sum(1 for char in text if "а" <= char.lower() <= "я" or char.lower() == "ё")
+    latin = sum(1 for char in text if "a" <= char.lower() <= "z")
+    if cyrillic + latin < ENOUGH_LETTERS:
+        return hint
+    if cyrillic >= latin * CLEAR_MAJORITY:
+        found = "ru"
+    elif latin >= cyrillic * CLEAR_MAJORITY:
+        found = "en"
+    else:
+        return hint
+    if found == hint or found not in available:
+        return hint
+    logger.debug("Реплика написана на %s, а язык вопроса %s — читаю на %s", found, hint, found)
+    return found
 
 
 class CompositeTTS:
@@ -104,6 +147,10 @@ class CompositeTTS:
         code, spec = self._config.voice_for(language)
         engine, voice = parse_voice(spec, default_engine=self._config.engine)
         return code, engine, voice
+
+    def _spoken_language(self, text: str, hint: str | None) -> str | None:
+        """Язык, на котором читать эту реплику. См. `voice_language`."""
+        return voice_language(text, hint, tuple(self._config.voices))
 
     def _backend(self, engine: str) -> SpeechBackend:
         """Взять движок из кеша или создать."""
@@ -230,7 +277,7 @@ class CompositeTTS:
         if not text.strip():
             return Speech(audio=b"", sample_rate=self._config.sample_rate, text=text)
 
-        code, engine, voice = self.resolve(language)
+        code, engine, voice = self.resolve(self._spoken_language(text, language))
         spare = self._spare(engine, voice)
         if spare is not None and time.monotonic() < self._blocked_until:
             # Основной голос недавно отказал — не ждём его таймаут на каждой
@@ -347,7 +394,7 @@ class CompositeTTS:
         """
         if not text.strip():
             return False
-        code, engine, voice = self.resolve(language)
+        code, engine, voice = self.resolve(self._spoken_language(text, language))
         # Основной голос недавно отказал: запасной — местный, потока у него нет,
         # и решать это одному месту (`synthesize`), а не двум.
         if self._spare(engine, voice) is not None and time.monotonic() < self._blocked_until:

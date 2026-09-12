@@ -56,6 +56,7 @@ def _pipeline(
     tts: NullTTS | None = None,
     wake_word: object | None = None,
     modes: object | None = None,
+    conversation: object | None = None,
     **wake: object,
 ) -> VoicePipeline:
     """Собрать конвейер с заглушками вместо звука."""
@@ -89,6 +90,7 @@ def _pipeline(
         config=config,
         persona=persona,
         modes=modes,  # type: ignore[arg-type]
+        conversation=conversation,  # type: ignore[arg-type]
     )
 
 
@@ -1483,3 +1485,81 @@ def test_without_an_acoustic_model_nothing_is_gated(
     pipeline._follow_up_until = 0.0
 
     assert pipeline._worth_recognising(time.time())
+
+
+# --- разговор запоминается ---------------------------------------------------
+
+
+async def test_pipeline_remembers_both_sides(registry, events) -> None:
+    """Конвейер запоминает и просьбу, и свой ответ на неё.
+
+    Запоминает именно он, потому что это единственное место, куда сходятся оба
+    входа: сказанное голосом и напечатанное с клавиатуры — один разговор.
+    """
+    from jarvis.core.contracts import ToolResult, Utterance
+    from jarvis.core.dialogue import Conversation
+    from jarvis.core.tools import collect_tools, tool
+
+    class Lights:
+        @tool(phrases=["включи свет"])
+        async def on(self) -> ToolResult:
+            """Включить свет."""
+            return ToolResult.success(True, speech="Включаю свет.")
+
+    for item in collect_tools(Lights(), namespace="lights"):
+        registry.register(item)
+
+    talk = Conversation()
+    pipeline = _pipeline(registry, events, conversation=talk)
+    await pipeline.handle(Utterance(text="джарвис включи свет", language="ru"))
+
+    assert [(turn.role, turn.text) for turn in talk.turns()] == [
+        ("user", "включи свет"),
+        ("assistant", "Включаю свет."),
+    ], "обращение по имени в разговор попадать не должно"
+
+
+async def test_question_to_the_owner_is_remembered(registry, events) -> None:
+    """Заданный ассистентом вопрос обязан остаться в разговоре.
+
+    Ради этого случая всё и делалось: в живом запуске 12.09.2026 ассистент
+    спросил «а что написать Роме?», а следующую реплику разобрал как новую
+    команду ниоткуда, потому что про свой вопрос уже не помнил.
+    """
+    from jarvis.core.contracts import ToolResult, Utterance
+    from jarvis.core.dialogue import Conversation
+    from jarvis.core.tools import collect_tools, tool
+
+    class Messenger:
+        @tool(phrases=["напиши роме"])
+        async def send(self) -> ToolResult:
+            """Написать сообщение."""
+            return ToolResult.failure("нет текста", speech="А что написать Роме?")
+
+    for item in collect_tools(Messenger(), namespace="chat"):
+        registry.register(item)
+
+    talk = Conversation()
+    pipeline = _pipeline(registry, events, conversation=talk)
+    await pipeline.handle(Utterance(text="напиши роме", language="ru"))
+
+    assert talk.last_reply() == "А что написать Роме?"
+    assert "А что написать Роме?" in talk.describe("ru")
+
+
+async def test_unsolicited_speech_stays_out_of_the_talk(registry, events) -> None:
+    """Реакции и напоминания в разговор не пишутся.
+
+    Ироничных реплик за вечер десятки, и они вытеснили бы из короткой памяти
+    то единственное, ради чего она заведена.
+    """
+    from jarvis.core.contracts import AnnouncementRequested
+    from jarvis.core.dialogue import Conversation
+
+    talk = Conversation()
+    pipeline = _pipeline(registry, events, conversation=talk)
+    await pipeline._announce(
+        AnnouncementRequested(source="keys", text="Как всегда, сэр.", language="ru")
+    )
+
+    assert talk.turns() == ()

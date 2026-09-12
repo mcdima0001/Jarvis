@@ -49,6 +49,7 @@ from jarvis.core.contracts import (
     WakeWordDetected,
     detect_language,
 )
+from jarvis.core.dialogue import Conversation
 from jarvis.core.meter import Meter
 from jarvis.core.pending import TTL as PENDING_TTL
 from jarvis.core.persona import DONE, FAILED, LISTENING, WORKING, Persona
@@ -99,6 +100,7 @@ class VoicePipeline:
         modes: Modes | None = None,
         announcer: "Announcer | None" = None,
         meter: "Meter | None" = None,
+        conversation: "Conversation | None" = None,
     ) -> None:
         self._source = source
         self._sink = sink
@@ -122,6 +124,13 @@ class VoicePipeline:
         self._announcer = announcer if announcer is not None else Announcer()
         #: Учёт процессорного времени по звеньям. Выключенный не стоит ничего.
         self._meter = meter if meter is not None else Meter(enabled=False)
+        #: Недавний разговор. Конвейер — единственное место, куда сходятся оба
+        #: входа (голос и клавиатура), поэтому запоминает реплики он: заводить
+        #: свою историю каждому входу значило бы, что ассистент помнит сказанное
+        #: голосом и не помнит напечатанное минуту назад.
+        self._conversation = (
+            conversation if conversation is not None else Conversation()
+        )
 
         # Вместе со звуком храним момент, когда он прозвучал: окно ответа
         # должно отсчитываться от речи, а не от того, когда до неё дошли руки.
@@ -284,6 +293,10 @@ class VoicePipeline:
                 confidence=utterance.confidence,
                 source=utterance.source,
             )
+        # Разговор запоминается **до** выполнения: пока команда идёт, ассистент
+        # уже должен знать, о чём речь, — иначе доклад фоновой задачи или
+        # сработавшее напоминание придут в разговор, где последней реплики нет.
+        self._conversation.said(utterance.text)
         result = await self._run(utterance)
         # Вариант выбирает персона, а не скилл: она помнит, что уже говорила, и
         # у каждой команды своя память — «пауза» не вытесняет «включаю».
@@ -292,6 +305,11 @@ class VoicePipeline:
             result.tool or "tool", options, utterance.language
         ) or self._describe(result, utterance.language)
         if reply:
+            # В разговор идёт только ответ на команду. Речь без вопроса —
+            # реакции на набранное, напоминания, приветствие — сюда не пишется:
+            # ироничных реплик за вечер десятки, и они вытеснили бы из короткой
+            # памяти то единственное, ради чего она заведена.
+            self._conversation.replied(reply)
             await self._say(reply, language=utterance.language)
 
         if result.confirm is not None:

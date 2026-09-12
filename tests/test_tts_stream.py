@@ -262,3 +262,50 @@ async def test_broken_stream_is_not_remembered(worker: BlockingWorker, tmp_path)
         await worker.stop()
 
     assert len(sink.streamed) == 2, "половина реплики осталась в кеше"
+
+
+# --- голос под текст, а не под догадку о языке -------------------------------
+
+
+def test_long_russian_reply_gets_the_russian_voice() -> None:
+    """Русский ответ обязан читаться русским голосом, что бы ни решили о вопросе.
+
+    Живой запуск 12.09.2026: команда пришла как «Сек-Seven», язык посчитался
+    английским, и русский ответ прочитал английский голос транслитерацией —
+    «Ne mogu nayti informatsiyu». На слух это не разобрать.
+    """
+    from jarvis.core.tts.composite import voice_language
+
+    reply = "Не могу найти информацию по запросу «Сек-Севен», сэр."
+    assert voice_language(reply, "en", ("ru", "en")) == "ru"
+
+
+def test_english_reply_keeps_the_english_voice() -> None:
+    """В обратную сторону работает так же: английскому тексту — английский голос."""
+    from jarvis.core.tts.composite import voice_language
+
+    assert voice_language("I couldn't find anything about that, sir.", "ru", ("ru", "en")) == "en"
+
+
+def test_short_reply_follows_the_conversation() -> None:
+    """Короткое по алфавиту не судят: «ОК» язык разговора не меняет."""
+    from jarvis.core.tts.composite import voice_language
+
+    assert voice_language("OK", "ru", ("ru", "en")) == "ru"
+    assert voice_language("Да.", "en", ("ru", "en")) == "en"
+
+
+def test_mixed_reply_stays_on_the_conversation_voice() -> None:
+    """Смешанное остаётся на голосе разговора: латиницу внутри читает нормализация."""
+    from jarvis.core.tts.composite import voice_language
+
+    assert voice_language("Открываю AyuGram", "ru", ("ru", "en")) == "ru"
+    assert voice_language("Playing Кино", "en", ("ru", "en")) == "en"
+
+
+def test_no_voice_for_that_language_means_no_switch() -> None:
+    """Переключаться некуда — не переключаемся: голос настроен не для всех языков."""
+    from jarvis.core.tts.composite import voice_language
+
+    reply = "Не могу найти информацию по запросу, сэр."
+    assert voice_language(reply, "en", ("en",)) == "en"

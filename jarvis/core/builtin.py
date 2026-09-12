@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jarvis.core.agent import Outcome, Planner
 from jarvis.core.contracts import Intent, ToolResult
+from jarvis.core.dialogue import Conversation
 from jarvis.core.jobs import Jobs, busy_line, shorten
 from jarvis.core.jobs import describe as describe_jobs
 from jarvis.core.llm import LLMService
@@ -171,6 +172,7 @@ class CoreTools:
         jobs: Jobs | None = None,
         shutdown: Callable[[], None] | None = None,
         meter: Meter | None = None,
+        conversation: Conversation | None = None,
     ) -> None:
         self._llm = llm
         #: Распознавание — только чтобы показать его расход. Облачное считает
@@ -197,6 +199,11 @@ class CoreTools:
         self._shutdown = shutdown
         #: Учёт нагрузки по звеньям — чтобы на «что греет» отвечать цифрами.
         self._meter = meter if meter is not None else Meter(enabled=False)
+        #: Недавний разговор. Тот же экземпляр, что у конвейера и обстановки:
+        #: разговор один, где бы реплика ни прозвучала.
+        self._conversation = (
+            conversation if conversation is not None else Conversation()
+        )
 
     @tool(name="chat", reversible=True)
     async def chat(self, text: str, language: str = "ru") -> ToolResult:
@@ -229,11 +236,17 @@ class CoreTools:
         system = f"{_DIALOG_SYSTEM[code]} {self._persona.style(code)}"
         # Обстановка вместо одной только даты: разговор тоже выигрывает от того,
         # что ассистент знает, в каком он режиме и что делал минуту назад.
+        # Недавние реплики — то, без чего разговор был не разговором, а цепочкой
+        # несвязанных вопросов: на «а подробнее?» ассистент переспрашивал, о чём
+        # речь, потому что своего же ответа минутной давности не помнил.
+        # Последняя реплика владельца сюда не идёт — это и есть `text`.
+        history = self._conversation.messages()[:-1]
         answer = await self._llm.ask(
             text,
             task="dialog",
             system=f"{system} {self._situation.describe(code)}",
             context=context or None,
+            history=history,
         )
         await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))
         return ToolResult.success(answer, speech=answer)

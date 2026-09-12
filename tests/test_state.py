@@ -452,7 +452,7 @@ async def test_dialog_prompt_carries_the_situation(registry, tmp_path) -> None:
     class Talker:
         available = True
 
-        async def ask(self, prompt, *, task=None, system=None, context=None):
+        async def ask(self, prompt, *, task=None, system=None, context=None, history=()):
             asked["system"] = system or ""
             return "Готово."
 
@@ -468,6 +468,49 @@ async def test_dialog_prompt_carries_the_situation(registry, tmp_path) -> None:
     await registry.invoke("core.chat", {"text": "что это за песня"})
 
     assert "Levitating" in asked["system"]
+
+
+async def test_dialog_sees_the_recent_talk(registry, tmp_path) -> None:
+    """Свободный разговор видит недавние реплики, иначе это не разговор.
+
+    До этого каждый вопрос уходил в модель с чистого листа: на «а подробнее?»
+    ассистент переспрашивал, о чём речь, потому что своего же ответа минутной
+    давности не помнил.
+    """
+    from jarvis.core.dialogue import Conversation
+    from jarvis.core.tools import collect_tools
+
+    seen: dict[str, object] = {}
+
+    class Talker:
+        available = True
+
+        async def ask(self, prompt, *, task=None, system=None, context=None, history=()):
+            seen["history"] = [(m.role, m.content) for m in history]
+            seen["prompt"] = prompt
+            return "В Твери пятнадцать градусов."
+
+    talk = Conversation()
+    talk.said("какая погода в Твери")
+    talk.replied("Пятнадцать градусов.")
+    talk.said("а подробнее")
+
+    core = _core(
+        llm=Talker(),
+        memory=_memory(tmp_path),
+        registry=registry,
+        conversation=talk,
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    await registry.invoke("core.chat", {"text": "а подробнее"})
+
+    assert seen["history"] == [
+        ("user", "какая погода в Твери"),
+        ("assistant", "Пятнадцать градусов."),
+    ], "история либо не дошла, либо продублировала текущий вопрос"
+    assert seen["prompt"] == "а подробнее"
 
 
 # --- обстановка доходит до модели -------------------------------------------

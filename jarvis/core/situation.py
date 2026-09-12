@@ -25,8 +25,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from .state import Modes
+
+if TYPE_CHECKING:  # pragma: no cover — только для подсказок типов
+    from .dialogue import Conversation
 
 #: Сколько фактов держать. Больше пяти — это уже не «ситуация», а отчёт.
 MAX_NOTES = 5
@@ -93,10 +97,20 @@ class Situation:
     и правда не портятся.
     """
 
-    def __init__(self, *, modes: Modes | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        modes: Modes | None = None,
+        conversation: "Conversation | None" = None,
+    ) -> None:
         self._modes = modes or Modes()
         self._notes: dict[str, Note] = {}
         self._last: LastCommand | None = None
+        #: Недавний разговор. Отсюда в подсказку идёт ровно одна строка — что
+        #: ассистент сказал последним; зачем именно одна, объяснено в
+        #: `Conversation.describe`. Своего разговора тут не заводится: он один
+        #: на систему, как режимы.
+        self._conversation = conversation
 
     @property
     def modes(self) -> Modes:
@@ -171,5 +185,13 @@ class Situation:
             label = "Прошлая команда" if code == "ru" else "Previous command"
             tool = f" → {self._last.tool}" if self._last.tool else ""
             parts.append(f"{label}: «{self._last.text}»{tool}, {done}.")
+
+        # Последним — то, что ассистент сказал сам. Без этой строки ответ на его
+        # же вопрос («а что написать Роме?») разбирался как новая команда
+        # ниоткуда: в живом запуске 12.09.2026 он ушёл в свободный разговор.
+        if self._conversation is not None:
+            tail = self._conversation.describe(code)
+            if tail:
+                parts.append(tail + ".")
 
         return " ".join(parts)

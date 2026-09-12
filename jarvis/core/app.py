@@ -27,6 +27,7 @@ from jarvis.core.contracts import (
     Utterance,
     detect_language,
 )
+from jarvis.core.dialogue import Conversation
 from jarvis.core.jobs import Jobs
 from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
@@ -130,7 +131,13 @@ class JarvisApp:
         # (чтение и пополнение). Один объект на систему — иначе получилось бы
         # несколько состояний с одним смыслом.
         modes = Modes()
-        situation = Situation(modes=modes)
+        #: Недавние реплики. Сюда же относится: один разговор на систему, а не
+        #: по одному на каждый вход. Выключается `router.dialogue` — тогда
+        #: экземпляр всё равно есть, но пустой и никого не удорожает.
+        conversation = Conversation(
+            turns=config.router.dialogue_turns, enabled=config.router.dialogue
+        )
+        situation = Situation(modes=modes, conversation=conversation)
 
         providers = {
             name: build_provider(provider_config)
@@ -254,6 +261,7 @@ class JarvisApp:
             jobs=jobs,
             shutdown=stopping.set,
             meter=meter,
+            conversation=conversation,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
@@ -272,6 +280,7 @@ class JarvisApp:
             modes=modes,
             announcer=announcer,
             meter=meter,
+            conversation=conversation,
         )
 
         runner = ServiceRunner()

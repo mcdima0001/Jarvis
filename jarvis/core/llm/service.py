@@ -252,11 +252,16 @@ class LLMService:
         task: str | None = None,
         system: str | None = None,
         context: str | None = None,
+        history: Sequence[Message] = (),
     ) -> str:
         """Задать одиночный вопрос и получить текстовый ответ.
 
         :param context: заранее собранный фрагмент памяти; полную память
             передавать нельзя — только нужные разделы (см. `ContextBuilder`).
+        :param history: недавние реплики разговора. Идут **перед** вопросом и
+            своими ролями: роли модель понимает сама, и пересказывать «владелец
+            сказал, ты ответил» значило бы платить токенами за то, что формат
+            выражает бесплатно.
         """
         messages: list[Message] = []
         brief = self._brief_line(prompt)
@@ -264,6 +269,7 @@ class LLMService:
             messages.append(Message.system(" ".join(part for part in (system, brief) if part)))
         if context:
             messages.append(Message.system(f"Контекст:\n{context}"))
+        messages.extend(history)
         messages.append(Message.user(prompt))
         response = await self.complete(
             messages, task=task, max_tokens=BRIEF_TOKENS if brief else None

@@ -325,6 +325,8 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             learn_commands=bool(router.get("learn_commands", True)),
             learned_section=str(router.get("learned_section", "commands")),
             situation=bool(router.get("situation", True)),
+            dialogue=bool(router.get("dialogue", True)),
+            dialogue_turns=int(router.get("dialogue_turns", 6)),
             verbatim=tuple(
                 VerbatimRule(
                     words=frozenset(
