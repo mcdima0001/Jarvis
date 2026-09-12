@@ -74,12 +74,30 @@ class SkillsConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class VerbatimRule:
+    """Слова-приставки, после которых остаток реплики — дословный аргумент.
+
+    Диктовка отличается от команды тем, что её аргумент — свободная речь: там
+    запятые, точки и слова, похожие на другие команды. Разбирать её шаблонами
+    или моделью нельзя — они режут и теряют хвост. Поэтому: услышал приставку
+    («впиши») — всё, что после неё, уходит в инструмент **как есть**.
+    """
+
+    words: frozenset[str]
+    tool: str
+    arg: str = "text"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RouterConfig:
     """Цепочка резолверов и порог уверенности."""
 
     confidence_threshold: float = 0.6
     resolvers: tuple[str, ...] = ("phrase", "alias", "learned", "llm", "fallback")
     aliases: Mapping[str, str] = field(default_factory=dict)
+    #: Приставки дословного захвата: «впиши …» → весь хвост в инструмент как
+    #: есть, мимо шаблонов и модели. См. `VerbatimRule`.
+    verbatim: tuple[VerbatimRule, ...] = ()
     #: Запоминать формулировки, которые модель разобрала удачно. Со второго
     #: раза такая фраза обходится без модели, то есть бесплатно.
     learn_commands: bool = True

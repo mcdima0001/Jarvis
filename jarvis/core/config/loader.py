@@ -34,6 +34,7 @@ from .schema import (
     TaskProfile,
     TTSConfig,
     VADConfig,
+    VerbatimRule,
     WakeWordConfig,
 )
 
@@ -259,6 +260,17 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             learn_commands=bool(router.get("learn_commands", True)),
             learned_section=str(router.get("learned_section", "commands")),
             situation=bool(router.get("situation", True)),
+            verbatim=tuple(
+                VerbatimRule(
+                    words=frozenset(
+                        str(w).lower() for w in (rule.get("words") or ())
+                    ),
+                    tool=str(rule.get("tool", "")),
+                    arg=str(rule.get("arg", "text")),
+                )
+                for rule in (router.get("verbatim") or ())
+                if rule.get("tool") and rule.get("words")
+            ),
         ),
         attention=AttentionConfig(
             enabled=bool(attention.get("enabled", True)),

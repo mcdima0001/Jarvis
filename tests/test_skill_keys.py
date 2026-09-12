@@ -133,31 +133,55 @@ def test_reset_forgets_the_line() -> None:
 def test_reaction_fires_on_a_substring() -> None:
     """Реакция срабатывает на подстроку в наборе, а не на команду."""
     react = keys.Reactions({"не работает": ("Как всегда.",)})
-    fired = [react.feed(ch, now=0.0) for ch in "опять не работает"]
-    assert "Как всегда." in fired
+    quips = [r.quip for r in (react.feed(ch, now=0.0) for ch in "опять не работает") if r]
+    assert "Как всегда." in quips
+
+
+def test_reaction_carries_keyword_and_context() -> None:
+    """Реакция несёт совпавшее слово и недавний набор — для модели."""
+    react = keys.Reactions({"кофе": ("Одобряю.",)})
+    result = react.feed_pattern("хочу кофе", now=0.0)
+    assert result is not None
+    assert result.keyword == "кофе"
+    assert "хочу кофе" in result.context
 
 
 def test_reactions_rotate_through_variants() -> None:
     """Варианты выдаются по кругу, а не один и тот же — иначе попугай."""
     react = keys.Reactions({"почему": ("А.", "Б.")}, cooldown_s=0.0)
-    first = react.feed_pattern("почему", now=0.0)
-    second = react.feed_pattern("почему", now=0.0)
-    third = react.feed_pattern("почему", now=0.0)
-    assert (first, second, third) == ("А.", "Б.", "А.")
+    quips = [react.feed_pattern("почему", now=0.0).quip for _ in range(3)]  # type: ignore[union-attr]
+    assert quips == ["А.", "Б.", "А."]
 
 
 def test_reaction_is_muted_during_cooldown() -> None:
     """Одна и та же реакция не строчит: после срабатывания пауза."""
     react = keys.Reactions({"кофе": ("Одобряю.",)}, cooldown_s=60.0)
-    assert react.feed_pattern("кофе", now=1.0) == "Одобряю."
+    assert react.feed_pattern("кофе", now=1.0).quip == "Одобряю."  # type: ignore[union-attr]
     assert react.feed_pattern("кофе", now=2.0) is None
-    assert react.feed_pattern("кофе", now=100.0) == "Одобряю."
+    assert react.feed_pattern("кофе", now=100.0).quip == "Одобряю."  # type: ignore[union-attr]
 
 
 def test_no_reaction_without_a_pattern() -> None:
     """Обычный текст реакций не будит."""
     react = keys.Reactions({"кофе": ("Одобряю.",)})
     assert [c for c in (react.feed(ch, now=0.0) for ch in "просто текст") if c] == []
+
+
+# --- «дословно»: не переписывать --------------------------------------------
+
+
+def test_verbatim_marker_is_stripped() -> None:
+    """«Дословно …» просит не причёсывать и убирается из текста."""
+    literal, body = keys.strip_verbatim_marker("дословно привет мир")
+    assert literal
+    assert body == "привет мир"
+
+
+def test_no_marker_means_rewrite() -> None:
+    """Без метки текст пойдёт на переписывание, метку не выдумываем."""
+    literal, body = keys.strip_verbatim_marker("что работает")
+    assert not literal
+    assert body == "что работает"
 
 
 # --- ввод текста в поле -----------------------------------------------------
@@ -206,19 +230,22 @@ def test_shipped_config_ships_the_keys_section() -> None:
     """Без секции keys наблюдатель молча остаётся с пустыми настройками.
 
     Проверяется рабочий конфиг: забыть блок при переносе — самый вероятный
-    способ незаметно потерять фичу.
+    способ незаметно потерять фичу. Значение `enabled` тут не проверяем — оно
+    принадлежит владельцу, он его и переключает.
     """
     from jarvis.core.config import load_config
 
     config = load_config(_ROOT / "config" / "config.yaml")
     section = config.skills.settings.get("keys", {})
     assert "triggers" in section
-    assert section.get("enabled") is False
+    assert "reactions" in section
+    assert "enabled" in section
 
 
-def test_default_off() -> None:
-    """По умолчанию — выключено: кейлоггер не должен включаться сам собой."""
-    from jarvis.core.config import load_config
+def test_code_default_is_off() -> None:
+    """Гарантия приватности — в коде, а не в конфиге: без настройки — выключено.
 
-    config = load_config(_ROOT / "config" / "config.yaml")
-    assert config.skills.settings["keys"]["enabled"] is False
+    Владелец может включить кейлоггер в своём конфиге, но пустой конфиг (перенос,
+    свежая машина) не должен поднимать его молча.
+    """
+    assert keys.DEFAULT_ENABLED is False

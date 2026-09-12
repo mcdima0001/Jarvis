@@ -48,13 +48,36 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from ctypes import wintypes
-from typing import Any
+from typing import Any, NamedTuple
 
 from jarvis.core.attention import LOW
 from jarvis.core.contracts import CommandTyped, ToolResult
+from jarvis.core.errors import LLMError
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.state import DEAF
 from jarvis.core.tools import tool
+
+#: Ошибки модели, при которых текст впечатывается дословно, а не теряется.
+LLMErrors = (LLMError, TimeoutError, OSError)
+
+#: Как причёсывать продиктованное. Модель переписывает, а не отвечает: слышит
+#: она рваную устную речь, а вернуть должна аккуратное сообщение и ничего сверх.
+_POLISH = (
+    "Ты — редактор. Тебе дают надиктованный вслух текст: рваный, с оговорками, "
+    "без знаков препинания. Перепиши его в аккуратное, грамотное сообщение на "
+    "том же языке. Сохрани смысл и все факты, не добавляй ничего от себя, не "
+    "отвечай на текст и не комментируй. Верни ТОЛЬКО переписанный текст, без "
+    "кавычек и пояснений."
+)
+
+#: Запрос модели на живую реакцию (когда включён `react_llm`). Просим одну
+#: короткую ироничную реплику в характере Джарвиса, а не ответ по существу.
+_REACT_PROMPT = (
+    "Пользователь печатает за компьютером. Вот последнее, что он набрал: "
+    "«{context}». Оброни ОДНУ короткую ироничную реплику в стиле Джарвиса из "
+    "«Железного человека»: сдержанно, с достоинством, можно «сэр». Только "
+    "реплику, без пояснений и кавычек."
+)
 
 #: Сколько последних символов держать в буфере, если в конфиге не сказано иное.
 #: Больше самой длинной фразы с запасом — и не больше: буфер не архив набранного,
@@ -65,6 +88,10 @@ DEFAULT_WINDOW = 64
 #: Без паузы удержанная клавиша или повтор фразы выстрелили бы очередью.
 DEFAULT_COOLDOWN = 4.0
 
+#: Слежение выключено, пока владелец явно не включит. Гарантия в коде, а не в
+#: конфиге: пустой конфиг на свежей машине не должен поднять кейлоггер молча.
+DEFAULT_ENABLED = False
+
 #: Триггеры по умолчанию: фраза → команда, которую отдать роутеру. Команда — то
 #: же, что сказал бы вслух: она пойдёт через ту же цепочку резолверов.
 DEFAULT_TRIGGERS: dict[str, str] = {
@@ -74,19 +101,46 @@ DEFAULT_TRIGGERS: dict[str, str] = {
     "какая погода": "какая погода",
 }
 
+class Reaction(NamedTuple):
+    """Что сработало на наборе: слово, готовая реплика и недавний контекст."""
+
+    keyword: str
+    quip: str
+    context: str
+
+
 #: Реакции по умолчанию: подстрока в наборе → ироничные реплики, из которых
 #: выбирается по очереди. Это не команды: их ассистент говорит сам, поэтому они
 #: идут через политику речи без вопроса (пауза между репликами, тихие часы) —
-#: она и не даёт ему острить каждые несколько секунд. Список нарочно короткий и
-#: правится в конфиге: живость — вкусовщина, и перебор надоедает быстрее всего.
+#: она и не даёт ему острить каждые несколько секунд. Список большой намеренно:
+#: с пятью словами живость быстро приедается. Правится в конфиге под свой стиль.
 DEFAULT_REACTIONS: dict[str, tuple[str, ...]] = {
     "не работает": ("Как всегда, сэр.", "Ожидаемо.", "Опять оно."),
+    "не запускается": ("Классика жанра, сэр.", "Ну разумеется."),
     "почему": ("Хороший вопрос, сэр.", "Вот и я думаю."),
     "дедлайн": ("Звучит напряжённо.", "Оптимистично, сэр."),
     "устал": ("Держитесь, сэр.", "Может, перерыв?"),
     "кофе": ("Отличная идея, сэр.", "Одобряю."),
     "гений": ("Скромность украшает, сэр.",),
-    "не понимаю": ("Присоединяюсь, сэр.",),
+    "не понимаю": ("Присоединяюсь, сэр.", "Мы оба, сэр."),
+    "баг": ("Это не баг, сэр.", "Фича, я полагаю."),
+    "ошибка": ("Бывает у лучших, сэр.", "Экспериментально."),
+    "получилось": ("Поздравляю, сэр.", "Не сомневался."),
+    "готово": ("Впечатляет, сэр.",),
+    "наконец": ("Терпение вознаграждается, сэр.",),
+    "сдаюсь": ("Рано, сэр.", "Ещё один заход?"),
+    "переделать": ("С удовольствием, сэр.", "Ну конечно."),
+    "лень": ("Понимаю, сэр.", "Кто бы говорил."),
+    "гениально": ("Не буду спорить, сэр.",),
+    "не помню": ("Для этого есть я, сэр.",),
+    "срочно": ("Как обычно, сэр.",),
+    "завтра": ("Знакомое слово, сэр.",),
+    "потом": ("То есть никогда, сэр?",),
+    "зависло": ("Терпение, сэр.", "Дайте ему минуту."),
+    "паника": ("Спокойствие, сэр.", "Только спокойствие."),
+    "идеально": ("Как и всё у вас, сэр.",),
+    "ненавижу": ("Сильно сказано, сэр.",),
+    "работает": ("Не трогайте, сэр.", "Вот и славно."),
 }
 
 #: Окна, в которых не следим вовсе: их заголовки выдают ввод, который не должен
@@ -251,11 +305,13 @@ class Reactions:
         """Стереть последний символ."""
         self._buffer = self._buffer[:-1]
 
-    def feed(self, char: str, *, now: float | None = None) -> str | None:
-        """Добавить символ и, если сложилась подстрока, вернуть реплику.
+    def feed(self, char: str, *, now: float | None = None) -> "Reaction | None":
+        """Добавить символ и, если сложилась подстрока, вернуть реакцию.
 
-        Буфер, в отличие от триггеров, **не чистится** после срабатывания:
-        подстрока живёт внутри слов и фраз, и стирать контекст незачем — от
+        Возвращается не только реплика, но и совпавшее слово и недавний набор:
+        для готовой реплики хватит первого, а модель, если её включили, сочинит
+        по контексту. Буфер, в отличие от триггеров, **не чистится** после
+        срабатывания: подстрока живёт внутри слов, стирать контекст незачем — от
         повтора защищает пауза.
         """
         if not char:
@@ -272,20 +328,44 @@ class Reactions:
             quips = self._quips[pattern]
             index = self._turn.get(pattern, -1) + 1
             self._turn[pattern] = index
-            return quips[index % len(quips)]
+            return Reaction(
+                keyword=pattern, quip=quips[index % len(quips)], context=self._buffer
+            )
         return None
 
-    def feed_pattern(self, text: str, *, now: float | None = None) -> str | None:
+    def feed_pattern(self, text: str, *, now: float | None = None) -> "Reaction | None":
         """Подать подстроку целиком — ярлык поверх `feed` для тестов и удобства.
 
-        :return: реплику, если по ходу набора сложилась подстрока; иначе ``None``.
+        :return: реакцию, если по ходу набора сложилась подстрока; иначе ``None``.
         """
-        result: str | None = None
+        result: "Reaction | None" = None
         for char in text:
             got = self.feed(char, now=now)
             if got is not None:
                 result = got
         return result
+
+
+#: Слова, которыми диктующий просит вписать буквально, без переписывания.
+_VERBATIM_MARKERS = ("дословно", "буквально", "как есть", "verbatim")
+
+
+def strip_verbatim_marker(text: str) -> tuple[bool, str]:
+    """Отделить пометку «дословно» в начале продиктованного.
+
+    «Впиши дословно …» — просьба не причёсывать, а набрать как сказано. Метку
+    убираем, остальное возвращаем как есть.
+
+    :return: пара «просили дословно» и текст без метки.
+    """
+    stripped = text.lstrip(" ,.")
+    low = stripped.lower()
+    for marker in _VERBATIM_MARKERS:
+        if low.startswith(marker):
+            rest = stripped[len(marker) :].lstrip(" ,.:—-")
+            if rest:
+                return True, rest
+    return False, text
 
 
 def unicode_events(text: str) -> list[tuple[int, bool]]:
@@ -469,7 +549,7 @@ class KeyboardWatcher:
         on_command: Callable[[str], None],
         to_loop: Callable[[Callable[[], None]], None],
         reactions: Reactions | None = None,
-        on_react: Callable[[str], None] | None = None,
+        on_react: Callable[[Reaction], None] | None = None,
         skip: tuple[str, ...] = DEFAULT_SKIP,
     ) -> None:
         self._triggers = triggers
@@ -601,9 +681,9 @@ class KeyboardWatcher:
                 self._reactions.reset()
             return
         if self._reactions is not None and self._on_react is not None:
-            quip = self._reactions.feed(char)
-            if quip is not None:
-                self._to_loop(lambda: self._on_react(quip))
+            reaction = self._reactions.feed(char)
+            if reaction is not None:
+                self._to_loop(lambda: self._on_react(reaction))
 
     def _translate(self, vk: int) -> str:
         """Перевести виртуальную клавишу в символ с учётом раскладки и Shift."""
@@ -663,9 +743,14 @@ class KeysSkill(Skill):
         window = int(self.context.setting("window", DEFAULT_WINDOW))
         cooldown = float(self.context.setting("cooldown_seconds", DEFAULT_COOLDOWN))
         skip = tuple(self.context.setting("skip_windows", list(DEFAULT_SKIP)))
-        self._enabled = bool(self.context.setting("enabled", False))
+        self._enabled = bool(self.context.setting("enabled", DEFAULT_ENABLED))
         react = bool(self.context.setting("react", True))
         quips = self.context.setting("reactions", DEFAULT_REACTIONS) or {}
+        #: Переписывать ли продиктованное моделью (иначе — буквально).
+        self._rewrite = bool(self.context.setting("rewrite", True))
+        #: Сочинять ли реакции моделью. Дороже и отправляет недавний набор в
+        #: облако при срабатывании ключа, поэтому по умолчанию выключено.
+        self._react_llm = bool(self.context.setting("react_llm", False))
 
         self._triggers = Triggers(mapping, window=window, cooldown_s=cooldown)
         self._reactions = Reactions(quips, window=window) if react and quips else None
@@ -716,17 +801,37 @@ class KeysSkill(Skill):
         self.log.info("Сработал триггер: %r", command)
         self.events.emit(CommandTyped(source="keyboard", text=command))
 
-    def _react(self, quip: str) -> None:
+    def _react(self, reaction: Reaction) -> None:
         """Ироничная реплика на набранное — через политику речи без вопроса.
 
         Это не команда: ассистента об этом не просили. Поэтому реплика идёт в
         `Announcer` важностью `LOW` и с `hold=False` — уместна только сейчас,
         держать её на потом смысла нет. Пауза между репликами и тихие часы —
         забота политики; здесь мы лишь предлагаем.
+
+        Готовая реплика — местная. Если включён `react_llm`, вместо неё модель
+        сочиняет реплику по недавнему контексту: живее, но дороже и отправляет
+        набранное в облако — потому по умолчанию выключено и только по ключу.
         """
         if self.modes.active(DEAF):
             return
-        self.context.announcer.offer(quip, importance=LOW, hold=False)
+        if self._react_llm and self.context.llm.available:
+            self.context.scope.spawn(
+                self._react_with_llm(reaction), name="keys-react"
+            )
+            return
+        self.context.announcer.offer(reaction.quip, importance=LOW, hold=False)
+
+    async def _react_with_llm(self, reaction: Reaction) -> None:
+        """Сочинить реплику моделью по контексту. Сбой — готовая реплика."""
+        prompt = _REACT_PROMPT.format(context=reaction.context.strip())
+        try:
+            line = await self.context.llm.ask(prompt, task="dialog")
+        except LLMErrors as error:
+            self.log.debug("Модель реакцию не дала (%s) — беру готовую", error)
+            line = reaction.quip
+        line = line.strip().strip("«»\"'").strip() or reaction.quip
+        self.context.announcer.offer(line, importance=LOW, hold=False)
 
     # --- голосовые переключатели ------------------------------------------
 
@@ -775,25 +880,21 @@ class KeysSkill(Skill):
 
     # --- ввод текста голосом ----------------------------------------------
 
-    @tool(
-        phrases=[
-            "впиши {text}",
-            "впиши в поле {text}",
-            "набери {text}",
-            "напечатай {text}",
-            "введи {text}",
-            "type {text}",
-        ],
-        reversible=False,
-    )
+    @tool(routable=False, reversible=False)
     async def type_text(self, text: str = "") -> ToolResult:
-        """Впечатать текст в активное поле — голосовой ввод в то, что в фокусе.
+        """Впечатать продиктованное в активное поле — голосовой ввод в фокус.
 
-        Enter не жмём: вписать — наше дело, отправлять решает человек. Глаголы
-        «напиши» тут нет намеренно — им уже владеет Telegram, и «напиши маме»
-        должно идти в сообщение, а не в поле под курсором.
+        Инструмент **не в каталоге модели**: его зовёт резолвер `verbatim` по
+        приставке («впиши …»), отдавая весь хвост реплики дословно. Так диктовку
+        не режут шаблоны и не усекает разбор — а это и было бедой первой версии.
 
-        :param text: что впечатать.
+        По умолчанию текст не набивается буквально, а **переписывается моделью**
+        в аккуратное сообщение: продиктованное вслух звучит рвано, с оговорками
+        и «э-э», и владелец ждёт, что ассистент причешет. Escape для буквального
+        ввода — начать с «дословно»: «впиши дословно …». Enter не жмём в любом
+        случае: вписать — наше дело, отправлять решает человек.
+
+        :param text: что впечатать; весь хвост реплики после приставки.
         """
         body = text.strip()
         if not body:
@@ -807,6 +908,11 @@ class KeysSkill(Skill):
                 speech={"ru": "Вписывать текст я умею только на Windows.",
                         "en": "I can only type text on Windows."},
             )
+
+        literal, body = strip_verbatim_marker(body)
+        if self._rewrite and not literal and self.context.llm.available:
+            body = await self._polish(body)
+
         try:
             sent = await asyncio.to_thread(type_text_os, body)
         except OSError as error:
@@ -821,6 +927,22 @@ class KeysSkill(Skill):
             speech={"ru": ("Готово, сэр.", "Вписал.", "Готово."),
                     "en": ("Done, sir.", "Typed it.")},
         )
+
+    async def _polish(self, body: str) -> str:
+        """Переписать продиктованное в аккуратный текст. Сбой — вернуть как есть.
+
+        Печатать нечего, если модель промолчала или упала, поэтому любой сбой —
+        это буквальный ввод, а не пустое поле: продиктованное дороже красоты.
+        """
+        try:
+            polished = await self.context.llm.ask(body, task="dialog", system=_POLISH)
+        except LLMErrors as error:
+            self.log.warning("Причесать текст не вышло, впишу дословно: %s", error)
+            return body
+        clean = polished.strip().strip("«»\"'").strip()
+        if clean and clean != body:
+            self.log.info("Причесал: %r -> %r", body, clean)
+        return clean or body
 
     async def health(self) -> HealthStatus:
         """Здоровье: на своей платформе и включённый — должен и следить."""

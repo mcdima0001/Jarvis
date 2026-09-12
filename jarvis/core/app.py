@@ -42,6 +42,7 @@ from jarvis.core.router import (
     PhraseResolver,
     Resolver,
     Router,
+    VerbatimResolver,
 )
 from jarvis.core.runtime import BlockingWorker
 from jarvis.core.situation import Situation
@@ -482,6 +483,11 @@ def _build_resolvers(
     factories: dict[str, Callable[[], Resolver | None]] = {
         "phrase": lambda: PhraseResolver(registry),
         "alias": lambda: AliasResolver(registry, config.router.aliases),
+        "verbatim": lambda: (
+            VerbatimResolver(config.router.verbatim)
+            if config.router.verbatim
+            else None
+        ),
         "learned": lambda: learner,
         "llm": lambda: LLMResolver(
             registry,

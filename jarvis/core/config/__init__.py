@@ -19,6 +19,7 @@ from .schema import (
     TaskProfile,
     TTSConfig,
     VADConfig,
+    VerbatimRule,
     WakeWordConfig,
 )
 
@@ -34,6 +35,7 @@ __all__ = [
     "PersonaConfig",
     "ProviderConfig",
     "RouterConfig",
+    "VerbatimRule",
     "RuntimeConfig",
     "STTConfig",
     "SkillsConfig",
