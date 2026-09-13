@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Mapping
 
 from jarvis.core.config import TaskProfile
@@ -46,14 +47,7 @@ class ProfileRegistry:
     def set_model(self, task: str, model: str) -> TaskProfile:
         """Сменить модель для задачи прямо во время работы."""
         current = self.get(task)
-        updated = TaskProfile(
-            task=current.task,
-            provider=current.provider,
-            model=model,
-            temperature=current.temperature,
-            max_tokens=current.max_tokens,
-            system=current.system,
-        )
+        updated = replace(current, model=model)
         self._profiles[task] = updated
         logger.info("Модель для задачи %s изменена: %s -> %s", task, current.model, model)
         return updated
@@ -61,14 +55,7 @@ class ProfileRegistry:
     def set_provider(self, task: str, provider: str) -> TaskProfile:
         """Перевести задачу на другого провайдера."""
         current = self.get(task)
-        updated = TaskProfile(
-            task=current.task,
-            provider=provider,
-            model=current.model,
-            temperature=current.temperature,
-            max_tokens=current.max_tokens,
-            system=current.system,
-        )
+        updated = replace(current, provider=provider)
         self._profiles[task] = updated
         logger.info("Провайдер для задачи %s изменён: %s -> %s", task, current.provider, provider)
         return updated

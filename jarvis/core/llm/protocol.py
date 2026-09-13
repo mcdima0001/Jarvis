@@ -72,12 +72,16 @@ class LLMRequest:
 
     messages: Sequence[Message]
     model: str
-    temperature: float = 0.7
+    #: ``None`` — не слать вовсе: часть моделей OpenAI температуру отвергает.
+    temperature: float | None = 0.7
     max_tokens: int = 1024
     #: Схемы инструментов для function-calling.
     tools: Sequence[Mapping[str, Any]] = ()
     #: ``auto`` | ``none`` | ``required``
     tool_choice: str = "auto"
+    #: Глубина рассуждения: ``none``, ``minimal``, ``low``… ``None`` — как решит
+    #: модель. Провайдер, у которого такого понятия нет, поле пропускает.
+    reasoning: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

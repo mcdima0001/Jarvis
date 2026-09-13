@@ -816,7 +816,7 @@ async def test_empty_account_is_named_out_loud(tmp_path: Path) -> None:
         log = _Silent()
 
         async def _ask_model(self, image: str, code: str, hint: str) -> str | None:
-            raise LLMOutOfCredits("На счету OpenRouter кончились деньги")
+            raise LLMOutOfCredits("На счету OpenAI кончились деньги", provider="OpenAI")
 
     skill = _Broke.__new__(_Broke)
 
@@ -825,7 +825,7 @@ async def test_empty_account_is_named_out_loud(tmp_path: Path) -> None:
     assert not answer.ok
     assert "деньги" in (answer.error or "")
     said = answer.speech_for("ru")
-    assert "OpenRouter" in said and "Пополни" in said
+    assert "OpenAI" in said and "Пополни" in said, "назван должен быть тот счёт, что пуст"
 
 
 async def test_other_failures_are_still_an_honest_shrug(tmp_path: Path) -> None:

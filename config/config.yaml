@@ -159,6 +159,13 @@ router:
 llm:
   default_task: dialog
   providers:
+    # Основной с 13.09.2026. OpenRouter оставлен рядом: смена провайдера — это
+    # строка `provider:` в профиле, а не переписывание кода.
+    openai:
+      type: openai
+      api_key: ${JARVIS_OPENAI_KEY:-}
+      base_url: https://api.openai.com/v1
+      timeout: 60.0
     openrouter:
       type: openrouter
       api_key: ${JARVIS_OPENROUTER_KEY:-}
@@ -167,80 +174,89 @@ llm:
       headers:                # OpenRouter просит их для статистики; необязательны
         HTTP-Referer: https://github.com/mcdima0001/Jarvis
         X-Title: Jarvis
-  # Разные модели под разные задачи. Меняются на лету: llm.set_model("code", "...")
-  # Точные идентификаторы смотри на https://openrouter.ai/models — они бывают
-  # неочевидны: у Anthropic это claude-haiku-4.5 через ТОЧКУ, а не через дефис.
+  # Разные модели под разные задачи. Меняются на лету: llm.set_model("intent", "...")
   #
-  # Расход считается сам и виден в логе после каждого запроса, целиком — по
-  # команде «сколько потрачено». Дороже всего обходится intent: он срабатывает
-  # на каждой фразе, которую не узнали фразы и синонимы, и тащит с собой каталог
-  # инструментов (около 1500 токенов, замерено). Поэтому здесь самая дешёвая
-  # экономить лучше всего, добавляя фразы в скиллы — до модели они не доходят.
+  # С 13.09.2026 всё на OpenAI. Раскладка выбрана замером на живом ключе, а не
+  # по названиям моделей (разбор — docs/lessons.md, «Переезд на OpenAI»):
   #
-  # Цены за миллион токенов на 28.07.2026, вход/выход:
-  #   qwen/qwen3.7-flash            0.03 / 0.13   — дёшево, поддерживает вызовы
-  #   google/gemini-2.5-flash-lite  0.10 / 0.40   — надёжнее на разборе команд
-  #   google/gemini-2.5-flash       0.30 / 2.50
-  #   anthropic/claude-haiku-4.5    1.00 / 5.00
-  #   anthropic/claude-sonnet-5     2.00 / 10.00  — было здесь раньше
+  #   разбор команд, 15 свободных фраз и полный каталог из 93 инструментов:
+  #     gpt-5.4-mini   13 из 15, медиана 0.97 с
+  #     gpt-5.4-nano   13 из 15, медиана 1.30 с
+  #     gpt-4.1-nano   12 из 15, медиана 0.75 с
+  #     gpt-5-nano      3 из 15 — с глубиной minimal чаще не выбирает ничего
+  #   зрение, лондонский снимок с двумя вывесками: gpt-5.4-mini прочёл обе за
+  #     2.2 с; gpt-5.4-nano и gpt-5-mini — только одну
+  #   разговор: gpt-5.4-mini 0.8–1.3 с, gpt-5.5 1.6–2.4 с
+  #   план из двух шагов: оба верно, gpt-5.4-mini 4.1 с, gpt-5.5 4.3 с
+  #
+  # **У моделей OpenAI разные правила параметров**, и это не мелочь:
+  #   reasoning  — глубина рассуждения. gpt-5.4 и новее: none; gpt-5, gpt-5-mini,
+  #                gpt-5-nano: не ниже minimal; gpt-4.1 такого не знает. Без
+  #                неё рассуждающая модель тратит потолок ответа на мысли и
+  #                возвращает пустоту — тест держит, чтобы её не забывали.
+  #   temperature — gpt-5 и gpt-5.5 принимают только своё значение: пиши null.
+  # Ошибёшься — провайдер сам поправит по отказу и напишет в лог, но потеряет на
+  # этом запрос при каждом запуске.
+  #
+  # Цену в долларах OpenAI в ответе не присылает, поэтому «сколько потрачено»
+  # показывает токены без суммы. Деньги видно в кабинете platform.openai.com.
   profiles:
     dialog:
-      provider: openrouter
-      model: google/gemini-2.5-flash
+      provider: openai
+      model: gpt-5.4-mini
+      reasoning: none
       temperature: 0.7
       # Ответ произносится вслух: длинный никто не дослушает, а выход стоит
-      # в разы дороже входа. 1024 токена тут были запасом впустую.
+      # в разы дороже входа.
       max_tokens: 300
     code:
-      provider: openrouter
-      model: anthropic/claude-sonnet-5
-      temperature: 0.2
+      provider: openai
+      model: gpt-5.5
+      reasoning: low
+      temperature: null
       max_tokens: 4096
     summarize:
-      provider: openrouter
-      model: google/gemini-2.5-flash-lite
+      provider: openai
+      model: gpt-5.4-nano
+      reasoning: none
       temperature: 0.3
       max_tokens: 300
-    intent:                   # самая частая и потому самая дорогая задача
-      provider: openrouter
-      model: google/gemini-2.5-flash-lite
+    intent:                   # самая частая задача: срабатывает на каждой неузнанной фразе
+      provider: openai
+      model: gpt-5.4-mini
+      reasoning: none
       temperature: 0.0
       max_tokens: 200
-    # Вторая попытка разобрать команду, когда дешёвая модель инструмента не
-    # выбрала. Платим только за неудачные разборы, а они и так стоили денег:
-    # реплика всё равно уходила в разговор, то есть в модель, но без дела.
+    # Вторая попытка разобрать команду, когда первая модель инструмента не
+    # выбрала. Платим только за неудачные разборы.
     intent_strong:
-      provider: openrouter
-      model: google/gemini-2.5-flash
-      temperature: 0.0
+      provider: openai
+      model: gpt-5.5
+      reasoning: none
+      temperature: null
       max_tokens: 200
     analysis:
-      provider: openrouter
-      model: google/gemini-2.5-flash
+      provider: openai
+      model: gpt-5.4-mini
+      reasoning: none
       temperature: 0.4
       max_tokens: 1024
-    # Агентный цикл: составная просьба, где следующий шаг зависит от результата
-    # предыдущего (`core.plan`). Модель обязана уметь вызовы инструментов, и
-    # дешёвая тут не годится: ошибка в середине плана дороже ошибки в разборе
-    # одной фразы, потому что за ней уже есть выполненные шаги.
-    #
-    # Каждый виток тащит каталог, то есть около полутора тысяч входных токенов
-    # (замерено 11.09.2026). Предел шагов (MAX_STEPS в jarvis/core/agent.py) —
-    # это и есть то, что удерживает счёт от разбега. Живой замер плана из двух
-    # шагов: 4.3 с, три запроса, 4815 токенов, $0.0015.
+    # Агентный цикл (`core.plan`): следующий шаг зависит от результата
+    # предыдущего, и ошибка в середине дороже ошибки в разборе одной фразы.
+    # Каждый виток тащит каталог; предел шагов (MAX_STEPS в jarvis/core/agent.py)
+    # и держит счёт от разбега.
     plan:
-      provider: openrouter
-      model: google/gemini-2.5-flash
+      provider: openai
+      model: gpt-5.4-mini
+      reasoning: none
       temperature: 0.0
       max_tokens: 400
-    # Зрение: снимок экрана плюс вопрос о нём (скилл `screen`).
-    # Модель обязана уметь картинки — это не та же модель, что разбирает
-    # команды, поэтому профиль отдельный. Температура низкая: с экрана читают
-    # факты, выдумывать тут нечего. Потолок ответа общий для всего, что
-    # произносится вслух.
+    # Зрение: снимок экрана и фотографии (скиллы `screen` и `photo_place`).
+    # Температура низкая: с картинки читают факты, выдумывать тут нечего.
     vision:
-      provider: openrouter
-      model: google/gemini-2.5-flash
+      provider: openai
+      model: gpt-5.4-mini
+      reasoning: none
       temperature: 0.1
       max_tokens: 300
 

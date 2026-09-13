@@ -30,6 +30,7 @@ from typing import Mapping
 #: Названия, у которых есть устоявшееся русское чтение.
 DEFAULT_PRONUNCIATION: dict[str, str] = {
     "openrouter": "Опен Раутер",
+    "openai": "Опен Эй Ай",
     "telegram": "Телеграм",
     "youtube": "Ютуб",
     "steam": "Стим",

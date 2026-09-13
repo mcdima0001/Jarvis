@@ -144,9 +144,13 @@ class TaskProfile:
     task: str
     provider: str
     model: str
-    temperature: float = 0.7
+    #: ``None`` — не слать: часть моделей принимает только своё значение.
+    temperature: float | None = 0.7
     max_tokens: int = 1024
     system: str | None = None
+    #: Глубина рассуждения модели. Для голосового ассистента почти всегда
+    #: наименьшая: рассуждающая модель без неё тратит потолок ответа на мысли.
+    reasoning: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

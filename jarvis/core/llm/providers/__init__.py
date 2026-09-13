@@ -12,6 +12,7 @@ from jarvis.core.config import ProviderConfig
 
 from ..protocol import LLMProvider
 from .null import NullProvider
+from .openai import OpenAIProvider
 from .openrouter import OpenRouterProvider
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 #: Тип провайдера из конфига -> класс реализации.
 PROVIDERS: dict[str, type] = {
     "openrouter": OpenRouterProvider,
+    "openai": OpenAIProvider,
     "null": NullProvider,
 }
 
@@ -51,4 +53,10 @@ def build_provider(config: ProviderConfig) -> LLMProvider:
     return factory(config)
 
 
-__all__ = ["PROVIDERS", "NullProvider", "OpenRouterProvider", "build_provider"]
+__all__ = [
+    "PROVIDERS",
+    "NullProvider",
+    "OpenAIProvider",
+    "OpenRouterProvider",
+    "build_provider",
+]

@@ -232,9 +232,10 @@ def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
             task=task,
             provider=provider,
             model=str(raw.get("model", "")),
-            temperature=float(raw.get("temperature", 0.7)),
+            temperature=_temperature(raw.get("temperature", 0.7)),
             max_tokens=int(raw.get("max_tokens", 1024)),
             system=raw.get("system"),
+            reasoning=str(raw["reasoning"]) if raw.get("reasoning") else None,
         )
 
     default_task = str(section.get("default_task", "dialog"))
@@ -454,3 +455,8 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             context_budget_tokens=int(memory.get("context_budget_tokens", 2000)),
         ),
     )
+
+
+def _temperature(value: object) -> float | None:
+    """Температура профиля. ``null`` в конфиге — не слать её модели вовсе."""
+    return None if value is None else float(value)  # type: ignore[arg-type]

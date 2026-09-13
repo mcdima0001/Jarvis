@@ -226,6 +226,7 @@ class LLMService:
             max_tokens=min(profile.max_tokens, max_tokens) if max_tokens else profile.max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            reasoning=profile.reasoning,
         )
         logger.debug("LLM запрос: задача=%s модель=%s", profile.task, profile.model)
         response = await provider.complete(request)

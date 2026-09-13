@@ -62,6 +62,11 @@ class LLMOutOfCredits(LLMError):
     Чинится это не кодом, поэтому и сказать надо прямо: пополнить счёт.
     """
 
+    def __init__(self, message: str, *, provider: str = "") -> None:
+        super().__init__(message)
+        #: Чей счёт пуст — чтобы вслух назвать его, а не гадать.
+        self.provider = provider
+
 
 class MemoryError_(JarvisError):
     """Ошибка работы с памятью."""

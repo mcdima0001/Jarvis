@@ -2,7 +2,7 @@
 
 from .profiles import ProfileRegistry
 from .protocol import LLMProvider, LLMRequest, LLMResponse, Message, ToolCall
-from .providers import NullProvider, OpenRouterProvider, build_provider
+from .providers import NullProvider, OpenAIProvider, OpenRouterProvider, build_provider
 from .service import LLMService
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "LLMService",
     "Message",
     "NullProvider",
+    "OpenAIProvider",
     "OpenRouterProvider",
     "ProfileRegistry",
     "ToolCall",

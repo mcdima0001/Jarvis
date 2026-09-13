@@ -1428,13 +1428,16 @@ class PhotoPlaceSkill(Skill):
             said = await self._ask_model(image, code, hint)
         except LLMOutOfCredits as empty:
             self.log.error("Определить место не на что: %s", empty)
+            # Чей счёт пуст, называем по самой ошибке: провайдер меняется
+            # одной строкой конфига, а реплика не должна после этого врать.
+            who = empty.provider or "поставщика модели"
             return ToolResult.failure(
-                "кончились деньги на OpenRouter",
+                f"кончились деньги на счету {who}",
                 speech={
-                    "ru": "Не могу посмотреть на фотографию: кончились деньги "
-                          "на OpenRouter. Пополни счёт, и я разберусь.",
-                    "en": "I cannot look at the photo: the OpenRouter account is "
-                          "out of credits. Top it up and I will sort it out.",
+                    "ru": f"Не могу посмотреть на фотографию: кончились деньги "
+                          f"на счету {who}. Пополни счёт, и я разберусь.",
+                    "en": f"I cannot look at the photo: the {empty.provider or 'model'} "
+                          f"account is out of credits. Top it up and I will sort it out.",
                 },
             )
         if said is None:
