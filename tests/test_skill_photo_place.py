@@ -957,3 +957,41 @@ async def test_lonely_sign_without_a_picture_is_not_an_answer() -> None:
     assert answer.ok, "город назвать всё равно надо"
     assert answer.value["agreed"] == 1
     assert answer.value["source"] == "версия", "одинокая надпись вести не должна"
+
+
+# --- какой моделью узнавать место --------------------------------------------
+
+
+def _with_profiles(*tasks: str) -> Any:
+    """Скилл, которому конфиг выдал ровно эти профили задач."""
+    from types import SimpleNamespace
+
+    skill = place.PhotoPlaceSkill.__new__(place.PhotoPlaceSkill)
+    profiles = SimpleNamespace(tasks=lambda: tasks)
+    skill._context = SimpleNamespace(llm=SimpleNamespace(profiles=profiles))
+    return skill
+
+
+def test_place_has_its_own_model_when_configured() -> None:
+    """Узнавание места идёт своим профилем, а не общим зрительным.
+
+    Замер 13.09.2026: gpt-5.4-mini, на котором стоит экран, назвал Дмитровский
+    кремль «Россией», а дорогу под Анталией — «Грецией». Оба места верно узнала
+    только gpt-5.5, и ставить её на «что на экране» значило бы замедлить экран.
+    """
+    assert _with_profiles("vision", "place")._task == place.PLACE_TASK
+
+
+def test_without_its_profile_the_skill_still_sees() -> None:
+    """Нет профиля `place` — берём зрительный: хуже, но не немота."""
+    assert _with_profiles("vision", "dialog")._task == place.VISION_TASK
+
+
+def test_shipped_config_gives_place_its_own_profile() -> None:
+    """В рабочем конфиге профиль есть — иначе замер выше ничего не стоил."""
+    from jarvis.core.config import load_config
+
+    profiles = load_config().llm.profiles
+
+    assert place.PLACE_TASK in profiles
+    assert profiles[place.PLACE_TASK].model != profiles[place.VISION_TASK].model

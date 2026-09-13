@@ -90,8 +90,16 @@ from jarvis.core.llm import Message
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.tools import tool
 
-#: Профиль зрячей модели. Тот же, что у скилла `screen`: модель обязана уметь
-#: картинки, а разбор команд идёт на самой дешёвой.
+#: Профиль модели, которая узнаёт место. **Свой, а не общий со зрением**, и
+#: причина измерена 13.09.2026 на двух фотографиях владельца. gpt-5.4-mini, на
+#: котором стоит `screen`, читает вывески не хуже прочих, но место узнаёт плохо:
+#: Дмитровский кремль у него «Россия», дорога под Анталией — «Греция», и глубина
+#: рассуждения не помогла (выходил Кипр). Верно назвала оба места только
+#: gpt-5.5 — и она вдвое медленнее, что для вопроса «что на экране» лишнее.
+#: Нет профиля в конфиге — берём общий зрительный, чтобы скилл не немел.
+PLACE_TASK = "place"
+
+#: Запасной профиль, если `place` не настроен.
 VISION_TASK = "vision"
 
 #: Геокодер OpenStreetMap: без ключа, по названию отдаёт точку и рамку объекта.
@@ -1358,6 +1366,12 @@ class PhotoPlaceSkill(Skill):
             },
         )
 
+    @property
+    def _task(self) -> str:
+        """Каким профилем узнавать место: своим, а без него — общим зрительным."""
+        tasks = self.context.llm.profiles.tasks()
+        return PLACE_TASK if PLACE_TASK in tasks else VISION_TASK
+
     async def health(self) -> HealthStatus:
         """Здоров, пока есть Pillow и зрячая модель: геокодер — дополнение."""
         try:
@@ -1367,10 +1381,10 @@ class PhotoPlaceSkill(Skill):
         if not self.context.llm.available:
             return HealthStatus.degraded("модель не настроена: нет ключа")
         try:
-            self.context.llm.profiles.get(VISION_TASK)
+            self.context.llm.profiles.get(self._task)
         except LLMNotConfigured:
             return HealthStatus.degraded(
-                f"нет профиля {VISION_TASK!r} в llm.profiles конфига"
+                f"нет профиля {PLACE_TASK!r} или {VISION_TASK!r} в llm.profiles конфига"
             )
         return HealthStatus.healthy()
 
@@ -1470,7 +1484,7 @@ class PhotoPlaceSkill(Skill):
         """
         messages = [Message.user(self._question(code, hint), images=(image,))]
         try:
-            response = await self.context.llm.complete(messages, task=VISION_TASK)
+            response = await self.context.llm.complete(messages, task=self._task)
         except LLMOutOfCredits:
             raise
         except Exception as exc:  # noqa: BLE001 — сеть и тариф, не наша вина
@@ -1722,7 +1736,7 @@ class PhotoPlaceSkill(Skill):
         try:
             response = await self.context.llm.complete(
                 [Message.user(asked, images=(photo, *(view for _, view in ready)))],
-                task=VISION_TASK,
+                task=self._task,
             )
         except Exception as exc:  # noqa: BLE001 — сеть и тариф, не наша вина
             self.log.warning("Опознание не состоялось: %s", exc)
@@ -1831,7 +1845,7 @@ class PhotoPlaceSkill(Skill):
             return None
         try:
             response = await self.context.llm.complete(
-                [Message.user(_VERIFY[code], images=(photo, view))], task=VISION_TASK
+                [Message.user(_VERIFY[code], images=(photo, view))], task=self._task
             )
         except Exception as exc:  # noqa: BLE001 — сеть и тариф, не наша вина
             self.log.warning("Сверка не состоялась: %s", exc)
