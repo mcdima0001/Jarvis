@@ -401,6 +401,50 @@ check("трек включается кнопкой внутри строки", 
   assert(row.clicked === 0, "звук уже идёт — по самой строке нажимать не нужно");
 });
 
+check("исполнитель уступает волне с тем же названием", async () => {
+  // Живой случай 14.09.2026 на Яндекс Музыке: «включи спокойный фонк» включило
+  // исполнителя «Спокойный фонк», а сверху стояла волна с тем же названием.
+  // Правило владельца: исполнителя — только по прямой просьбе.
+  const audio = player({ tag: "audio", paused: true });
+  const waveButton = element({ attributes: { "aria-label": "Воспроизвести" }, starts: audio });
+  const wave = element({
+    tag: "a",
+    attributes: { "aria-label": "Спокойный фонк Я так чувствую — Моя волна от люмена", href: "/wave/sad-phonk" },
+    children: [waveButton],
+  });
+  const artistButton = element({ attributes: { "aria-label": "Воспроизвести" }, starts: audio });
+  const artist = element({
+    tag: "a",
+    attributes: { "aria-label": "Спокойный фонк", href: "/artist/12345" },
+    children: [artistButton],
+  });
+  const api = load(makeDocument({ controls: [artist, wave], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["спокойный фонк"], hint: ["воспроизв"], play: true }]);
+
+  assert(result.done === "item" && result.played === true, `ожидался звук, пришло ${JSON.stringify(result)}`);
+  assert(waveButton.clicked === 1, "волна не включена");
+  assert(artistButton.clicked === 0 && artist.clicked === 0, "включён исполнитель, хотя была волна");
+});
+
+check("совпал только исполнитель — его и включаем", async () => {
+  // «Включи монеточку»: у треков свои названия, с просьбой совпадает одно имя.
+  const audio = player({ tag: "audio", paused: true });
+  const artistButton = element({ attributes: { "aria-label": "Воспроизвести" }, starts: audio });
+  const artist = element({
+    tag: "a",
+    attributes: { "aria-label": "Монеточка", href: "/artist/777" },
+    children: [artistButton],
+  });
+  const track = element({ attributes: { "aria-label": "Каждый раз", role: "row" } });
+  const api = load(makeDocument({ controls: [track, artist], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([{ item: ["монеточка"], hint: ["воспроизв"], play: true }]);
+
+  assert(result.done === "item", `ожидался item, пришло ${result.done}`);
+  assert(artistButton.clicked === 1, "прямую просьбу про исполнителя не выполнили");
+});
+
 check("нажали, а звука нет — так и отвечаем", async () => {
   // Живой случай на Яндекс Музыке: строка нашлась, «Воспроизведение»
   // нажалось, Jarvis сказал «включаю» — и тишина.

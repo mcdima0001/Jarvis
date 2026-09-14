@@ -170,6 +170,29 @@ async function jarvisRunPlan(plan) {
     return found >= 2 && share >= ENOUGH ? share * 0.9 : 0;
   };
 
+  /**
+   * Исполнитель ли это: ссылка на страницу артиста или его карточка.
+   *
+   * Правило владельца (14.09.2026): **исполнителя включаем только по прямой
+   * просьбе**. На «включи спокойный фонк» выдача Яндекс Музыки показала и волну
+   * «Спокойный фонк», и исполнителя с тем же именем; подпись исполнителя короче,
+   * и он побеждал. Смотрим сам элемент и несколько его предков — строка выдачи
+   * бывает и ссылкой на артиста, и обёрткой вокруг неё. Внутрь не смотрим: в
+   * строке любого трека есть ссылка на его исполнителя, и под подозрение попал
+   * бы каждый трек.
+   */
+  const isArtist = (element) => {
+    let node = element;
+    for (let depth = 0; node && depth < 4; depth += 1) {
+      const read = (name) => String((typeof node.getAttribute === "function" && node.getAttribute(name)) || "");
+      if (/\/artist\//i.test(read("href")) || /artist/i.test(read("class")) || /artist/i.test(read("data-test-id"))) {
+        return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  };
+
   /** Лучшее совпадение подписи с просьбой среди элементов страницы. */
   const bestMatch = (selector, wanted, forbidden, tighter) => {
     const found = [];
@@ -228,6 +251,17 @@ async function jarvisRunPlan(plan) {
     for (const item of pool.slice(1)) {
       if (item.rank > best.rank || (tighter && item.rank === best.rank && item.size < best.size)) {
         best = item;
+      }
+    }
+    // У строк списка исполнитель уступает всему остальному с тем же совпадением:
+    // волне, плейлисту, треку, альбому. Совпал он один («включи монеточку») —
+    // значит, просили именно его, и он остаётся.
+    if (tighter && isArtist(best.element)) {
+      const other = pool
+        .filter((item) => item.rank >= best.rank && !isArtist(item.element))
+        .sort((first, second) => first.size - second.size)[0];
+      if (other) {
+        return other.element;
       }
     }
     return best.element;
