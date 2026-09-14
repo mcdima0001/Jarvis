@@ -75,6 +75,90 @@ def test_shortest_name_wins() -> None:
     assert telegram.match_chat("мама", ["Мама Юли", "Мама"]) == "Мама"
 
 
+# --- картинка из буфера -----------------------------------------------------
+
+
+@pytest.mark.parametrize(("heard", "saved"), [
+    ("Избранное", True), ("выбранное", True), ("сохранённые", True), ("мама", False),
+])
+def test_saved_messages_are_recognised(heard: str, saved: bool) -> None:
+    assert telegram.is_saved_messages(heard) is saved
+
+
+@pytest.mark.parametrize(("heard", "chat"), [
+    ("выбранное в телеграме", "выбранное"),  # живой запуск 14.09.2026
+    ("в Избранное", "Избранное"),
+    ("маме, в telegram", "маме"),
+])
+def test_chat_is_cleaned_of_prepositions(heard: str, chat: str) -> None:
+    assert telegram.clean_chat(heard) == chat
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self.sent: list[tuple[Any, bytes, str, Any]] = []
+
+    async def get_dialogs(self, limit: int = 0) -> list[Any]:
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(name="Мама ❤️", entity="mama-entity")]
+
+    async def send_file(self, entity: Any, file: Any, caption: Any = None) -> None:
+        self.sent.append((entity, file.getvalue(), file.name, caption))
+
+
+class _FakeTools:
+    def __init__(self, picture: Any) -> None:
+        self.picture = picture
+
+    async def invoke(self, name: str, arguments: Any = None) -> Any:
+        from jarvis.core.contracts import ToolResult
+
+        assert name == "clipboard.image"
+        if self.picture is None:
+            return ToolResult.failure("в буфере обмена нет картинки")
+        return ToolResult.success(self.picture)
+
+
+def _telegram(picture: Any) -> Any:
+    import logging
+    from types import SimpleNamespace
+
+    skill = telegram.TelegramSkill()
+    skill._context = SimpleNamespace(tools=_FakeTools(picture), logger=logging.getLogger("test.telegram"))
+    skill._client = _FakeClient()
+    skill._api_id, skill._api_hash, skill._names = 1, "hash", []
+    return skill
+
+
+async def test_image_goes_to_saved_messages() -> None:
+    skill = _telegram({"png": b"\x89PNG", "width": 4, "height": 3})
+    result = await skill.send_image("выбранное в телеграме")
+    assert result.ok
+    assert skill._client.sent == [("me", b"\x89PNG", "screenshot.png", None)]
+    assert result.speech_for("ru") == "Отправил картинку в Избранное."
+
+
+async def test_image_goes_to_a_named_chat() -> None:
+    skill = _telegram({"png": b"\x89PNG", "width": 4, "height": 3})
+    result = await skill.send_image("маме", caption="смотри")
+    assert result.ok and skill._client.sent[0][0] == "mama-entity"
+    assert skill._client.sent[0][3] == "смотри"
+
+
+async def test_nothing_is_sent_without_an_image() -> None:
+    skill = _telegram(None)
+    result = await skill.send_image("Избранное")
+    assert not result.ok and skill._client.sent == []
+    assert "нет картинки" in result.speech_for("ru")
+
+
+async def test_unknown_chat_sends_nothing() -> None:
+    skill = _telegram({"png": b"\x89PNG", "width": 4, "height": 3})
+    result = await skill.send_image("кутузов")
+    assert not result.ok and skill._client.sent == []
+
+
 # --- «напиши маме буду через час» -------------------------------------------
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import platform
 import shutil
 import subprocess
@@ -113,6 +114,58 @@ def _write_sync(backend: _Backend, text: str) -> None:
         raise OSError(proc.stderr.decode("utf-8", "replace").strip())
 
 
+#: Скопированный в проводнике файл приходит списком путей: картинкой считаем
+#: первый файл с таким расширением.
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
+
+
+def _png(grabbed: object) -> tuple[bytes, int, int] | None:
+    """Привести то, что лежит в буфере, к PNG. ``None`` — картинки там нет.
+
+    `ImageGrab.grabclipboard` отдаёт три разных вещи: картинку (скриншот,
+    «копировать изображение» в браузере), список путей (скопированный файл) или
+    ``None``. Текст сюда не относится — его читает `_read_sync`.
+    """
+    from PIL import Image
+
+    image = None
+    if isinstance(grabbed, Image.Image):
+        image = grabbed
+    elif isinstance(grabbed, list):
+        for name in grabbed:
+            if not str(name).lower().endswith(_IMAGE_SUFFIXES):
+                continue
+            try:
+                image = Image.open(name)
+                image.load()
+                break
+            except OSError:
+                continue
+    if image is None:
+        return None
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue(), image.width, image.height
+
+
+def _grab_image_sync() -> tuple[bytes, int, int] | None:
+    """Картинка из буфера обмена в PNG. Блокирующий вызов.
+
+    Только в памяти, никуда не сохраняется — по тому же правилу, что снимок
+    экрана: в буфере бывает переписка и пароли.
+    """
+    try:
+        from PIL import ImageGrab
+    except ImportError:
+        return None
+    try:
+        grabbed = ImageGrab.grabclipboard()
+    except (OSError, NotImplementedError):
+        # Вне Windows и macOS Pillow буфер не читает — картинки просто нет.
+        return None
+    return _png(grabbed)
+
+
 def _preview(text: str) -> str:
     """Готовит короткий однострочный пересказ содержимого для речи."""
     flat = " ".join(text.split())
@@ -200,6 +253,21 @@ class ClipboardSkill(Skill):
             )
         self._remember(text)
         if not text.strip():
+            # Текста нет — это ещё не пустой буфер: `Get-Clipboard -Raw` видит
+            # только текст, и скриншот в буфере выглядел для него пустотой. Из-за
+            # этого план «отправь скриншот из буфера» отвечал «картинки нет»
+            # (живой лог 14.09.2026, 11:04).
+            grabbed = await asyncio.to_thread(_grab_image_sync)
+            if grabbed is not None:
+                _, width, height = grabbed
+                return ToolResult.success(
+                    {"text": "", "length": 0, "empty": False, "image": True,
+                     "width": width, "height": height},
+                    speech={
+                        "ru": f"В буфере обмена картинка {width} на {height}.",
+                        "en": f"The clipboard holds an image, {width} by {height}.",
+                    },
+                )
             return ToolResult.success(
                 {"text": "", "length": 0, "empty": True},
                 speech={
@@ -213,6 +281,32 @@ class ClipboardSkill(Skill):
             speech={
                 "ru": f"В буфере обмена: {preview}",
                 "en": f"Clipboard holds: {preview}",
+            },
+        )
+
+    @tool(routable=False, reversible=True)
+    async def image(self) -> ToolResult:
+        """Картинка из буфера обмена в PNG — для других скиллов (отправить в чат).
+
+        В каталог модели не идёт: байты картинки модели не нужны, а пересказ
+        шага плана в JSON на них сломался бы. Другой скилл зовёт его по имени
+        `clipboard.image`, не импортируя этот.
+        """
+        grabbed = await asyncio.to_thread(_grab_image_sync)
+        if grabbed is None:
+            return ToolResult.failure(
+                "в буфере обмена нет картинки",
+                speech={
+                    "ru": "В буфере обмена нет картинки.",
+                    "en": "There's no image in the clipboard.",
+                },
+            )
+        data, width, height = grabbed
+        return ToolResult.success(
+            {"png": data, "width": width, "height": height},
+            speech={
+                "ru": f"Картинка {width} на {height}.",
+                "en": f"An image, {width} by {height}.",
             },
         )
 

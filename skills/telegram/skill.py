@@ -129,6 +129,35 @@ def split_request(spoken: str, names: Sequence[str]) -> tuple[str, str]:
             best = (rank, found, " ".join(words[size:]).strip(" ,:—-"))
     return (best[1], best[2]) if best else ("", spoken.strip())
 
+#: Как называют «Избранное» — чат с самим собой. В списке диалогов Telethon он
+#: называется именем владельца аккаунта, а не «Избранное», поэтому сопоставлением
+#: с названиями его не найти. «Выбранное» — так Deepgram расслышал «Избранное»
+#: в живом запуске 14.09.2026; уйти не туда тут нельзя: это свой же чат.
+SAVED_MESSAGES = (
+    "избранное", "избранные", "сохраненное", "сохранённое", "сохраненные",
+    "сохранённые", "saved messages", "saved", "выбранное",
+)
+
+
+def is_saved_messages(chat: str) -> bool:
+    """Назван ли чат «Избранное»."""
+    return " ".join(chat.lower().split()).strip(" ,.:—-") in SAVED_MESSAGES
+
+
+def clean_chat(chat: str) -> str:
+    """Убрать из услышанного адресата предлоги и «в телеграме».
+
+    Шаблон «отправь скриншот из буфера {chat}» забирает хвост целиком, и в
+    живом запуске он был «выбранное в телеграме».
+    """
+    import re
+
+    text = " ".join(chat.split()).strip(" ,.:—-")
+    text = re.sub(r"\s*(в|во)\s+(телеграме?|telegram)$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^(в|во|на)\s+", "", text, flags=re.IGNORECASE)
+    return text.strip(" ,.:—-")
+
+
 def describe_dialogs(dialogs: Sequence[dict[str, Any]]) -> str:
     """Собрать фразу про непрочитанное — так, как её произносят вслух."""
     if not dialogs:
@@ -339,6 +368,62 @@ class TelegramSkill(Skill):
         return ToolResult.success(
             {"chat": name, "text": message},
             speech={"ru": f"Отправил {name}.", "en": f"Sent to {name}."},
+        )
+
+    @tool(phrases=["отправь скриншот из буфера {chat}", "отправь скриншот из буфера в {chat}",
+                   "отправь картинку из буфера {chat}", "отправь картинку из буфера в {chat}",
+                   "отправь скриншот в {chat}", "отправь скрин в {chat}",
+                   "скинь скриншот в {chat}", "скинь картинку в {chat}"],
+          reversible=False)
+    async def send_image(self, chat: str, caption: str = "") -> ToolResult:
+        """Отправить в чат Telegram картинку из буфера обмена: скриншот, скопированное фото.
+
+        :param chat: кому отправить; «Избранное» — себе.
+        :param caption: подпись к картинке, если нужна.
+        """
+        if (refusal := await self._ready()) is not None:
+            return refusal
+
+        # Картинку — первой: это дёшево и без сети, и без неё идти в Telegram
+        # незачем. Берётся у скилла буфера по имени инструмента, без импорта.
+        grabbed = await self.tools.invoke("clipboard.image")
+        picture = grabbed.value if grabbed.ok and isinstance(grabbed.value, dict) else None
+        if not picture or not picture.get("png"):
+            return ToolResult.failure(
+                grabbed.error or "в буфере обмена нет картинки",
+                speech={
+                    "ru": "В буфере обмена нет картинки. Скопируй скриншот и повтори.",
+                    "en": "There's no image in the clipboard. Copy a screenshot and try again.",
+                },
+            )
+
+        chat = clean_chat(chat)
+        if is_saved_messages(chat):
+            entity, name = "me", "Избранное"
+        else:
+            found = await self._find(chat) if chat else None
+            if found is None or found[0] is None:
+                close = ", ".join(difflib.get_close_matches(chat, self._names, n=3, cutoff=0.3))
+                return ToolResult.failure(
+                    f"чат {chat!r} не найден" + (f". Похожие: {close}" if close else ""),
+                    speech={
+                        "ru": f"Не нашёл чат {chat}." + (f" Может быть: {close}?" if close else ""),
+                        "en": f"No chat named {chat}.",
+                    },
+                )
+            entity, name = found
+
+        import io
+
+        buffer = io.BytesIO(picture["png"])
+        # Расширение Telethon берёт из имени: без него картинка ушла бы файлом.
+        buffer.name = "screenshot.png"
+        await self._client.send_file(entity, buffer, caption=caption.strip() or None)
+        width, height = picture.get("width"), picture.get("height")
+        self.log.info("Отправлена картинка в %s (%sx%s)", name, width, height)
+        return ToolResult.success(
+            {"chat": name, "width": width, "height": height},
+            speech={"ru": f"Отправил картинку в {name}.", "en": f"Sent the image to {name}."},
         )
 
     @tool(phrases=["что нового в телеграме", "проверь телеграм", "новые сообщения",
