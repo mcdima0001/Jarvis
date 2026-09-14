@@ -866,6 +866,8 @@ def test_volume_returns_only_after_the_reply_was_spoken() -> None:
     """
     assert not windows.restores_volume("dispatcher", awaiting_command=False)
     assert windows.restores_volume("voice", awaiting_command=False)
+    # «Один момент» — речь, но не ответ: громкость поднималась поверх ответа (14.09.2026).
+    assert not windows.restores_volume("voice.filler", awaiting_command=False)
 
 
 def test_the_listening_reply_does_not_return_the_volume() -> None:

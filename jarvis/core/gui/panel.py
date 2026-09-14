@@ -32,6 +32,7 @@ import secrets
 import subprocess
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -85,6 +86,16 @@ _CSP = (
 PREVIEW = 400
 #: Сколько записей журнала показывать.
 JOURNAL_LIMIT = 50
+#: Сколько последних команд держать для ленты на главной.
+ACTIVITY_LIMIT = 30
+#: Сколько секунд после команды её инструменты и ответ относятся к ней. Позже —
+#: это уже речь без вопроса (напоминание, доклад) и идёт отдельной строкой.
+ENTRY_WINDOW_S = 60.0
+#: Как часто брать отсчёт нагрузки для графика и сколько точек хранить: час.
+LOAD_EVERY_S = 15.0
+LOAD_POINTS = int(3600 / LOAD_EVERY_S)
+#: Сколько инструментов одной команды показывать: план может вызвать десяток.
+TOOLS_PER_ENTRY = 8
 
 
 class ControlPanel:
@@ -101,6 +112,7 @@ class ControlPanel:
         memory: Memory | None = None,
         sink: Any = None,
         port: int | None = None,
+        meter: Any = None,
     ) -> None:
         self._config = config
         self._events = events
@@ -109,11 +121,18 @@ class ControlPanel:
         self._llm = llm
         self._memory = memory
         self._sink = sink
+        #: Счётчик нагрузки — для графика на главной; ``None`` — графика нет.
+        self._meter = meter
+        #: Последние команды: что услышал, какие инструменты отработали, что ответил.
+        self._activity: deque[dict[str, Any]] = deque(maxlen=ACTIVITY_LIMIT)
+        #: Отсчёты нагрузки за последний час: момент и доля ядра в процентах.
+        self._load: deque[tuple[float, float]] = deque(maxlen=LOAD_POINTS)
+        self._load_task: asyncio.Task[None] | None = None
         # Токен один на все запуски, а не новый на каждый (14.09.2026): окно панели,
         # открытое до перезапуска Jarvis, иначе навсегда получало отказ и писало
         # «нет связи», хотя ассистент уже работал.
-        memory = getattr(config, "memory", None)
-        base = getattr(memory, "dir", None) or config.root / "memory"
+        memory_config = getattr(config, "memory", None)
+        base = getattr(memory_config, "dir", None) or config.root / "memory"
         self._token = load_token(Path(base) / "panel_token")
         self._server = HttpServer(self._handle, port=config.gui.port if port is None else port)
         self._started = time.time()
@@ -145,9 +164,12 @@ class ControlPanel:
             ("input.command.typed", self._on_heard),
             ("assistant.speaking", self._on_speaking),
             ("assistant.replied", self._on_replied),
+            ("tool.completed", self._on_tool),
             ("system.stopping", self._on_stopping),
         ):
             self._events.subscribe(name, handler)
+        if getattr(self._meter, "enabled", False):
+            self._load_task = asyncio.create_task(self._sample_load(), name="panel-load")
         try:
             await self._server.start()
         except OSError as exc:
@@ -160,9 +182,10 @@ class ControlPanel:
             self._window_task = asyncio.create_task(self._watch_window(), name="panel-window")
 
     async def stop(self) -> None:
-        if self._window_task is not None:
-            self._window_task.cancel()
-            self._window_task = None
+        for task in (self._window_task, self._load_task):
+            if task is not None:
+                task.cancel()
+        self._window_task = self._load_task = None
         await self._server.stop()
 
     # --- состояние по шине ---------------------------------------------------
@@ -175,10 +198,55 @@ class ControlPanel:
 
     async def _on_heard(self, event: Event) -> None:
         self._heard = str(getattr(event, "text", ""))
+        typed = getattr(event, "NAME", "") == "input.command.typed"
+        self._activity.append({
+            "at": time.time(), "heard": self._heard, "source": "клавиатура" if typed else "голос",
+            "tools": [], "reply": "",
+        })
 
     async def _on_speaking(self, event: Event) -> None:
         self._state = SPEAKING
         self._reply = str(getattr(event, "text", ""))
+        entry = self._current_entry()
+        if entry is not None:
+            # Заполнитель «секунду» перезапишется настоящим ответом.
+            entry["reply"] = self._reply
+        else:
+            # Заговорил сам: приветствие, напоминание, доклад фоновой задачи.
+            self._activity.append({"at": time.time(), "heard": "", "source": "сам", "tools": [], "reply": self._reply})
+
+    async def _on_tool(self, event: Event) -> None:
+        entry = self._current_entry()
+        if entry is None or len(entry["tools"]) >= TOOLS_PER_ENTRY:
+            return
+        entry["tools"].append({
+            "tool": str(getattr(event, "tool", "")),
+            "ok": bool(getattr(event, "ok", False)),
+            "duration": round(float(getattr(event, "duration", 0.0) or 0.0), 2),
+        })
+
+    def _current_entry(self) -> dict[str, Any] | None:
+        """Команда, к которой относятся свежие инструменты и ответ."""
+        if not self._activity:
+            return None
+        last = self._activity[-1]
+        return last if last["heard"] and time.time() - last["at"] <= ENTRY_WINDOW_S else None
+
+    async def _sample_load(self) -> None:
+        """Раз в 15 секунд — точка на графике нагрузки."""
+        while True:
+            load = self._meter.recent()
+            self._load.append((time.time(), round(load.share * 100, 1)))
+            await asyncio.sleep(LOAD_EVERY_S)
+
+    async def _activity_view(self, request: Request) -> Response:
+        """Лента последних команд и нагрузка за час — для главной страницы."""
+        return json_response({
+            "commands": list(reversed(self._activity)),
+            "load": [{"at": at, "core": core} for at, core in self._load],
+            "cores": os.cpu_count() or 1,
+            "metered": bool(getattr(self._meter, "enabled", False)),
+        })
 
     async def _on_replied(self, event: Event) -> None:
         if self._state != STOPPING:
@@ -221,6 +289,7 @@ class ControlPanel:
 
         routes = {
             ("GET", "/api/status"): self._status,
+            ("GET", "/api/activity"): self._activity_view,
             ("GET", "/api/modules"): self._modules,
             ("POST", "/api/modules"): self._toggle_module,
             ("POST", "/api/modules/reload"): self._reload_module,

@@ -102,6 +102,28 @@
   h2.caption:first-child { margin-top: 0; }
   .big { font-size: 24px; color: var(--cyan-soft); font-weight: 600; }
   .small { color: var(--muted); font-size: 12.5px; }
+  /* Главная: живая лента и график под карточками — не плитками, а полосами. */
+  .live { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; margin-top: 18px; }
+  @media (max-width: 1000px) { .live { grid-template-columns: minmax(0, 1fr); } }
+  .live-block { position: relative; padding: 14px 18px 16px; border-left: 2px solid var(--cyan-dim); background: linear-gradient(90deg, rgba(79, 216, 255, 0.06), transparent 70%); min-width: 0; }
+  .live-block h2.caption { margin-top: 0; }
+  .feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .feed li { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(79, 216, 255, 0.07); }
+  .feed li:last-child { border-bottom: 0; }
+  .feed time { font-family: var(--mono); font-size: 12px; color: var(--dim); padding-top: 2px; }
+  .feed .heard { color: var(--text); overflow-wrap: anywhere; }
+  .feed .heard .src { color: var(--dim); font-size: 11.5px; margin-left: 6px; }
+  .feed .said { color: var(--muted); font-style: italic; margin-top: 3px; overflow-wrap: anywhere; }
+  .feed .said::before { content: "→ "; color: var(--cyan-dim); font-style: normal; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+  .chip { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border: 1px solid rgba(79, 216, 255, 0.25); color: var(--cyan-soft); }
+  .chip.bad { border-color: rgba(255, 90, 90, 0.5); color: var(--red); }
+  .chip .ms { color: var(--dim); margin-left: 5px; }
+  .chart svg { width: 100%; height: 170px; display: block; }
+  .chart .axis { stroke: rgba(79, 216, 255, 0.1); stroke-width: 1; }
+  .chart .label { fill: var(--dim); font: 11px var(--mono); }
+  .chart .line { fill: none; stroke: var(--cyan); stroke-width: 2; filter: drop-shadow(0 0 4px rgba(79, 216, 255, 0.6)); }
+  .chart .now { fill: var(--cyan); }
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   td { padding: 8px; border-bottom: 1px solid rgba(79, 216, 255, 0.08); vertical-align: middle; }
@@ -258,6 +280,17 @@
 
   <section id="tab-status" class="on">
     <div class="grid" id="status-cards"></div>
+    <div class="live">
+      <div class="live-block">
+        <h2 class="caption">Последние команды</h2>
+        <ol class="feed" id="feed"></ol>
+      </div>
+      <div class="live-block">
+        <h2 class="caption">Нагрузка за час</h2>
+        <div class="chart" id="load-chart"></div>
+        <div class="small" id="load-note"></div>
+      </div>
+    </div>
   </section>
 
   <section id="tab-usage">
@@ -496,6 +529,66 @@ async function loadStatus() {
     card("Голос", status.output || "выход по умолчанию", "«говори через …» меняет выход"),
     card("Права", status.admin ? "администратор" : "пользователь", status.admin ? "" : "часть команд может не сработать"),
   );
+  // Лента и график меняются медленнее статуса — раз в три секунды хватает.
+  if (activityTicks++ % 3 === 0) loadActivity().catch(() => {});
+}
+
+// --- главная: лента команд и нагрузка ----------------------------------------
+let activityTicks = 0;
+const clock = (at) => new Date(at * 1000).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+async function loadActivity() {
+  const data = await api("/api/activity");
+  $("feed").replaceChildren(...(data.commands.length ? data.commands.map((entry) => el("li", {},
+    el("time", {}, clock(entry.at)),
+    el("div", {},
+      entry.heard
+        ? el("div", { class: "heard" }, entry.heard, el("span", { class: "src" }, entry.source))
+        : el("div", { class: "heard small" }, "сказал сам"),
+      entry.tools.length ? el("div", { class: "chips" }, ...entry.tools.map((item) => el("span", { class: `chip${item.ok ? "" : " bad"}` },
+        item.tool, el("span", { class: "ms" }, item.duration >= 1 ? `${item.duration.toFixed(1)} с` : `${Math.round(item.duration * 1000)} мс`)))) : "",
+      entry.reply ? el("div", { class: "said" }, entry.reply) : "",
+    ),
+  )) : [el("li", {}, el("time", {}, "—"), el("div", { class: "small" }, "С запуска команд ещё не было. Скажи «Джарвис» — и они появятся здесь."))]));
+  drawLoad(data);
+}
+function drawLoad(data) {
+  const box = $("load-chart");
+  if (!data.metered) {
+    box.replaceChildren();
+    $("load-note").textContent = "Счётчик нагрузки выключен (runtime.meter в config.yaml).";
+    return;
+  }
+  const points = data.load;
+  if (points.length < 2) {
+    box.replaceChildren();
+    $("load-note").textContent = "График копится: точка раз в 15 секунд.";
+    return;
+  }
+  const width = 600, height = 170, left = 34, bottom = 20, top = 10;
+  const now = Date.now() / 1000, from = now - 3600;
+  const peak = Math.max(...points.map((p) => p.core));
+  const ceiling = Math.max(10, Math.ceil(peak * 1.2 / 5) * 5);
+  const x = (at) => left + ((Math.max(at, from) - from) / 3600) * (width - left - 4);
+  const y = (core) => top + (1 - core / ceiling) * (height - top - bottom);
+  const path = points.map((p, index) => `${index ? "L" : "M"}${x(p.at).toFixed(1)},${y(p.core).toFixed(1)}`).join(" ");
+  const grid = [0, 0.5, 1].map((share) => {
+    const value = ceiling * share;
+    return `<line class="axis" x1="${left}" x2="${width - 4}" y1="${y(value)}" y2="${y(value)}"/>` +
+      `<text class="label" x="${left - 6}" y="${y(value) + 4}" text-anchor="end">${Math.round(value)}%</text>`;
+  }).join("");
+  const last = points[points.length - 1];
+  // Разметка собирается только из чисел, поэтому вставлять её строкой безопасно.
+  box.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Нагрузка за час">
+    <defs><linearGradient id="loadFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#4fd8ff" stop-opacity="0.35"/><stop offset="1" stop-color="#4fd8ff" stop-opacity="0"/></linearGradient></defs>
+    ${grid}
+    <text class="label" x="${left}" y="${height - 4}">час назад</text>
+    <text class="label" x="${width - 4}" y="${height - 4}" text-anchor="end">сейчас</text>
+    <path d="${path} L${x(last.at).toFixed(1)},${y(0)} L${x(points[0].at).toFixed(1)},${y(0)} Z" fill="url(#loadFill)"/>
+    <path class="line" d="${path}"/>
+    <circle class="now" cx="${x(last.at).toFixed(1)}" cy="${y(last.core).toFixed(1)}" r="3.5"/>
+  </svg>`;
+  const machine = (share) => (share / Math.max(1, data.cores)).toFixed(1);
+  $("load-note").textContent = `Сейчас ${last.core}% ядра (${machine(last.core)}% процессора), пик за час ${peak}%.`;
 }
 
 // --- расход -----------------------------------------------------------------

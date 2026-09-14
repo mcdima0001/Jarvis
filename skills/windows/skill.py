@@ -1105,6 +1105,9 @@ class WindowsSkill(Skill):
         #: Ждём команду после имени — значит «Слушаю» громкость не возвращает.
         self._awaiting_command = False
         self._duck_timer: asyncio.Task[None] | None = None
+        #: Сколько раз ассистент начинал говорить. По нему видно, что за паузу
+        #: перед возвратом громкости зазвучала новая реплика.
+        self._speech_count = 0
 
         if not bool(ducking.get("enabled", True)):
             self.log.debug("Приглушение звука выключено в конфиге")
@@ -1133,6 +1136,7 @@ class WindowsSkill(Skill):
         Приглушение по имени этого не покрывает: здоровается и прощается он сам,
         никто его об этом не просил, и ровно эти реплики тонули в музыке.
         """
+        self._speech_count += 1
         await self._duck()
 
     async def _on_wake_word(self, event: Event) -> None:
@@ -1155,11 +1159,17 @@ class WindowsSkill(Skill):
             if self._ducked:
                 self._arm_restore_timer()
             return
+        spoke = self._speech_count
         if self._restore_delay > 0:
             # Колонки ещё договаривают последний слог, плюс реверберация
             # комнаты. Вернуть громкость ровно на нём — значит смазать конец
             # фразы: та же причина, по которой микрофон глохнет с запасом.
             await asyncio.sleep(self._restore_delay)
+        if self._speech_count != spoke:
+            # За паузу зазвучала новая реплика — ответ после заполнителя или
+            # напоминание. Её конец и вернёт громкость.
+            self.log.debug("Снова говорю — громкость пока не возвращаю")
+            return
         await self._restore()
 
     async def _duck(self) -> None:

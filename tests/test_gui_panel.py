@@ -588,3 +588,23 @@ def _panel_again(tmp_path: Path) -> tuple[ControlPanel, FakeSkills, LocalEventBu
 
     shutil.rmtree(tmp_path / "skills", ignore_errors=True)
     return _panel(tmp_path)
+
+
+async def test_home_feed_collects_commands_tools_and_replies(tmp_path: Path) -> None:
+    """Главная: лента команд вместо пустого места под карточками."""
+    panel, _, _ = _panel(tmp_path)
+    await panel._on_speaking(SimpleNamespace(text="Добрый день, сэр."))
+    await panel._on_heard(SimpleNamespace(NAME="voice.command.recognized", text="включи ролик про котов"))
+    await panel._on_tool(SimpleNamespace(tool="page.play_video", ok=True, duration=1.234))
+    await panel._on_tool(SimpleNamespace(tool="browser.page_run", ok=False, duration=0.05))
+    await panel._on_speaking(SimpleNamespace(text="Один момент."))
+    await panel._on_speaking(SimpleNamespace(text="Включаю про котов."))
+
+    data = _json(await _call(panel, "GET", "/api/activity"))
+    newest, greeting = data["commands"]
+    assert newest["heard"] == "включи ролик про котов" and newest["source"] == "голос"
+    assert [item["tool"] for item in newest["tools"]] == ["page.play_video", "browser.page_run"]
+    assert newest["tools"][1]["ok"] is False
+    assert newest["reply"] == "Включаю про котов.", "заполнитель перезаписан ответом"
+    assert greeting["source"] == "сам" and greeting["heard"] == ""
+    assert data["load"] == [] and data["metered"] is False

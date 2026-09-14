@@ -66,6 +66,9 @@ logger = logging.getLogger(__name__)
 #: с опозданием на её длину.
 _PENDING_LIMIT = 2
 
+#: Откуда пришло «ответил» после заполнителя «секунду»: это речь, но не ответ.
+FILLER_SOURCE = "voice.filler"
+
 #: Имя, пойманное позже этого от начала фразы, при том что в расшифровке имени
 #: нет, — не обращение, а слово из песни или чужого разговора (14.09.2026).
 #: Замер по логам 12–14.09: у всех 8 настоящих команд без узнанного имени
@@ -453,7 +456,9 @@ class VoicePipeline:
         if self.silent:
             # Голос выключен целиком: реплика уже в логе, а трогать синтез
             # нельзя — он загрузит модель при первом же обращении.
-            self._events.emit(AssistantReplied(source="voice", text=text, spoken=False))
+            self._events.emit(
+                AssistantReplied(source="voice" if remember else FILLER_SOURCE, text=text, spoken=False)
+            )
             return
         self._speaking = True
         spoken = True
@@ -472,8 +477,13 @@ class VoicePipeline:
             self._mute_until = time.time() + self._config.echo_tail_ms / 1000
             self._speaking = False
 
+        # Заполнитель («Один момент») — не ответ: по «ответил» скилл windows
+        # возвращает громкость, и она поднималась поверх настоящего ответа,
+        # звучавшего следом (живой запуск 14.09.2026, 15:34).
         self._events.emit(
-            AssistantReplied(source="voice", text=text, spoken=spoken and self._tts.ready)
+            AssistantReplied(
+                source="voice" if remember else FILLER_SOURCE, text=text, spoken=spoken and self._tts.ready
+            )
         )
 
     async def _play_activation(self) -> None:
