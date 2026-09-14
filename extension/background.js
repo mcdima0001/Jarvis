@@ -460,6 +460,14 @@ async function run(action, params) {
     return { pong: true };
   }
 
+  if (action === "reload") {
+    // Jarvis видит на диске новую версию — перечитать себя из папки. Для
+    // распакованного расширения это то же, что «Обновить» на странице
+    // расширений. Сперва ответ, потом перезагрузка: иначе ответ не уйдёт.
+    setTimeout(() => chrome.runtime.reload(), 200);
+    return { reloading: chrome.runtime.getManifest().version };
+  }
+
   if (action === "tabs") {
     const tabs = await chrome.tabs.query({});
     return {

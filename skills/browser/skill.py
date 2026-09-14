@@ -541,6 +541,11 @@ class _Extension:
         #: подключении, и расхождение означает ровно одно: браузер работает по
         #: старому коду.
         self._expect_version = expect_version
+        #: На какую версию с диска уже просили перезагрузиться. Второй раз не
+        #: просим: не помогло однажды — не поможет и дальше, а петля
+        #: «перезагрузись — не та версия — перезагрузись» гасила бы расширение.
+        self._reload_asked = ""
+        self._reload_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._last_id = 0
         self._last_error = ""
@@ -600,16 +605,39 @@ class _Extension:
         отсутствию одного поля в ответе. Теперь об этом говорится сразу и вслух.
         """
         self._log.info("Расширение готово: v%s, %s", version or "?", agent)
-        if not version or not self._expect_version:
+        if not version or not self._expect_version or version == self._expect_version:
             return
-        if version != self._expect_version:
-            self._log.warning(
-                "Расширение старое: в браузере v%s, на диске v%s. Открой "
-                "browser://extensions (или chrome://extensions) и нажми «Обновить» "
-                "у Jarvis — распакованные расширения браузер сам не перечитывает",
-                version,
-                self._expect_version,
-            )
+        if self._reload_asked == self._expect_version:
+            # Уже просили — и всё равно старое: браузер грузит расширение не из
+            # этой папки или перезагрузка не удалась. Дальше только руками.
+            self._manual_update(version)
+            return
+        # С версии 0.9.5 расширение умеет перечитать себя из папки само — то же,
+        # что «Обновить» на странице расширений (просьба владельца 14.09.2026).
+        self._reload_asked = self._expect_version
+        self._log.info(
+            "Расширение старое: в браузере v%s, на диске v%s — прошу перезагрузиться",
+            version,
+            self._expect_version,
+        )
+        # Отдельной задачей: ответ придёт через этот же обработчик сообщений, и
+        # ждать его внутри обработчика значило бы ждать самого себя.
+        self._reload_task = asyncio.get_running_loop().create_task(self._ask_reload(version))
+
+    async def _ask_reload(self, version: str) -> None:
+        """Попросить расширение перечитать себя; отказ — подсказать обновить руками."""
+        if await self.call("reload") is None:
+            self._manual_update(version, reason=self._last_error)
+
+    def _manual_update(self, version: str, *, reason: str = "") -> None:
+        self._log.warning(
+            "Расширение старое: в браузере v%s, на диске v%s%s. Открой "
+            "browser://extensions (или chrome://extensions) и нажми «Обновить» "
+            "у Jarvis — дальше оно будет обновляться само",
+            version,
+            self._expect_version,
+            f" ({reason})" if reason else "",
+        )
 
     async def call(self, action: str, **params: object) -> dict | None:
         """Выполнить команду в браузере.

@@ -841,3 +841,45 @@ def test_plain_search_engines_still_work() -> None:
     """Карты не должны перетянуть на себя обычные «гугл» и «яндекс»."""
     assert not browser.site_url("гугл", browser.SITES).endswith("/maps")
     assert not browser.site_url("яндекс", browser.SITES).endswith("/maps")
+
+
+async def test_old_extension_is_asked_to_reload_once(caplog) -> None:
+    """Просьба владельца 14.09.2026: расширение подтягивает новую версию само."""
+    import asyncio as _asyncio
+    import json as _json
+
+    bridge, server = _bridge(expect_version="0.9.5")
+    server.answer = {"ok": True, "result": {"reloading": "0.9.4"}}
+    with caplog.at_level("INFO", logger="test-browser"):
+        await bridge.on_message(_json.dumps({"event": "hello", "version": "0.9.4"}))
+        await bridge._reload_task
+    assert [message["action"] for message in server.sent] == ["reload"]
+    assert "прошу перезагрузиться" in caplog.text
+
+    # После перезагрузки опять старое — второй раз не просим, советуем руками.
+    caplog.clear()
+    with caplog.at_level("INFO", logger="test-browser"):
+        await bridge.on_message(_json.dumps({"event": "hello", "version": "0.9.4"}))
+        await _asyncio.sleep(0)
+    assert [message["action"] for message in server.sent] == ["reload"], "петли быть не должно"
+    assert "нажми «Обновить»" in caplog.text
+
+
+async def test_extension_without_reload_gets_a_manual_hint(caplog) -> None:
+    """Старое расширение команды не знает — подсказка обновить один раз руками."""
+    import json as _json
+
+    bridge, server = _bridge(expect_version="0.9.5")
+    server.answer = {"ok": False, "error": "неизвестная команда: reload"}
+    with caplog.at_level("INFO", logger="test-browser"):
+        await bridge.on_message(_json.dumps({"event": "hello", "version": "0.9.3"}))
+        await bridge._reload_task
+    assert "неизвестная команда: reload" in caplog.text and "нажми «Обновить»" in caplog.text
+
+
+async def test_current_extension_is_left_alone() -> None:
+    import json as _json
+
+    bridge, server = _bridge(expect_version="0.9.5")
+    await bridge.on_message(_json.dumps({"event": "hello", "version": "0.9.5"}))
+    assert server.sent == [] and bridge._reload_task is None
