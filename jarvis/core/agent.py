@@ -69,7 +69,7 @@ MAX_STEPS = 5
 #: `core.later` — по той же причине, что и `core.plan`: фоновое поручение
 #: запускает такой же цикл, и план, раздающий поручения самому себе, размножился
 #: бы в стороне от всякого предела шагов.
-HIDDEN: frozenset[str] = frozenset({"core.plan", "core.chat", "core.later"})
+HIDDEN: frozenset[str] = frozenset({"core.plan", "core.chat", "core.later", "core.repeat"})
 
 #: Сколько текста результата показывать модели. Целиком нельзя: список чатов
 #: или выдача поиска съест окно за два шага.

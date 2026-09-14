@@ -514,6 +514,29 @@ def test_name_at_the_start_still_passes_when_garbled(pipeline: VoicePipeline) ->
     assert pipeline._extract_command("Джарвис, включи свет", spoken_at=now - 6) == "включи свет"
 
 
+def test_foreign_script_after_a_mid_phrase_name_is_ignored(pipeline: VoicePipeline) -> None:
+    """Живой случай 14.09.2026: «имя» посреди фразы, а расшифровка на хинди."""
+    now = time.time()
+    pipeline._follow_up_until = now + 10
+    pipeline._name_heard_at = now
+    assert pipeline._extract_command("चाहिए जल्दी जल्दी जल्दी.", spoken_at=now - 0.5) is None
+
+
+def test_unnamed_phrase_is_marked_and_named_is_not(pipeline: VoicePipeline) -> None:
+    """Без имени в тексте команда проходит, но с меткой: разговор ей не положен."""
+    now = time.time()
+    pipeline._follow_up_until = now + 10
+    pipeline._name_heard_at = now
+    assert pipeline._extract_command("Реза откройфанель", spoken_at=now - 0.8) == "Реза откройфанель"
+    assert pipeline._unnamed
+    assert pipeline._extract_command("Джарвис, включи свет", spoken_at=now - 0.8) == "включи свет"
+    assert not pipeline._unnamed
+    # После «Слушаю» имя прозвучало до фразы — метки нет.
+    pipeline._name_heard_at = now - 4
+    assert pipeline._extract_command("как дела", spoken_at=now) == "как дела"
+    assert not pipeline._unnamed
+
+
 def test_answer_after_listening_is_not_mistaken_for_a_late_name(pipeline: VoicePipeline) -> None:
     """Голое «Джарвис» → «Слушаю» → команда: имя прозвучало до фразы, а не посреди неё."""
     now = time.time()

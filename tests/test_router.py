@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from jarvis.core.contracts import Intent, ToolResult, Utterance
@@ -13,6 +15,9 @@ from jarvis.core.router import (
     Router,
 )
 from jarvis.core.tools import ToolRegistry, collect_tools, tool
+
+if TYPE_CHECKING:
+    from jarvis.core.situation import Situation
 
 
 class Lights:
@@ -329,3 +334,68 @@ async def test_cheap_answer_costs_nothing_extra(lights_registry: ToolRegistry) -
 
     assert intent is not None
     assert provider.asked == ["cheap"]
+
+
+# --- повтор и реплики без имени ---------------------------------------------------
+
+
+class CoreStub:
+    """Заглушки ядра: повтор и свободный разговор."""
+
+    @tool(phrases=["попробуй ещё раз"], reversible=False)
+    async def repeat(self) -> ToolResult:
+        """Повторить прошлую команду."""
+        return ToolResult.failure("мимо диспетчера")
+
+    @tool(reversible=True)
+    async def chat(self, text: str) -> ToolResult:
+        """Поговорить.
+
+        :param text: реплика.
+        """
+        return ToolResult.success(text, speech="Болтаю.")
+
+
+class ChatFallback:
+    """Всё неузнанное — в разговор, как настоящий fallback."""
+
+    @property
+    def name(self) -> str:
+        return "fallback"
+
+    async def resolve(self, utterance: Utterance) -> Intent | None:
+        return Intent(tool="core.chat", arguments={"text": utterance.text}, confidence=1.0)
+
+
+def _dispatcher(registry: ToolRegistry) -> tuple[Dispatcher, "Situation"]:
+    from jarvis.core.situation import Situation
+
+    for item in collect_tools(CoreStub(), namespace="core"):
+        registry.register(item)
+    situation = Situation()
+    router = Router([PhraseResolver(registry), ChatFallback()], threshold=0.6)
+    return Dispatcher(router=router, registry=registry, situation=situation), situation
+
+
+async def test_try_again_repeats_the_previous_command(lights_registry: ToolRegistry) -> None:
+    """Живой случай 14.09.2026: «попробуй ещё раз» модель разобрала во включение трека."""
+    dispatcher, situation = _dispatcher(lights_registry)
+    nothing = await dispatcher.handle_text("попробуй ещё раз")
+    assert not nothing.ok and nothing.speech_for("ru") == "Повторять пока нечего."
+
+    await dispatcher.handle_text("зажги свет")
+    again = await dispatcher.handle_text("попробуй ещё раз")
+    assert again.ok and again.speech == "Свет включён."
+    # Повтор не записывает сам себя: второе «ещё раз» повторит свет, а не повтор.
+    assert situation.last is not None and situation.last.text == "зажги свет"
+
+
+async def test_unnamed_phrase_may_command_but_not_chat(lights_registry: ToolRegistry) -> None:
+    """«Алесса, люблю тебя» без имени — молчание; «зажги свет» без имени — выполняется."""
+    dispatcher, _ = _dispatcher(lights_registry)
+    ignored = await dispatcher.handle(Utterance(text="Алесса, люблю тебя", named=False))
+    assert ignored.ok and ignored.value == {"ignored": "без имени в свободный разговор"}
+    command = await dispatcher.handle(Utterance(text="зажги свет", named=False))
+    assert command.speech == "Свет включён."
+    chat = await dispatcher.handle(Utterance(text="как дела"))
+    assert chat.speech == "Болтаю."

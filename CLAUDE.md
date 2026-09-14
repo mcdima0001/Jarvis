@@ -32,7 +32,7 @@
 
 ```bash
 cd /root/Jarvis
-.venv/bin/python -m pytest -q            # 1470 тестов, около сорока секунд
+.venv/bin/python -m pytest -q            # 1484 тестов, около сорока секунд
 .venv/bin/python -m ruff check .         # линтер: осиротевшие импорты и прочий мусор
 .venv/bin/python -m mypy                 # типы: py.typed обещан, значит проверяется
 .venv/bin/python -m jarvis --check       # отчёт о сборке, ~6 с, без моделей
@@ -399,6 +399,7 @@ jarvis/core/
   app.py            composition root — единственное место сборки системы
   builtin.py        core.chat / help / status / sleep / be_brief / as_usual
                     reload_skill — «переподключи модуль браузер» голосом
+                    repeat — «попробуй ещё раз»: повторяет диспетчер
   contracts/        события, Intent, ToolResult — стабильный слой
   bus/              шина событий (LocalEventBus)
   tools/            @tool, вывод JSON Schema из сигнатур, ToolRegistry
@@ -437,7 +438,7 @@ skills/             плагины (см. skills/README.md); browser/page — п
                     peace/ — эквалайзер Peace Nexus голосом
 extension/          расширение браузера (см. extension/README.md)
 config/config.yaml  настройки ядра; настройки скилла — в skills/<имя>/config.yaml
-tests/              1470 тестов на швы архитектуры
+tests/              1484 тестов на швы архитектуры
 tools/photo_bench/  замер «где снято»: набор с известными координатами и промах
 launcher/           Jarvis.exe: запускатель без консоли, собирается build.py
 docs/lessons.md     журнал граблей: читать перед правкой подсистемы

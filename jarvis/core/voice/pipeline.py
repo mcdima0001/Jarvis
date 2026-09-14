@@ -76,6 +76,19 @@ _PENDING_LIMIT = 2
 #: в тексте, этим правилом не затрагивается вовсе.
 LATE_NAME_S = 2.0
 
+
+def foreign_script(text: str) -> bool:
+    """Текст написан не кириллицей и не латиницей — не на языке ассистента.
+
+    Считаются только буквы; меньше половины своих — чужой алфавит. Цифры и знаки
+    не решают ничего: «ES2», «7-8» остаются своими.
+    """
+    letters = [char for char in text if char.isalpha()]
+    if not letters:
+        return False
+    own = sum(1 for char in letters if "a" <= char.lower() <= "z" or "а" <= char.lower() <= "я" or char.lower() == "ё")
+    return own * 2 < len(letters)
+
 #: Похоже на имя, но недостаточно, чтобы счесть обращением. Нужен только для
 #: подсказки в логе: иначе непонятно, почему ассистент промолчал.
 ALMOST_NAME = 0.45
@@ -159,6 +172,9 @@ class VoicePipeline:
         #: Когда детектор услышал имя, открывшее окно. Нужно, чтобы отличить
         #: имя в начале фразы от «имени», пойманного посреди песни (`LATE_NAME_S`).
         self._name_heard_at = 0.0
+        #: Последняя разобранная фраза прошла без имени в тексте, а детектор
+        #: сработал посреди неё. Такой фразе команда разрешена, разговор — нет.
+        self._unnamed = False
         #: Язык разговора. Держится, пока его явно не сменят: в русской просьбе
         #: латиницей пишут названия программ и файлов, и считать их сменой языка
         #: значит отвечать по-английски на русский вопрос.
@@ -309,12 +325,17 @@ class VoicePipeline:
                 language=utterance.language,
                 confidence=utterance.confidence,
                 source=utterance.source,
+                named=utterance.named,
             )
         # Разговор запоминается **до** выполнения: пока команда идёт, ассистент
         # уже должен знать, о чём речь, — иначе доклад фоновой задачи или
         # сработавшее напоминание придут в разговор, где последней реплики нет.
         self._conversation.said(utterance.text)
         result = await self._run(utterance)
+        # Диспетчер решил, что это было не к нам (слова из песни, чужой разговор):
+        # молчим совсем — «Готово» в ответ на «люблю тебя» хуже тишины.
+        if isinstance(result.value, dict) and result.value.get("ignored"):
+            return result
         # Вариант выбирает персона, а не скилл: она помнит, что уже говорила, и
         # у каждой команды своя память — «пауза» не вытесняет «включаю».
         options = result.speech_options(utterance.language)
@@ -733,7 +754,7 @@ class VoicePipeline:
             )
         )
         await self.handle(
-            Utterance(text=command, language=language, source="voice")
+            Utterance(text=command, language=language, source="voice", named=not self._unnamed)
         )
 
     def _strip_wake(self, text: str) -> tuple[bool, str]:
@@ -852,6 +873,7 @@ class VoicePipeline:
         :return: текст команды; пустая строка, если позвали только по имени;
             ``None``, если обращения не было и окно ответа закрыто.
         """
+        self._unnamed = False
         if self._modes.active(DEAF):
             return self._deaf_gate(text)
 
@@ -874,6 +896,14 @@ class VoicePipeline:
                     text,
                 )
                 return None
+            if spoken_at is not None and late >= 0:
+                # Детектор сработал посреди этой самой фразы, а в тексте имени нет.
+                # Хинди в распознавании («चाहिए जल्दी जल्दी») — это не команда ни на
+                # одном из двух языков ассистента: чужая речь или песня.
+                if foreign_script(command):
+                    logger.info("Имя поймано посреди фразы, а текст не русский и не английский — не ко мне: %r", text)
+                    return None
+                self._unnamed = True
             logger.debug(
                 "Окно ответа открыто ещё %.1f с — имя не требуется",
                 self._follow_up_until - moment,

@@ -219,6 +219,23 @@ async def test_track_goes_to_yandex_music_even_with_youtube_open(loaded, monkeyp
     await manager.stop()
 
 
+async def test_clip_goes_to_video_not_to_yandex_music(loaded, monkeypatch) -> None:
+    """Исключение из «трек — в музыку» (владелец, 14.09.2026): «включи ролик …» — это видео."""
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "item", "detail": "коты", "played": True}]
+
+    result = await registry.invoke("page.play_item", {"track": "ролик про котов"})
+
+    assert result.ok
+    assert not any(call[0] == "target" and call[1] == "яндекс музыка" for call in fake.CALLS), "не в музыку"
+    run = next(call for call in fake.CALLS if call[0] == "run")
+    assert run[1][0]["item"][0] == "про котов", "слово «ролик» в название не уходит"
+    await manager.stop()
+
+
 async def test_silent_page_fails_fast_with_the_reason(loaded, monkeypatch) -> None:
     """Живой случай 14.09.2026: вкладка YouTube молчала, а Jarvis пробовал ещё два способа.
 

@@ -49,6 +49,11 @@ _NOT_UNDERSTOOD = {
     "en": "Sorry, I didn't catch that. Could you rephrase?",
 }
 
+#: «Попробуй ещё раз»: повторяет прошлую реплику диспетчер, а не сам инструмент.
+REPEAT_TOOL = "core.repeat"
+#: Свободный разговор. Реплике без имени он не положен (см. `Utterance.named`).
+CHAT_TOOL = "core.chat"
+
 #: Ответ на отказ от подтверждения. Короткий намеренно: человек сказал «нет»,
 #: и обсуждать тут нечего.
 _DROPPED = {
@@ -286,6 +291,18 @@ class Dispatcher:
                 speech=_NOT_UNDERSTOOD,
             )
 
+        if intent.tool == REPEAT_TOOL:
+            return await self._repeat(utterance)
+
+        # Имени в тексте нет, детектор услышал его посреди фразы, и командой она
+        # не оказалась. Разметка 14.09.2026: так прошли «Алесса, люблю тебя» и
+        # «Перестин, скорей, перчим»; из настоящих — одно исковерканное «как дела».
+        # Команды без имени по-прежнему выполняются: «Реза откройфанель» — это
+        # «Джарвис, открой панель».
+        if not utterance.named and intent.tool == CHAT_TOOL:
+            logger.info("Без имени, и это не команда — не отвечаю: %r", utterance.text)
+            return ToolResult.success({"ignored": "без имени в свободный разговор"}, tool="")
+
         result = await self._call(utterance, intent)
 
         # Модель разобрала фразу, инструмент отработал — связка проверена
@@ -295,6 +312,24 @@ class Dispatcher:
             await self._learner.remember(utterance.text, intent)
 
         return self._voiced(utterance, result)
+
+    async def _repeat(self, utterance: Utterance) -> ToolResult:
+        """Провести прошлую реплику заново — тем же путём, что и сказанную вслух.
+
+        Сам повтор в обстановку не пишется: иначе второе «попробуй ещё раз»
+        повторяло бы само себя. Повторяется текст, а не намерение: если прошлый
+        разбор был неверным, у второго есть шанс оказаться правильным.
+        """
+        last = self._situation.last if self._situation is not None else None
+        if last is None or not last.text:
+            return ToolResult.failure(
+                "повторять нечего", tool=REPEAT_TOOL,
+                speech={"ru": "Повторять пока нечего.", "en": "There's nothing to repeat yet."},
+            )
+        logger.info("Повторяю прошлую команду: %r", last.text)
+        return await self.handle(
+            Utterance(text=last.text, language=utterance.language, source=utterance.source)
+        )
 
     def _voiced(self, utterance: Utterance, result: ToolResult) -> ToolResult:
         """Сообщить шине, что ответ сформирован, и вернуть его как есть."""

@@ -48,6 +48,59 @@ def _memory_failure(exc: Exception) -> ToolResult:
     )
 
 
+#: Сколько слов берём в значение: «я люблю гулять по вечерам с собакой в парке»
+#: — это уже рассказ, а не предпочтение, и в профиль он не нужен целиком.
+_MAX_WORDS = 4
+
+#: Слова, с которых не начинается ни имя, ни предпочтение: «я люблю тебя»,
+#: «мне нравится это», «я из дома» — фразы, а не факты о владельце.
+_NOT_A_FACT = frozenset({
+    "тебя", "вас", "его", "её", "ее", "их", "это", "этого", "этот", "эту", "то", "так", "когда",
+    "что", "как", "всё", "все", "себя", "дома", "дом", "работы", "магазина", "школы", "туалета",
+    "you", "it", "this", "that", "them", "him", "her", "home", "work",
+})
+
+#: Как зовут месяцы: день рождения без числа и без месяца — не дата.
+_MONTHS = ("январ", "феврал", "март", "апрел", "ма", "июн", "июл", "август", "сентябр",
+           "октябр", "ноябр", "декабр", "jan", "feb", "mar", "apr", "may", "jun", "jul",
+           "aug", "sep", "oct", "nov", "dec")
+
+
+def _plausible(key: str, value: str) -> str:
+    """Оставить от найденного только правдоподобный факт; пусто — не факт.
+
+    Первая версия автопамяти брала всё после «я из» и «я люблю»: «я из дома»
+    записывалось городом «дома», «я люблю тебя» — предпочтением «тебя» (разбор
+    владельца 14.09.2026). Правила простые и по одному на ключ.
+    """
+    words = value.split()
+    if not words or words[0].lower() in _NOT_A_FACT:
+        return ""
+    if key in ("name", "city"):
+        # Имя и город распознавание пишет с большой буквы, а «дома», «работы» —
+        # с маленькой. Берём подряд идущие слова с большой: «Нижний Новгород».
+        proper = []
+        for word in words:
+            if not word[:1].isupper():
+                break
+            proper.append(word)
+        return " ".join(proper[:3])
+    if key == "job":
+        # «Я работаю программистом», «я работаю в Яндексе» — факт; «я работаю над
+        # проектом», «я работаю сегодня» — нет.
+        first = words[0].lower()
+        if first in ("в", "на", "at") and len(words) > 1 and words[1][:1].isupper():
+            return " ".join(words[:_MAX_WORDS])
+        if re.search(r"(ом|ем|ём|ой|ей|ью)$", first) and first not in ("над", "сегодня", "дома"):
+            return " ".join(words[:_MAX_WORDS])
+        return value if re.match(r"(?i)^(as|an?)\s", value) else ""
+    if key == "birthday":
+        lowered = value.lower()
+        if not re.search(r"\d", lowered) and not any(month in lowered for month in _MONTHS):
+            return ""
+    return " ".join(words[:_MAX_WORDS])
+
+
 # Максимальная длина сохраняемого значения: профиль должен оставаться коротким,
 # иначе его чтение начнёт стоить дорого при каждом запросе.
 _VALUE_LIMIT = 120
@@ -227,7 +280,7 @@ class MemorySkill(Skill):
                 match = pattern.search(text)
                 if match is None:
                     continue
-                value = match.group(1).strip(" .,!?;:—-")[:_VALUE_LIMIT]
+                value = _plausible(key, match.group(1).strip(" .,!?;:—-")[:_VALUE_LIMIT])
                 if value:
                     found[key] = value
         return found
