@@ -190,8 +190,48 @@ async def test_named_track_is_played_not_just_clicked(loaded) -> None:
     step = fake.CALLS[1][1][0]
     assert step["item"][0] == "midnight city"
     assert step["play"] is True and step["hint"], "нужна и подсказка, и дожим плеера"
-    # Смотрят в одну вкладку, а играть может другая — берём ту, куда смотрят.
-    assert fake.CALLS[0] == ("target", "", True, False)
+    # Трек ищется в музыкальном сайте, вкладку разрешено открыть в фоне.
+    assert fake.CALLS[0] == ("target", "яндекс музыка", False, True)
+    await manager.stop()
+
+
+async def test_track_goes_to_yandex_music_even_with_youtube_open(loaded, monkeypatch) -> None:
+    """Живой случай 14.09.2026: открыт YouTube, «включи Scorpions Where You Come From».
+
+    По прежнему правилу «сайт решает» трек искался на ютубе. Владелец: «трек
+    вообще должен был найтись в яндекс музыке, а не в ютубе».
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    monkeypatch.setattr(fake, "TARGET", {"tabId": 7, "url": "https://www.youtube.com/", "title": "YouTube"})
+    monkeypatch.setitem(
+        fake.SITE_TARGETS, "яндекс музыка", {"tabId": 9, "url": "https://music.yandex.ru/home", "title": "Музыка"}
+    )
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "item", "detail": "where you come from", "played": True}]
+
+    result = await registry.invoke("page.play_item", {"track": "Scorpions Where You Come From"})
+
+    assert result.ok
+    runs = [call for call in fake.CALLS if call[0] == "run"]
+    assert runs and all(call[2] == 9 for call in runs), "ни одного шага во вкладке ютуба"
+    await manager.stop()
+
+
+async def test_named_site_still_wins(loaded, monkeypatch) -> None:
+    """«Включи X на ютубе» — сайт назван прямо, туда и идём."""
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    monkeypatch.setitem(fake.SITE_TARGETS, "ютуб", {"tabId": 5, "url": "https://www.youtube.com/", "title": "YouTube"})
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "item", "detail": "клип", "played": True}]
+
+    result = await registry.invoke("page.play_item", {"track": "клип", "site": "ютуб"})
+
+    assert result.ok
+    assert fake.CALLS[0][1] == "ютуб"
     await manager.stop()
 
 
@@ -256,7 +296,7 @@ async def test_missing_track_is_searched_on_the_page(loaded, monkeypatch) -> Non
 
 
 async def test_play_by_name_belongs_to_the_open_site(loaded) -> None:
-    """«Включи X» решает открытый сайт, и выбор тут не за моделью.
+    """«Включи X» — один инструмент в каталоге, и выбор сайта тут не за моделью.
 
     Двух инструментов на одну просьбу быть не должно: пока в каталоге лежал и
     «включи ролик», модель выбирала наугад и уводила с открытой Яндекс Музыки на

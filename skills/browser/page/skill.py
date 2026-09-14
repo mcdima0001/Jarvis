@@ -1106,7 +1106,13 @@ class PageSkill(Skill):
                    "play the track {track}", "play {track} on the page"],
           reversible=True)
     async def play_item(self, track: str, site: str = "") -> ToolResult:
-        """Включить названное — песню, трек или ролик — там, где сейчас открыт сайт: на Яндекс Музыке это музыка, на YouTube видео; на странице нет — найти в поиске этого же сайта.
+        """Включить названную песню или трек в Яндекс Музыке, какой бы сайт ни был открыт; site заполнять, только если сайт прямо назван в просьбе.
+
+        **Правило сменил владелец 14.09.2026**: «трек вообще должен был найтись в
+        яндекс музыке, а не в ютубе». До того «включи X» искалось на открытом
+        сайте, и с открытым YouTube «включи Scorpions Where You Come From» ушло
+        туда. Теперь без названного сайта — всегда `music_site`, вкладка
+        открывается в фоне. Ролики — «включи видео X» (`play_video`).
 
         Первая строка уезжает в каталог для модели, и слова в ней подобраны не
         случайно. Сначала там было «из списка на странице», и «включи Don't Stop
@@ -1123,9 +1129,23 @@ class PageSkill(Skill):
         кнопка внутри строки, и обычно она появляется лишь при наведении.
 
         :param track: название, как оно написано в списке.
-        :param site: на каком сайте; пусто — там, куда смотришь.
+        :param site: на каком сайте, если назван в просьбе; пусто — музыкальный сайт.
         """
+        if not site.strip():
+            names = label_variants(track)
+            if names:
+                return await self._elsewhere(
+                    self._music_site, names, self._play_speech(names[0]), reason="трек — в музыкальный сайт"
+                )
         return await self._play(track, site=site, fallback=self._music_site)
+
+    @staticmethod
+    def _play_speech(name: str) -> dict[str, tuple[str, ...]]:
+        """Что сказать, когда включилось названное."""
+        return {
+            "ru": (f"Включаю {name}.", f"{name}, сейчас.", f"Ставлю {name}.", f"Есть, {name}."),
+            "en": (f"Playing {name}.", f"{name}, coming up.", f"Putting on {name}."),
+        }
 
     async def _play(self, track: str, *, site: str, fallback: str) -> ToolResult:
         """Включить названное. Отличие трека от ролика — только в том, куда
@@ -1138,11 +1158,7 @@ class PageSkill(Skill):
                 speech={"ru": "Не понял, что включить.", "en": "I didn't catch what to play."},
             )
         name = names[0]
-        speech: dict[str, tuple[str, ...]] = {
-            "ru": (f"Включаю {name}.", f"{name}, сейчас.", f"Ставлю {name}.",
-                   f"Есть, {name}."),
-            "en": (f"Playing {name}.", f"{name}, coming up.", f"Putting on {name}."),
-        }
+        speech = self._play_speech(name)
         return await self._act(
             f"item:{name}",
             site=site,
@@ -1160,8 +1176,8 @@ class PageSkill(Skill):
     # снова достаётся шаблону «открой {program}» из запуска программ — а это
     # ровно тот случай, когда голос вызвал запрос прав администратора.
     #
-    # В каталог для модели не идёт: «включи X» решает открытый сайт (см.
-    # `play_item`), а тут про видео сказано прямо.
+    # В каталог для модели не идёт: «включи X» — это трек в музыкальном сайте
+    # (см. `play_item`), а тут про видео сказано прямо.
     @tool(routable=False,
           phrases=["включи видео {track}", "открой видео {track}",
                    "включи трейлер {track}", "открой трейлер {track}",
@@ -1734,8 +1750,9 @@ class PageSkill(Skill):
         *,
         action: str = "",
         extra: Sequence[Mapping[str, Any]] | None = None,
+        reason: str = "на открытом сайте искать нечем",
     ) -> ToolResult:
-        """Искать на своём сайте: на открытом искать оказалось нечем.
+        """Искать на своём сайте: на открытом искать оказалось нечем, или трек — в музыку.
 
         Сюда попадают случаи, где текущий сайт не умеет искать — или браузер
         вообще закрыт. Сначала тут был жёстко ютуб, и это была ошибка: «включи
@@ -1761,7 +1778,7 @@ class PageSkill(Skill):
         if not site:
             return self._nothing(what)
 
-        self.log.info("На открытом сайте искать нечем — ищу %r на %s", name, site)
+        self.log.info("%s: ищу %r на %s", reason[:1].upper() + reason[1:], name, site)
         # Вкладку сайта открывает `page_target` — **в фоне**, если её нет.
         # Показывать музыкальный сайт незачем: владелец просил не выдёргивать его
         # из того, чем он занят, и дело можно сделать молча.
