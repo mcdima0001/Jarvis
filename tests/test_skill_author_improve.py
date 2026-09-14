@@ -214,3 +214,42 @@ def test_accepted_draft_takes_its_remarks_along(root: Path) -> None:
     author.AuthorSkill._move(draft / "skill.py", root / "skills" / "powershell" / "skill.py")
     assert not draft.exists()
     assert (root / "skills" / "powershell" / "skill.py").read_text(encoding="utf-8") == _CLIPBOARD
+
+
+async def test_model_goes_into_the_panel_request(root: Path) -> None:
+    """Модель агента: из настроек, на один раз поверх них; effort=default не шлётся."""
+    skill = author.AuthorSkill()
+    settings = {"url": "https://panel", "api_key": "k", "review": False, "model": "sonnet", "effort": "default"}
+    skill._context = SimpleNamespace(
+        setting=lambda key, default=None: settings.get(key, default),
+        logger=logging.getLogger("test.author"),
+        root=root,
+    )
+    await skill.on_setup()
+    assert skill._payload("напиши")["model"] == "sonnet"
+    assert skill._payload("напиши", "opus")["model"] == "opus", "модель на раз важнее настроек"
+    assert "effort" not in skill._payload("напиши")
+
+    settings.update(model="", effort="high")
+    await skill.on_setup()
+    payload = skill._payload("напиши")
+    assert "model" not in payload, "пусто — модель панели по умолчанию"
+    assert payload["effort"] == "high"
+
+
+async def test_improve_passes_the_chosen_model_to_the_agent(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    skill, _ = _skill(root, "")
+    await skill.on_setup()
+    models: list[str] = []
+
+    async def ask(prompt: str, model: str = "") -> str:
+        models.append(model)
+        return _CLIPBOARD.replace("Пусто.", "Картинка.")
+
+    async def check(path: Path) -> str:
+        return ""
+
+    monkeypatch.setattr(skill, "_ask", ask)
+    monkeypatch.setattr(skill, "_check", check)
+    await skill._improve("powershell", "читай картинки", model="opus")
+    assert models == ["opus"]

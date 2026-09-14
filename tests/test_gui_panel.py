@@ -608,3 +608,11 @@ async def test_home_feed_collects_commands_tools_and_replies(tmp_path: Path) -> 
     assert newest["reply"] == "Включаю про котов.", "заполнитель перезаписан ответом"
     assert greeting["source"] == "сам" and greeting["heard"] == ""
     assert data["load"] == [] and data["metered"] is False
+
+
+async def test_improvement_can_choose_a_model(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    await _call(panel, "POST", "/api/modules/improve", body={"name": "keys", "request": "короче", "model": " opus "})
+    assert panel._registry.calls[-1] == (  # type: ignore[attr-defined]
+        "author.improve", {"skill": "keys", "request": "короче", "model": "opus"}
+    )

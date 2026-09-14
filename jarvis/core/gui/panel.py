@@ -628,7 +628,11 @@ class ControlPanel:
             raise ValueError("напиши, что доработать")
         if not self._registry.has("author.improve"):
             raise ValueError("модуль author не загружен — дорабатывать некому")
-        result = await self._registry.invoke("author.improve", {"skill": name, "request": wish})
+        arguments: dict[str, Any] = {"skill": name, "request": wish}
+        model = str(data.get("model", "") or "").strip()
+        if model:
+            arguments["model"] = model
+        result = await self._registry.invoke("author.improve", arguments)
         if not result.ok:
             raise ValueError(result.speech_for("ru") or str(result.error))
         return json_response({
@@ -642,7 +646,11 @@ class ControlPanel:
         name, wish = str(data.get("name", "")), str(data.get("request", "")).strip()
         if not self._registry.has("author.improve"):
             raise ValueError("модуль author не загружен — дорабатывать некому")
-        result = await self._registry.invoke("author.improve", {"skill": name, "request": wish, "revise": True})
+        arguments: dict[str, Any] = {"skill": name, "request": wish, "revise": True}
+        model = str(data.get("model", "") or "").strip()
+        if model:
+            arguments["model"] = model
+        result = await self._registry.invoke("author.improve", arguments)
         if not result.ok:
             raise ValueError(result.speech_for("ru") or str(result.error))
         return json_response({

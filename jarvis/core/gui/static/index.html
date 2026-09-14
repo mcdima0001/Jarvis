@@ -339,7 +339,11 @@
       <h2 class="caption">Доработать с Claude</h2>
       <p class="note">Опиши, что изменить. Текущий код модуля и твоя просьба уйдут агенту Claude на сервере; результат пройдёт ruff, mypy и свежий разбор и ляжет черновиком наверх вкладки «Модули». Рабочий модуль не меняется, пока ты не нажмёшь «Принять».</p>
       <textarea id="module-improve" class="prompt" placeholder="Например: пусть ещё умеет читать картинки из буфера и говорит их размер"></textarea>
-      <div class="toolbar" style="margin-top:10px"><button class="act" id="module-improve-send">Отправить на доработку</button></div>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="act" id="module-improve-send">Отправить на доработку</button>
+        <input type="text" id="module-improve-model" list="claude-models" maxlength="60" placeholder="модель: из настроек" title="Какой моделью Claude дорабатывать на этот раз. Пусто — модель из настроек модуля author.">
+      </div>
+      <datalist id="claude-models"><option value="opus"><option value="sonnet"><option value="haiku"></datalist>
     </div>
   </section>
 
@@ -843,7 +847,9 @@ $("module-config-save").addEventListener("click", async () => {
 $("module-improve-send").addEventListener("click", async () => {
   const button = $("module-improve-send");
   button.disabled = true;
-  const answer = await run(() => api("/api/modules/improve", { name: moduleName, request: $("module-improve").value }));
+  const answer = await run(() => api("/api/modules/improve", {
+    name: moduleName, request: $("module-improve").value, model: $("module-improve-model").value.trim(),
+  }));
   if (answer) $("module-improve").value = "";
   button.disabled = false;
 });
@@ -910,15 +916,19 @@ function reviseBox(draft) {
     if (!draft.review && !box.value.trim()) { toast("Напиши, что поправить", true); return; }
     send.disabled = true;
     try {
-      const answer = await api("/api/drafts/revise", { name: draft.name, request: box.value });
+      const answer = await api("/api/drafts/revise", { name: draft.name, request: box.value, model: model.value.trim() });
       toast(answer.message);
       box.value = "";
     } catch (error) { toast(error.message, true); } finally { send.disabled = false; }
   } }, "Отправить Claude повторно");
+  const model = el("input", {
+    type: "text", list: "claude-models", maxlength: "60", placeholder: "модель: из настроек",
+    title: "Какой моделью Claude поправить черновик на этот раз. Пусто — модель из настроек модуля author.",
+  });
   return el("div", { class: "revise" },
     el("h3", { class: "caption" }, "Правки к черновику"),
     el("p", { class: "note" }, "Claude получит этот черновик, замечания разбора и твои правки; новая версия заменит черновик здесь же."),
-    box, el("div", { class: "toolbar", style: "margin-top:10px" }, send));
+    box, el("div", { class: "toolbar", style: "margin-top:10px" }, send, model));
 }
 async function loadDrafts() {
   const { drafts } = await api("/api/drafts");

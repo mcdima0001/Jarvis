@@ -394,6 +394,9 @@ class AuthorSkill(Skill):
         self._key = str(self.context.setting("api_key", ""))
         self._provider = str(self.context.setting("provider", "claude"))
         self._workdir = str(self.context.setting("workdir", ""))
+        #: Модель и глубина рассуждения агента. Пусто — как решит панель.
+        self._model = str(self.context.setting("model", "") or "").strip()
+        self._effort = str(self.context.setting("effort", "") or "").strip()
         self._timeout = float(self.context.setting("timeout", TIMEOUT))
         #: Показывать ли написанное свежему агенту. Стоит один заход (около
         #: полминуты) и ловит то, чего линтер с типами не видят в принципе.
@@ -412,6 +415,9 @@ class AuthorSkill(Skill):
 
     @tool(
         phrases=[
+            # Длинные шаблоны первыми: иначе «научись {what}» забрал бы и модель.
+            "научись {what} на модели {model}",
+            "напиши скилл {what} на модели {model}",
             "научись {what}",
             "напиши скилл {what}",
             "напиши модуль {what}",
@@ -421,7 +427,7 @@ class AuthorSkill(Skill):
         ],
         reversible=False,
     )
-    async def learn(self, what: str, language: str = "ru") -> ToolResult:
+    async def learn(self, what: str, language: str = "ru", model: str = "") -> ToolResult:
         """Написать себе новое умение и положить его в черновики.
 
         Занимает около минуты, поэтому уходит в фон: ассистент ответит сразу и
@@ -430,6 +436,7 @@ class AuthorSkill(Skill):
 
         :param what: чему научиться, своими словами.
         :param language: язык доклада.
+        :param model: какой моделью писать на этот раз (opus, sonnet…); пусто — из настроек.
         """
         if not self._key or not self._url:
             return ToolResult.failure(
@@ -440,7 +447,7 @@ class AuthorSkill(Skill):
                 },
             )
 
-        job = self._jobs_submit(what, language)
+        job = self._jobs_submit(what, language, model)
         if job is None:
             return ToolResult.failure(
                 "все места заняты",
@@ -459,7 +466,9 @@ class AuthorSkill(Skill):
         )
 
     @tool(reversible=False)
-    async def improve(self, skill: str, request: str, language: str = "ru", revise: bool = False) -> ToolResult:
+    async def improve(
+        self, skill: str, request: str, language: str = "ru", revise: bool = False, model: str = ""
+    ) -> ToolResult:
         """Доработать установленный скилл по просьбе: агент перепишет файл, результат ляжет в черновики.
 
         Рабочий скилл не трогается, пока доработку не примут. Уходит в фон, как
@@ -469,6 +478,7 @@ class AuthorSkill(Skill):
         :param request: что изменить, своими словами.
         :param language: язык доклада.
         :param revise: поправить уже лежащий черновик — по замечаниям разбора и этой просьбе.
+        :param model: какой моделью дорабатывать на этот раз; пусто — из настроек.
         """
         if not self._key or not self._url:
             return ToolResult.failure(
@@ -508,7 +518,7 @@ class AuthorSkill(Skill):
         title = f"поправить черновик {folder}" if revise else f"доработать скилл {folder}"
         job = self.context.jobs.submit(
             f"{title}: {request or 'по замечаниям разбора'}",
-            self._improve(folder, request, revise=revise),
+            self._improve(folder, request, revise=revise, model=model),
             language=language,
         )
         if job is None:
@@ -555,10 +565,10 @@ class AuthorSkill(Skill):
         except OSError:
             pass
 
-    def _jobs_submit(self, what: str, language: str) -> int | None:
+    def _jobs_submit(self, what: str, language: str, model: str = "") -> int | None:
         """Сдать написание в фоновые поручения."""
         job = self.context.jobs.submit(
-            f"написать скилл: {what}", self._write(what), language=language
+            f"написать скилл: {what}", self._write(what, model=model), language=language
         )
         return job.id if job else None
 
@@ -715,9 +725,9 @@ class AuthorSkill(Skill):
 
     # --- работа ------------------------------------------------------------
 
-    async def _write(self, what: str) -> str:
+    async def _write(self, what: str, *, model: str = "") -> str:
         """Заказать скилл у панели, проверить и сохранить. Возвращает доклад."""
-        code = await self._draft(build_prompt(what))
+        code = await self._draft(build_prompt(what), model)
         name = skill_name(code)
         path = draft_path(self._root, name)
         await asyncio.to_thread(self._save, path, code)
@@ -727,7 +737,7 @@ class AuthorSkill(Skill):
             # Одна попытка исправления, не больше. Вторая почти всегда означает,
             # что модель ходит по кругу, а платим мы за каждый заход временем.
             self.log.info("Черновик %s не прошёл проверку, прошу исправить", name)
-            fixed = await self._draft(repair_prompt(code, findings))
+            fixed = await self._draft(repair_prompt(code, findings), model)
             if skill_name(fixed) == name:
                 await asyncio.to_thread(self._save, path, fixed)
                 code, findings = fixed, await self._check(path)
@@ -749,7 +759,7 @@ class AuthorSkill(Skill):
         self.log.info("Черновик скилла %s сохранён: %s", name, path)
         return report(name, path, code.count("@tool"), findings, remarks)
 
-    async def _improve(self, folder: str, request: str, *, revise: bool = False) -> str:
+    async def _improve(self, folder: str, request: str, *, revise: bool = False, model: str = "") -> str:
         """Доработать скилл руками агента и положить черновик рядом. Возвращает доклад.
 
         С ``revise`` основой служит лежащий черновик, а в запрос уходят его
@@ -769,7 +779,7 @@ class AuthorSkill(Skill):
             current = await asyncio.to_thread(source.read_text, encoding="utf-8")
             name = skill_name(current)
             prompt = improve_prompt(current, request)
-        code = await self._draft(prompt)
+        code = await self._draft(prompt, model)
         if skill_name(code) != name:
             # Сменённое имя — это уже другой скилл: выученное в памяти и
             # настройки на него не сошлются. Такую доработку не принимаем.
@@ -781,7 +791,7 @@ class AuthorSkill(Skill):
 
         findings = await self._check(path)
         if findings:
-            fixed = await self._draft(repair_prompt(code, findings))
+            fixed = await self._draft(repair_prompt(code, findings), model)
             if skill_name(fixed) == name:
                 await asyncio.to_thread(self._save, path, fixed)
                 code, findings = fixed, await self._check(path)
@@ -817,9 +827,14 @@ class AuthorSkill(Skill):
             return ""
         return verdict
 
-    async def _draft(self, prompt: str) -> str:
-        """Спросить панель и убедиться, что вернулся именно скилл."""
-        code = extract_code(await self._ask(prompt))
+    async def _draft(self, prompt: str, model: str = "") -> str:
+        """Спросить панель и убедиться, что вернулся именно скилл.
+
+        :param model: модель на этот раз; пусто — из настроек.
+        """
+        # Модель передаётся, только если выбрана: так звать `_ask` можно и по-старому.
+        answer = await (self._ask(prompt, model) if model else self._ask(prompt))
+        code = extract_code(answer)
         wrong = looks_like_skill(code)
         if wrong:
             self.log.warning("Панель вернула не скилл (%s): %s", wrong, code[:200])
@@ -877,20 +892,37 @@ class AuthorSkill(Skill):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(code, encoding="utf-8")
 
-    async def _ask(self, prompt: str) -> str:
-        """Спросить панель и собрать текст ответа.
+    def _payload(self, prompt: str, model: str = "") -> dict[str, object]:
+        """Тело запроса к панели.
 
-        **Только потоковый режим.** Нестримовый у панели врёт: возвращает
-        HTTP 200 и `success: true`, даже когда не запустилось ничего, — это
-        записано в журнале граблей и проверено на живых запросах.
+        :param model: модель на этот раз; пусто — из настроек, а там пусто —
+            модель панели по умолчанию. Поле `model` и `effort` у `/api/agent`
+            настоящие (документация панели, 14.09.2026).
         """
-        payload = {
+        payload: dict[str, object] = {
             "message": prompt,
             "stream": True,
             "provider": self._provider,
         }
         if self._workdir:
             payload["projectPath"] = self._workdir
+        chosen = (model or self._model).strip()
+        if chosen:
+            payload["model"] = chosen
+        if self._effort and self._effort != "default":
+            payload["effort"] = self._effort
+        return payload
+
+    async def _ask(self, prompt: str, model: str = "") -> str:
+        """Спросить панель и собрать текст ответа.
+
+        **Только потоковый режим.** Нестримовый у панели врёт: возвращает
+        HTTP 200 и `success: true`, даже когда не запустилось ничего, — это
+        записано в журнале граблей и проверено на живых запросах.
+
+        :param model: модель на этот раз; пусто — из настроек.
+        """
+        payload = self._payload(prompt, model)
 
         chunks: list[str] = []
         failure = ""
