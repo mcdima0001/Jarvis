@@ -24,7 +24,8 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-from .menu import DEFAULT_ACTION, MENU, READY, STARTING, MenuItem, menu_commands
+from .menu import DEFAULT_ACTION, MENU, POPUP_GAP, READY, STARTING, MenuItem, menu_commands
+from .popup import StyledMenu
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,9 @@ _MONITOR_DEFAULTTONEAREST = 2
 Rect = tuple[int, int, int, int]
 
 
-def menu_placement(cursor: tuple[int, int], monitor: Rect, work: Rect) -> tuple[int, int, int, Rect | None]:
+def menu_placement(
+    cursor: tuple[int, int], monitor: Rect, work: Rect, gap: int = 0,
+) -> tuple[int, int, int, Rect | None]:
     """Где поставить меню значка, чтобы панель задач его не закрывала.
 
     Меню у курсора не годится: курсор стоит **на** панели задач, и часть меню
@@ -72,7 +75,9 @@ def menu_placement(cursor: tuple[int, int], monitor: Rect, work: Rect) -> tuple[
     """
     x, y = cursor
     left, top, right, bottom = monitor
-    work_left, work_top, work_right, work_bottom = work
+    # Зазор: меню не липнет к панели задач, а висит над ней.
+    work_left, work_top = work[0] + gap, work[1] + gap
+    work_right, work_bottom = work[2] - gap, work[3] - gap
     x = min(max(x, work_left), work_right)
     if work_bottom < bottom and y >= work_bottom:
         return x, work_bottom, TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_VERTICAL, (left, work_bottom, right, bottom)
@@ -254,6 +259,7 @@ class TrayIcon:
         self._icons: dict[str, int] = {}
         self._owned: list[int] = []
         self._taskbar_created = 0
+        self._styled: StyledMenu | None = None
 
     def start(self) -> None:
         """Показать значок. Ждёт, пока окно создано, но не дольше пяти секунд."""
@@ -332,6 +338,9 @@ class TrayIcon:
             user32.DispatchMessageW(ctypes.byref(message))
 
         self._hwnd = None
+        if self._styled is not None:
+            self._styled.dispose()
+            self._styled = None
         for icon in self._owned:
             user32.DestroyIcon(icon)
         self._owned.clear()
@@ -396,7 +405,27 @@ class TrayIcon:
         return int(self._user32.DefWindowProcW(hwnd, message, wparam, lparam))
 
     def _popup(self) -> None:
-        """Показать меню у курсора и выполнить выбранное."""
+        """Показать меню над значком и выполнить выбранное."""
+        user32 = self._user32
+        point = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        monitor = user32.MonitorFromPoint(point, _MONITOR_DEFAULTTONEAREST)
+        rects: tuple[Rect, Rect] | None = None
+        if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            rect, work = info.rcMonitor, info.rcWork
+            rects = (rect.left, rect.top, rect.right, rect.bottom), (work.left, work.top, work.right, work.bottom)
+        # Своё меню в цветах панели; не открылось — системное, без меню нельзя.
+        if rects is not None:
+            if self._styled is None:
+                self._styled = StyledMenu(self._icon_files)
+            if self._styled.show((point.x, point.y), monitor, *rects, self._state, self._menu, self._fire):
+                return
+        self._native_popup(point, rects)
+
+    def _native_popup(self, point: Any, rects: tuple[Rect, Rect] | None) -> None:
+        """Системное меню — запасной путь, если своё окно не создалось."""
         user32 = self._user32
         menu = user32.CreatePopupMenu()
         actions: dict[int, str] = {}
@@ -409,23 +438,15 @@ class TrayIcon:
             else:
                 user32.AppendMenuW(menu, _MF_STRING, command, item.label)
                 actions[command] = item.action
-        point = wintypes.POINT()
-        user32.GetCursorPos(ctypes.byref(point))
         # Без переднего плана меню не закрывается щелчком мимо — известная
         # причуда меню у значков, и лечится она ровно так, вместе с WM_NULL.
         user32.SetForegroundWindow(self._hwnd)
         # Меню встаёт над панелью задач, а не у курсора на ней: см. menu_placement.
         x, y, align, exclude = point.x, point.y, TPM_BOTTOMALIGN | TPM_VERTICAL, None
-        info = _MONITORINFO()
-        info.cbSize = ctypes.sizeof(_MONITORINFO)
-        monitor = user32.MonitorFromPoint(point, _MONITOR_DEFAULTTONEAREST)
-        if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-            rect, work = info.rcMonitor, info.rcWork
-            x, y, align, exclude = menu_placement(
-                (point.x, point.y),
-                (rect.left, rect.top, rect.right, rect.bottom),
-                (work.left, work.top, work.right, work.bottom),
-            )
+        if rects is not None:
+            getter = getattr(user32, "GetDpiForWindow", None)
+            dpi = int(getter(self._hwnd)) if getter is not None else 96
+            x, y, align, exclude = menu_placement((point.x, point.y), *rects, gap=round(POPUP_GAP * dpi / 96))
         params = _TPMPARAMS()
         params.cbSize = ctypes.sizeof(_TPMPARAMS)
         if exclude is not None:

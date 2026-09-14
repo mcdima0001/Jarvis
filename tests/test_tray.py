@@ -353,3 +353,54 @@ def test_menu_from_the_hidden_icons_flyout_stays_at_the_cursor() -> None:
     from jarvis.core.tray.win32 import menu_placement
 
     assert menu_placement((1500, 1000), MONITOR, (0, 0, 1920, 1152))[1::2] == (1000, None)
+
+
+# --- своё меню: раскладка и место --------------------------------------------
+
+
+def test_popup_layout_scales_and_skips_separators() -> None:
+    layout = menu.popup_layout(menu.MENU, 1.5)
+    assert layout.width == 372 and layout.header == 84
+    items = [row for row in layout.rows if row.item is not None]
+    assert len(items) == 5 and all(row.height == 51 for row in items)
+    assert layout.height == layout.rows[-1].top + layout.rows[-1].height + 9
+    separator = next(index for index, row in enumerate(layout.rows) if row.item is None)
+    assert menu.row_at(layout, layout.rows[separator].top + 1) is None
+    assert menu.row_at(layout, 10) is None  # шапка
+    assert menu.row_at(layout, layout.rows[0].top) == 0
+
+
+def test_arrows_walk_items_around_the_separator() -> None:
+    layout = menu.popup_layout()
+    assert menu.step_row(layout, None, 1) == 0
+    assert menu.step_row(layout, None, -1) == 5
+    assert menu.step_row(layout, 2, 1) == 4  # через разделитель
+    assert menu.step_row(layout, 5, 1) == 0  # по кругу
+
+
+def test_popup_hovers_above_the_taskbar_with_a_gap() -> None:
+    """Просьба владельца: зазор между панелью задач и меню."""
+    work = (0, 0, 1920, 1152)
+    x, y = menu.popup_position((1700, 1180), MONITOR, work, (248, 300), 8)
+    assert y + 300 == 1152 - 8
+    assert x == 1700 - 124
+    # У правого края меню не вылезает за экран.
+    x, _ = menu.popup_position((1915, 1180), MONITOR, work, (248, 300), 8)
+    assert x + 248 == 1920 - 8
+
+
+def test_popup_for_other_taskbar_edges() -> None:
+    assert menu.popup_position((900, 10), MONITOR, (0, 48, 1920, 1200), (248, 300), 8)[1] == 56
+    assert menu.popup_position((1900, 600), MONITOR, (0, 0, 1860, 1200), (248, 300), 8)[0] == 1860 - 8 - 248
+    assert menu.popup_position((10, 600), MONITOR, (60, 0, 1920, 1200), (248, 300), 8)[0] == 68
+
+
+def test_native_menu_keeps_the_same_gap() -> None:
+    from jarvis.core.tray.win32 import menu_placement
+
+    _, y, _, exclude = menu_placement((1700, 1180), MONITOR, (0, 0, 1920, 1152), gap=8)
+    assert y == 1144 and exclude == (0, 1144, 1920, 1200)
+
+
+def test_quit_is_the_only_danger_item() -> None:
+    assert [item.action for item in menu.MENU if item is not None and item.danger] == ["quit"]
