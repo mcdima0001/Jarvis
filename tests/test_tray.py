@@ -314,3 +314,42 @@ def test_restarted_process_waits_for_the_old_one(monkeypatch: Any) -> None:
     assert lock.waits[0] > 0
     # Флаг одноразовый: следующий перезапуск ставит его заново.
     assert RESTART_ENV not in os.environ
+
+
+# --- где встаёт меню значка ---------------------------------------------------
+
+MONITOR = (0, 0, 1920, 1200)
+
+
+def test_menu_stands_above_a_bottom_taskbar() -> None:
+    """Живой случай: меню у курсора уходило под панель задач внизу."""
+    from jarvis.core.tray.win32 import TPM_BOTTOMALIGN, menu_placement
+
+    x, y, align, exclude = menu_placement((1700, 1180), MONITOR, (0, 0, 1920, 1152))
+    assert (x, y) == (1700, 1152)
+    assert align & TPM_BOTTOMALIGN
+    assert exclude == (0, 1152, 1920, 1200)
+
+
+def test_menu_hangs_below_a_top_taskbar() -> None:
+    from jarvis.core.tray.win32 import TPM_BOTTOMALIGN, menu_placement
+
+    x, y, align, exclude = menu_placement((1700, 20), MONITOR, (0, 48, 1920, 1200))
+    assert (x, y) == (1700, 48) and not align & TPM_BOTTOMALIGN
+    assert exclude == (0, 0, 1920, 48)
+
+
+def test_menu_leaves_a_side_taskbar_alone() -> None:
+    from jarvis.core.tray.win32 import TPM_RIGHTALIGN, menu_placement
+
+    x, y, align, exclude = menu_placement((1900, 1100), MONITOR, (0, 0, 1860, 1200))
+    assert (x, y) == (1860, 1100) and align & TPM_RIGHTALIGN
+    assert exclude == (1860, 0, 1920, 1200)
+    left = menu_placement((10, 1100), MONITOR, (60, 0, 1920, 1200))
+    assert left[:2] == (60, 1100) and left[3] == (0, 0, 60, 1200)
+
+
+def test_menu_from_the_hidden_icons_flyout_stays_at_the_cursor() -> None:
+    from jarvis.core.tray.win32 import menu_placement
+
+    assert menu_placement((1500, 1000), MONITOR, (0, 0, 1920, 1152))[1::2] == (1000, None)

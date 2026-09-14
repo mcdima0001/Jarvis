@@ -49,7 +49,55 @@ _SM_CXSMICON, _SM_CYSMICON = 49, 50
 _IDI_APPLICATION = 32512
 
 _MF_STRING, _MF_GRAYED, _MF_SEPARATOR = 0x0, 0x1, 0x800
-_TPM_RIGHTBUTTON, _TPM_BOTTOMALIGN, _TPM_NONOTIFY, _TPM_RETURNCMD = 0x2, 0x20, 0x80, 0x100
+_TPM_RIGHTBUTTON, _TPM_NONOTIFY, _TPM_RETURNCMD = 0x2, 0x80, 0x100
+TPM_LEFTALIGN, TPM_RIGHTALIGN, TPM_TOPALIGN, TPM_BOTTOMALIGN = 0x0, 0x8, 0x0, 0x20
+TPM_HORIZONTAL, TPM_VERTICAL = 0x0, 0x40
+_MONITOR_DEFAULTTONEAREST = 2
+
+Rect = tuple[int, int, int, int]
+
+
+def menu_placement(cursor: tuple[int, int], monitor: Rect, work: Rect) -> tuple[int, int, int, Rect | None]:
+    """Где поставить меню значка, чтобы панель задач его не закрывала.
+
+    Меню у курсора не годится: курсор стоит **на** панели задач, и часть меню
+    оказывалась под ней (живой запуск 14.09.2026, в том числе после
+    TPM_BOTTOMALIGN). Поэтому меню прижимается к краю рабочей области с той
+    стороны, где панель, а сама полоса панели запрещается системе целиком.
+
+    :param cursor: курсор, x и y.
+    :param monitor: прямоугольник монитора: слева, сверху, справа, снизу.
+    :param work: рабочая область того же монитора, без панели задач.
+    :return: x, y, флаги выравнивания и запрещённый прямоугольник или None.
+    """
+    x, y = cursor
+    left, top, right, bottom = monitor
+    work_left, work_top, work_right, work_bottom = work
+    x = min(max(x, work_left), work_right)
+    if work_bottom < bottom and y >= work_bottom:
+        return x, work_bottom, TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_VERTICAL, (left, work_bottom, right, bottom)
+    if work_top > top and y < work_top:
+        return x, work_top, TPM_TOPALIGN | TPM_LEFTALIGN | TPM_VERTICAL, (left, top, right, work_top)
+    y = min(max(y, work_top), work_bottom)
+    if work_left > left and cursor[0] < work_left:
+        return work_left, y, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_HORIZONTAL, (left, top, work_left, bottom)
+    if work_right < right and cursor[0] >= work_right:
+        return work_right, y, TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_HORIZONTAL, (work_right, top, right, bottom)
+    # Курсор в рабочей области: меню из всплывающего списка скрытых значков.
+    return x, y, TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_VERTICAL, None
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+class _TPMPARAMS(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("rcExclude", wintypes.RECT)]
 #: Поток осведомлён о масштабе каждого монитора: курсор и меню в одних пикселях.
 _PER_MONITOR_AWARE_V2 = -4
 #: `SetPreferredAppMode(AllowDark)` в uxtheme: меню следует тёмной теме Windows.
@@ -159,6 +207,11 @@ def _configure(user32: Any, shell32: Any, kernel32: Any) -> None:
     user32.CreatePopupMenu.restype = handle
     user32.AppendMenuW.argtypes = [handle, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR]
     user32.TrackPopupMenu.argtypes = [handle, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, handle, handle]
+    user32.TrackPopupMenuEx.argtypes = [handle, wintypes.UINT, ctypes.c_int, ctypes.c_int, handle, ctypes.c_void_p]
+    user32.MonitorFromPoint.restype = handle
+    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.GetMonitorInfoW.argtypes = [handle, ctypes.c_void_p]
     user32.DestroyMenu.argtypes = [handle]
     user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
     user32.SetForegroundWindow.argtypes = [handle]
@@ -361,11 +414,25 @@ class TrayIcon:
         # Без переднего плана меню не закрывается щелчком мимо — известная
         # причуда меню у значков, и лечится она ровно так, вместе с WM_NULL.
         user32.SetForegroundWindow(self._hwnd)
-        # Меню растёт вверх от курсора: значок живёт на панели задач внизу
-        # экрана, и меню, растущее вниз, панель задач обрезала.
-        chosen = user32.TrackPopupMenu(
-            menu, _TPM_RIGHTBUTTON | _TPM_BOTTOMALIGN | _TPM_RETURNCMD | _TPM_NONOTIFY,
-            point.x, point.y, 0, self._hwnd, None,
+        # Меню встаёт над панелью задач, а не у курсора на ней: см. menu_placement.
+        x, y, align, exclude = point.x, point.y, TPM_BOTTOMALIGN | TPM_VERTICAL, None
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        monitor = user32.MonitorFromPoint(point, _MONITOR_DEFAULTTONEAREST)
+        if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            rect, work = info.rcMonitor, info.rcWork
+            x, y, align, exclude = menu_placement(
+                (point.x, point.y),
+                (rect.left, rect.top, rect.right, rect.bottom),
+                (work.left, work.top, work.right, work.bottom),
+            )
+        params = _TPMPARAMS()
+        params.cbSize = ctypes.sizeof(_TPMPARAMS)
+        if exclude is not None:
+            params.rcExclude = wintypes.RECT(*exclude)
+        chosen = user32.TrackPopupMenuEx(
+            menu, _TPM_RIGHTBUTTON | _TPM_RETURNCMD | _TPM_NONOTIFY | align,
+            x, y, self._hwnd, ctypes.byref(params) if exclude is not None else None,
         )
         user32.PostMessageW(self._hwnd, _WM_NULL, 0, 0)
         user32.DestroyMenu(menu)
