@@ -228,13 +228,12 @@
     <button role="tab" data-tab="status" aria-selected="true">Статус</button>
     <button role="tab" data-tab="modules">Модули</button>
     <button role="tab" data-tab="memory">Память</button>
-    <button role="tab" data-tab="admin">Права</button>
     <button role="tab" data-tab="log">Лог</button>
     <span class="spacer"></span>
     <button role="tab" data-tab="settings" class="gear" title="Настройки">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-        <circle cx="12" cy="12" r="3.2"/>
-        <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
       </svg>
       Настройки
     </button>
@@ -293,15 +292,6 @@
     <div id="memory-journals"></div>
   </section>
 
-  <section id="tab-admin">
-    <div class="grid" id="admin-cards"></div>
-    <p class="note" style="margin-top:16px">Права задаёт <code>Jarvis.exe</code>: с правами он просит подтверждение UAC при каждом запуске, зато Jarvis может управлять программами, запущенными от администратора. Изменение пересобирает exe и действует со следующего запуска.</p>
-    <div class="toolbar">
-      <button class="act" id="build-admin">Собрать с правами администратора</button>
-      <button class="act danger" id="build-user">Собрать без прав</button>
-    </div>
-  </section>
-
   <section id="tab-log">
     <div class="toolbar">
       <label class="small"><input type="checkbox" id="follow" checked> прокручивать за новыми строками</label>
@@ -336,6 +326,14 @@
     <h2 class="caption">Ключи</h2>
     <p class="note">Ключи хранятся в <code>.env</code>. Значения здесь не показываются — только задан ли ключ и какой он длины. Новый ключ начнёт работать после перезапуска Jarvis.</p>
     <table><thead><tr><th>Переменная</th><th>Состояние</th><th>Где используется</th><th style="width:42%">Заменить</th></tr></thead><tbody id="keys"></tbody></table>
+
+    <h2 class="caption">Права администратора</h2>
+    <div class="grid" id="admin-cards"></div>
+    <p class="note" style="margin-top:16px">Права задаёт <code>Jarvis.exe</code>: с правами он просит подтверждение UAC при каждом запуске, зато Jarvis может управлять программами, запущенными от администратора. Изменение пересобирает exe и действует со следующего запуска.</p>
+    <div class="toolbar">
+      <button class="act" id="build-admin">Собрать с правами администратора</button>
+      <button class="act danger" id="build-user">Собрать без прав</button>
+    </div>
 
     <h2 class="caption">Расширение браузера</h2>
     <p class="row" style="margin:0 0 12px"><span id="ext-status" class="badge">—</span><span class="small" id="ext-detail"></span></p>
@@ -885,8 +883,7 @@ async function refresh() {
   try {
     if (tab === "modules") { await loadModules(); await loadDrafts(); }
     if (tab === "memory") await loadMemory();
-    if (tab === "admin") await loadAdmin();
-    if (tab === "settings") await loadSettings();
+    if (tab === "settings") { await loadSettings(); await loadAdmin(); }
   } catch (error) { toast(error.message, true); }
 }
 loadStatus();
