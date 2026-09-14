@@ -50,14 +50,22 @@ router: {}
 
 
 class FakeSkills:
-    def __init__(self) -> None:
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root or Path(".")
         self.loaded = ("keys", "windows")
         self.disabled: frozenset[str] = frozenset()
         self.unloaded: list[str] = []
         self.adopted: list[str] = []
+        self.settings: dict[str, Any] = {}
 
     def candidates(self) -> list[Any]:
-        return [SimpleNamespace(name=name, parent="") for name in ("keys", "windows")]
+        return [
+            SimpleNamespace(name=name, parent="", path=self.root / "skills" / name / "skill.py")
+            for name in ("keys", "windows")
+        ]
+
+    def set_settings(self, name: str, settings: Any) -> None:
+        self.settings[name] = settings
 
     def get(self, name: str) -> Any:
         return SimpleNamespace(meta=SimpleNamespace(name=name, version="0.1.0", description=f"скилл {name}"))
@@ -85,8 +93,20 @@ class FakeRegistry:
     def __len__(self) -> int:
         return 3
 
+    def has(self, name: str) -> bool:
+        return name.startswith("author.")
+
+    def catalog(self, *, skill: str | None = None) -> Any:
+        spec = SimpleNamespace(
+            name=f"{skill}.watch", description="Следить за клавиатурой.\n\nПодробности.",
+            phrases=("следи за клавиатурой",), routable=False, reversible=True,
+        )
+        return SimpleNamespace(specs=(spec,))
+
     async def invoke(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         self.calls.append((name, arguments))
+        if name == "author.accept":
+            return ToolResult.success(None, speech={"ru": "Скилл keys принят и подключён."})
         return ToolResult.success(None, speech={"ru": "Голос переключён: колонка."})
 
 
@@ -129,7 +149,10 @@ def _panel(tmp_path: Path) -> tuple[ControlPanel, FakeSkills, LocalEventBus]:
         get=lambda task: SimpleNamespace(provider="openai", model="gpt-5.4-nano"),
     )
     events = LocalEventBus()
-    skills = FakeSkills()
+    skills = FakeSkills(tmp_path)
+    (tmp_path / "skills" / "keys").mkdir(parents=True)
+    (tmp_path / "skills" / "keys" / "skill.py").write_text("# keys\n", encoding="utf-8")
+    (tmp_path / "skills" / "keys" / "config.yaml").write_text("# настройки\nenabled: false\n", encoding="utf-8")
     panel = ControlPanel(
         config=config,  # type: ignore[arg-type]
         events=events,
@@ -239,6 +262,81 @@ async def test_modules_list_versions_and_health(tmp_path: Path) -> None:
     rows = _json(await _call(panel, "GET", "/api/modules"))["modules"]
     keys = next(row for row in rows if row["name"] == "keys")
     assert keys["loaded"] and keys["healthy"] and keys["tools"] == 1 and keys["version"] == "0.1.0"
+
+
+# --- карточка модуля --------------------------------------------------------
+
+
+async def test_module_detail_shows_tools_and_config(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    info = _json(await _call(panel, "GET", "/api/modules/detail", query={"name": "keys"}))
+    assert info["tools"] == [{
+        "name": "keys.watch", "description": "Следить за клавиатурой.",
+        "phrases": ["следи за клавиатурой"], "routable": False, "reversible": True,
+    }]
+    assert info["config"] == {"editable": True, "exists": True, "path": "skills/keys/config.yaml",
+                              "text": "# настройки\nenabled: false\n"}
+    assert info["improvable"] is True
+
+
+async def test_broken_yaml_is_refused_and_file_kept(tmp_path: Path) -> None:
+    panel, skills, _ = _panel(tmp_path)
+    response = await _call(panel, "POST", "/api/modules/config", body={"name": "keys", "text": "enabled: [true"})
+    assert response.status == 400
+    assert (tmp_path / "skills" / "keys" / "config.yaml").read_text(encoding="utf-8") == "# настройки\nenabled: false\n"
+    assert skills.adopted == []
+
+
+async def test_saved_config_is_applied_and_module_reloaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PANEL_TEST_KEY", "секрет")
+    panel, skills, _ = _panel(tmp_path)
+    text = "# настройки\nenabled: true\nkey: ${PANEL_TEST_KEY}\n"
+    response = await _call(panel, "POST", "/api/modules/config", body={"name": "keys", "text": text})
+    assert response.status == 200
+    assert (tmp_path / "skills" / "keys" / "config.yaml").read_text(encoding="utf-8") == text
+    # ${VAR} раскрыт так же, как при запуске, а модуль сразу перезагружен.
+    assert skills.settings["keys"] == {"enabled": True, "key": "секрет"}
+    assert skills.adopted == ["keys"]
+
+
+async def test_improvement_goes_to_author(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    empty = await _call(panel, "POST", "/api/modules/improve", body={"name": "keys", "request": "  "})
+    assert empty.status == 400
+    response = await _call(panel, "POST", "/api/modules/improve", body={"name": "keys", "request": "не реагируй на пароли"})
+    assert response.status == 200
+    assert panel._registry.calls == [  # type: ignore[attr-defined]
+        ("author.improve", {"skill": "keys", "request": "не реагируй на пароли"})
+    ]
+
+
+async def test_drafts_show_diff_and_review_and_accept_through_author(tmp_path: Path) -> None:
+    draft = tmp_path / "drafts" / "keys"
+    draft.mkdir(parents=True)
+    (draft / "skill.py").write_text("# keys\n# доработано\n", encoding="utf-8")
+    (draft / "review.md").write_text("проверь паузу\n", encoding="utf-8")
+    panel, _, _ = _panel(tmp_path)
+
+    drafts = _json(await _call(panel, "GET", "/api/drafts"))["drafts"]
+    assert drafts[0]["name"] == "keys" and drafts[0]["improvement"] is True
+    assert "+# доработано" in drafts[0]["diff"] and drafts[0]["review"] == "проверь паузу"
+
+    accepted = await _call(panel, "POST", "/api/drafts/accept", body={"name": "keys"})
+    assert _json(accepted)["message"] == "Скилл keys принят и подключён."
+
+
+# --- положение окна ---------------------------------------------------------
+
+
+async def test_window_position_is_remembered(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    assert panel.saved_window() is None
+    response = await _call(panel, "POST", "/api/window", body={"x": -1500, "y": 40, "width": 1400, "height": 900})
+    assert response.status == 200
+    assert panel.saved_window() == (-1500, 40, 1400, 900)
+    # Мусор не запоминается: трей открыл бы окно размером в точку.
+    bad = await _call(panel, "POST", "/api/window", body={"x": 0, "y": 0, "width": 5, "height": 5})
+    assert bad.status == 400 and panel.saved_window() == (-1500, 40, 1400, 900)
 
 
 # --- память -----------------------------------------------------------------

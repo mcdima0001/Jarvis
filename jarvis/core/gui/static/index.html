@@ -158,6 +158,23 @@
   ol.guide { margin: 0; padding-left: 22px; display: grid; gap: 8px; max-width: 80ch; }
   ol.guide code, .note code { font-family: var(--mono); color: var(--cyan-soft); background: rgba(79, 216, 255, 0.08); padding: 1px 5px; }
   .badge { display: inline-block; padding: 2px 10px; border: 1px solid currentColor; font-size: 12px; letter-spacing: 0.08em; }
+  textarea {
+    width: 100%; min-height: 240px; font-family: var(--mono); font-size: 13px; line-height: 1.5; color: var(--text);
+    background: rgba(2, 10, 16, 0.8); border: 1px solid var(--line); padding: 12px; resize: vertical;
+  }
+  textarea:focus { outline: 1px solid var(--cyan); }
+  textarea:disabled { opacity: 0.5; }
+  textarea.prompt { min-height: 100px; font-family: inherit; font-size: 14px; }
+  pre.diff {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.45; background: rgba(2, 10, 16, 0.7);
+    border: 1px solid var(--line); padding: 10px 12px; max-height: 460px; overflow: auto; white-space: pre; margin: 8px 0;
+  }
+  pre.diff .add { color: var(--green); } pre.diff .del { color: #ff6b6b; } pre.diff .hunk { color: var(--cyan-soft); }
+  button.link {
+    background: none; border: 0; padding: 0; font: inherit; color: var(--cyan-soft); cursor: pointer;
+    text-decoration: underline dotted rgba(143, 233, 255, 0.5); text-underline-offset: 3px;
+  }
+  button.link:hover { color: var(--cyan); }
   @media (max-width: 860px) {
     body { grid-template-columns: 1fr; overflow: auto; }
     .reactor-side { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -219,8 +236,35 @@
   </section>
 
   <section id="tab-modules">
-    <p class="note">Выключенный модуль выгружается сразу и не загрузится после перезапуска (строка <code>skills.disabled</code> в config.yaml). Подмодуль работает только вместе с главным.</p>
+    <div id="drafts"></div>
+    <p class="note">Нажми на название, чтобы открыть модуль: его команды, настройки и доработку с Claude. Выключенный модуль выгружается сразу и не загрузится после перезапуска (строка <code>skills.disabled</code> в config.yaml). Подмодуль работает только вместе с главным.</p>
     <table><thead><tr><th>Модуль</th><th>Версия</th><th>Команд</th><th>Состояние</th><th>Включён</th><th></th></tr></thead><tbody id="modules"></tbody></table>
+  </section>
+
+  <section id="tab-module">
+    <div class="toolbar">
+      <button class="act" id="module-back">← Все модули</button>
+      <span class="big" id="module-title"></span>
+      <span class="small" id="module-meta"></span>
+      <span class="spacer" style="flex:1"></span>
+      <button class="act" id="module-reload">Перезагрузить</button>
+    </div>
+    <p class="note" id="module-description"></p>
+
+    <h2 class="caption">Команды</h2>
+    <table><thead><tr><th>Инструмент</th><th>Что делает и как сказать</th><th>Видит модель</th><th>Обратимо</th></tr></thead><tbody id="module-tools"></tbody></table>
+
+    <h2 class="caption">Настройки</h2>
+    <p class="note" id="module-config-note"></p>
+    <textarea id="module-config" spellcheck="false"></textarea>
+    <div class="toolbar" style="margin-top:10px"><button class="act" id="module-config-save">Сохранить и перезагрузить модуль</button></div>
+
+    <div id="module-improve-box">
+      <h2 class="caption">Доработать с Claude</h2>
+      <p class="note">Опиши, что изменить. Текущий код модуля и твоя просьба уйдут агенту Claude на сервере; результат пройдёт ruff, mypy и свежий разбор и ляжет черновиком наверх вкладки «Модули». Рабочий модуль не меняется, пока ты не нажмёшь «Принять».</p>
+      <textarea id="module-improve" class="prompt" placeholder="Например: пусть ещё умеет читать картинки из буфера и говорит их размер"></textarea>
+      <div class="toolbar" style="margin-top:10px"><button class="act" id="module-improve-send">Отправить на доработку</button></div>
+    </div>
   </section>
 
   <section id="tab-memory">
@@ -354,10 +398,15 @@ async function run(action) {
 
 // --- вкладки --------------------------------------------------------------
 let tab = "status";
+function showTab(name) {
+  tab = name;
+  // Карточка модуля живёт внутри «Модулей»: подсвечиваем их вкладку.
+  const lit = name === "module" ? "modules" : name;
+  document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === lit));
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === `tab-${name}`));
+}
 document.querySelectorAll("nav button").forEach((button) => button.addEventListener("click", () => {
-  tab = button.dataset.tab;
-  document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-selected", b === button));
-  document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === `tab-${tab}`));
+  showTab(button.dataset.tab);
   refresh();
 }));
 
@@ -413,7 +462,8 @@ async function loadModules() {
       ? el("span", { class: item.healthy ? "ok" : "warn", title: item.detail || "" }, item.healthy ? "работает" : (item.detail || "с ограничениями"))
       : el("span", { class: "small" }, item.disabled ? "выключен" : "не загружен");
     return el("tr", { class: item.parent ? "child" : "" },
-      el("td", {}, el("div", {}, item.name), el("div", { class: "small" }, item.description || "")),
+      el("td", {}, el("div", {}, el("button", { class: "link", onclick: () => openModule(item.name) }, item.name)),
+        el("div", { class: "small" }, item.description || "")),
       el("td", { class: "mono" }, item.version || "—"),
       el("td", {}, item.tools),
       el("td", {}, health),
@@ -421,6 +471,95 @@ async function loadModules() {
       el("td", {}, reload),
     );
   }));
+}
+
+// --- карточка модуля ------------------------------------------------------
+let moduleName = "";
+async function openModule(name) {
+  moduleName = name;
+  showTab("module");
+  try {
+    const info = await api(`/api/modules/detail?name=${encodeURIComponent(name)}`);
+    $("module-title").textContent = info.name;
+    $("module-meta").textContent = [
+      info.passport && info.passport !== info.name ? `в паспорте: ${info.passport}` : "",
+      info.version ? `v${info.version}` : "",
+      info.loaded ? "загружен" : "не загружен",
+    ].filter(Boolean).join(" · ");
+    $("module-description").textContent = info.description || "";
+    $("module-reload").disabled = !info.loaded;
+    $("module-tools").replaceChildren(...(info.tools.length ? info.tools.map((t) => el("tr", {},
+      el("td", { class: "mono" }, t.name),
+      el("td", {}, t.description, t.phrases.length ? el("div", { class: "small" }, t.phrases.map((p) => `«${p}»`).join(", ")) : ""),
+      el("td", {}, t.routable ? "да" : el("span", { class: "small" }, "нет, только фразы")),
+      el("td", {}, t.reversible === true ? "да" : t.reversible === false ? el("span", { class: "warn" }, "нет") : "не объявлено"),
+    )) : [el("tr", {}, el("td", { colspan: "4", class: "small" }, "Команд не видно: модуль не загружен."))]));
+    const config = info.config;
+    $("module-config").value = config.text;
+    $("module-config").disabled = !config.editable;
+    $("module-config-save").disabled = !config.editable;
+    $("module-config-note").textContent = config.editable
+      ? `${config.path}${config.exists ? "" : " — файла пока нет, сохранение создаст его"}. Перед сохранением YAML проверяется, модуль сразу перезагружается с новыми настройками. Ключи — через \${ИМЯ} из .env, сами значения сюда не пиши.`
+      : "У этого модуля нет своей папки — настроек рядом с ним не бывает.";
+    $("module-improve-box").hidden = !info.improvable;
+  } catch (error) { toast(error.message, true); }
+}
+$("module-back").addEventListener("click", () => { showTab("modules"); refresh(); });
+$("module-reload").addEventListener("click", async () => {
+  await run(() => api("/api/modules/reload", { name: moduleName }));
+  openModule(moduleName);
+});
+$("module-config-save").addEventListener("click", async () => {
+  const button = $("module-config-save");
+  button.disabled = true;
+  await run(() => api("/api/modules/config", { name: moduleName, text: $("module-config").value }));
+  button.disabled = false;
+  openModule(moduleName);
+});
+$("module-improve-send").addEventListener("click", async () => {
+  const button = $("module-improve-send");
+  button.disabled = true;
+  const answer = await run(() => api("/api/modules/improve", { name: moduleName, request: $("module-improve").value }));
+  if (answer) $("module-improve").value = "";
+  button.disabled = false;
+});
+
+// --- черновики Claude -----------------------------------------------------
+function diffView(text) {
+  const pre = el("pre", { class: "diff" });
+  for (const line of text.split("\n")) {
+    const cls = line.startsWith("@@") ? "hunk" : line.startsWith("+") && !line.startsWith("+++") ? "add"
+      : line.startsWith("-") && !line.startsWith("---") ? "del" : "";
+    pre.append(el("span", { class: cls }, line), "\n");
+  }
+  return pre;
+}
+async function loadDrafts() {
+  const { drafts } = await api("/api/drafts");
+  $("drafts").replaceChildren(...(drafts.length ? [el("h2", { class: "caption" }, "Черновики Claude — ждут решения")] : []),
+    ...drafts.map((draft) => el("details", { class: "box" },
+      el("summary", {},
+        el("span", {}, draft.name),
+        el("span", { class: "small" }, draft.improvement ? "доработка" : "новый модуль"),
+        draft.review ? el("span", { class: "warn small" }, "есть замечания разбора") : ""),
+      el("div", {},
+        draft.review ? el("p", { class: "note" }, draft.review) : "",
+        diffView(draft.diff),
+        el("div", { class: "toolbar" },
+          el("button", { class: "act", onclick: async () => {
+            const what = draft.improvement ? `Заменить рабочий модуль ${draft.name} доработкой?` : `Подключить новый модуль ${draft.name}?`;
+            if (!confirm(what)) return;
+            await run(() => api("/api/drafts/accept", { name: draft.name }));
+            refresh();
+          } }, "Принять"),
+          el("button", { class: "act danger", onclick: async () => {
+            if (!confirm(`Отклонить черновик ${draft.name}? Рабочий модуль не изменится.`)) return;
+            await run(() => api("/api/drafts/discard", { name: draft.name }));
+            refresh();
+          } }, "Отклонить"),
+        ),
+      ),
+    )));
 }
 
 // --- память ---------------------------------------------------------------
@@ -587,10 +726,25 @@ async function loadKeys() {
   }));
 }
 
+// --- положение окна -------------------------------------------------------
+// Edge в режиме приложения положение окна не помнит, поэтому окно сообщает его
+// само, а трей открывает панель там же. Перемещение окна событий не шлёт —
+// отсюда сверка раз в две секунды; отправляется только изменившееся.
+let lastWindow = "";
+function reportWindow() {
+  const geometry = { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight };
+  const key = JSON.stringify(geometry);
+  if (key === lastWindow || geometry.width < 320 || geometry.height < 240) return;
+  lastWindow = key;
+  api("/api/window", geometry).catch(() => { lastWindow = ""; });
+}
+setInterval(reportWindow, 2000);
+window.addEventListener("beforeunload", reportWindow);
+
 // --- опрос ----------------------------------------------------------------
 async function refresh() {
   try {
-    if (tab === "modules") await loadModules();
+    if (tab === "modules") { await loadModules(); await loadDrafts(); }
     if (tab === "memory") await loadMemory();
     if (tab === "admin") await loadAdmin();
     if (tab === "settings") await loadSettings();

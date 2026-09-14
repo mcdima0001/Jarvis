@@ -217,6 +217,39 @@ def panel_geometry(work_area: tuple[int, int, int, int], dpi: int = 96) -> tuple
     )
 
 
+def fits_screen(
+    geometry: tuple[int, int, int, int], screen: tuple[int, int, int, int]
+) -> bool:
+    """Видно ли окно на экранах: хотя бы угол заголовка должен попасть на них.
+
+    Сохранённое положение бывает с отключённого монитора — открыть окно там
+    значит открыть его невидимым.
+
+    :param screen: весь виртуальный экран в независимых точках: x, y, ширина, высота.
+    """
+    x, y, width, _ = geometry
+    left, top, screen_width, screen_height = screen
+    grab_x, grab_y = x + min(width, 200) // 2, y + 10
+    return left <= grab_x < left + screen_width and top <= grab_y < top + screen_height
+
+
+def _virtual_screen() -> tuple[int, int, int, int] | None:
+    """Все мониторы вместе, в независимых точках."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    try:
+        dpi = int(user32.GetDpiForSystem()) or 96
+    except AttributeError:
+        dpi = 96
+    scale = dpi / 96
+    # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN
+    left, top, width, height = (int(user32.GetSystemMetrics(index)) for index in (76, 77, 78, 79))
+    return round(left / scale), round(top / scale), round(width / scale), round(height / scale)
+
+
 def _work_area() -> tuple[tuple[int, int, int, int], int] | None:
     """Рабочий стол без панели задач и масштаб системы."""
     if sys.platform != "win32":
@@ -245,11 +278,16 @@ def panel_command(
     return [str(edge), f"--app={url}", f"--window-size={width},{height}", f"--window-position={x},{y}"]
 
 
-def open_panel(url: str) -> None:
-    """Открыть панель отдельным окном."""
+def open_panel(url: str, saved: tuple[int, int, int, int] | None = None) -> None:
+    """Открыть панель отдельным окном: там, где она была, либо на 90% рабочего стола."""
     edge = next((path for path in EDGE_PATHS if path.exists()), None)
-    area = _work_area()
-    command = panel_command(url, edge, panel_geometry(*area) if area else None)
+    screen = _virtual_screen()
+    if saved is not None and (screen is None or fits_screen(saved, screen)):
+        geometry: tuple[int, int, int, int] | None = saved
+    else:
+        area = _work_area()
+        geometry = panel_geometry(*area) if area else None
+    command = panel_command(url, edge, geometry)
     if command is not None:
         subprocess.Popen(command)
     elif sys.platform == "win32":
@@ -283,10 +321,12 @@ class TraySession:
         opener: Callable[[Path], None] = open_path,
         live_log: Callable[[Path, str], None] = open_live_log,
         log_file: Callable[[], Path | None] = current_log_file,
-        panel: Callable[[str], None] = open_panel,
+        panel: Callable[[str, tuple[int, int, int, int] | None], None] = open_panel,
     ) -> None:
         self._log_file = log_file
         self._open_panel = panel
+        #: Где окно панели было в прошлый раз — спрашивается у панели в момент открытия.
+        self._saved_window: Callable[[], tuple[int, int, int, int] | None] = lambda: None
         #: Адрес панели с токеном. Появляется, когда приложение подключено.
         self.panel_url: str | None = None
         #: Уровень консоли: окно лога показывает то же, что показала бы она.
@@ -318,6 +358,8 @@ class TraySession:
         self.name = app.config.app.name
         self.root = app.config.root
         self.panel_url = app.panel.url if app.panel is not None else None
+        if app.panel is not None:
+            self._saved_window = app.panel.saved_window
         self.log_level = app.config.logging.level
         app.events.subscribe(SystemStarted.NAME, self._on_started)
         app.events.subscribe(SystemStopping.NAME, self._on_stopping)
@@ -329,7 +371,7 @@ class TraySession:
         """Пункт меню выбран. Зовётся из потока значка."""
         if action == "panel":
             if self.panel_url:
-                self._open_panel(self.panel_url)
+                self._open_panel(self.panel_url, self._saved_window())
             else:
                 # Панели нет (выключена или ещё не поднялась) — хотя бы лог.
                 self.on_action("log")

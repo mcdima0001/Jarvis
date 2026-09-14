@@ -233,6 +233,74 @@ def repair_prompt(code: str, findings: str) -> str:
     )
 
 
+def improve_prompt(code: str, request: str) -> str:
+    """Попросить доработать уже работающий скилл, прислав файл целиком.
+
+    Условия жёстче, чем у нового скилла, и все куплены живым опытом: имя в
+    паспорте и существующие команды трогать нельзя — на них ссылается
+    выученное в памяти и настройки в `config.yaml`, а переименованная команда
+    молча перестаёт срабатывать на знакомую фразу.
+    """
+    return (
+        f"{CONVENTIONS}\n\n"
+        f"Вот рабочий скилл, который надо доработать:\n\n{code}\n\n"
+        f"Что изменить: {request.strip()}\n\n"
+        "Пришли файл целиком. Имя в meta не меняй. Существующие инструменты и их "
+        "фразы не удаляй и не переименовывай, если об этом прямо не просят. "
+        "Версию в meta подними на третью цифру."
+    )
+
+
+#: Как скилл называют вслух, из его паспорта: `spoken=("буфер обмена", "clipboard")`.
+_SPOKEN = re.compile(r"spoken\s*=\s*\(([^)]*)\)")
+
+
+def installed_skills(root: Path) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Установленные скиллы верхнего уровня: папка → имя в паспорте и имена вслух.
+
+    Читаются файлы, а не загруженные модули: дорабатывать можно и выключенный
+    скилл, и тот, что не поднялся. Подскиллы (`browser/page`) сюда не входят —
+    принятый черновик лёг бы не в ту папку.
+    """
+    found: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for path in sorted((root / "skills").glob("*/skill.py")):
+        try:
+            code = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        spoken = _SPOKEN.search(code)
+        names = tuple(re.findall(r"[\"']([^\"']+)[\"']", spoken.group(1))) if spoken else ()
+        found[path.parent.name] = (skill_name(code), names)
+    return found
+
+
+def pick_installed(said: str, installed: dict[str, tuple[str, tuple[str, ...]]]) -> str:
+    """Какой установленный скилл назвали: по папке, паспорту или имени вслух. Пусто — не поняли."""
+    labels: dict[str, str] = {}
+    for folder, (meta, spoken) in installed.items():
+        for label in (folder, meta, *spoken):
+            if label:
+                labels.setdefault(label, folder)
+    exact = said.strip().lower()
+    if exact in labels:
+        return labels[exact]
+    found = best_match(said, labels, similarity=SIMILARITY)
+    return labels[found] if found else ""
+
+
+def draft_diff(root: Path, name: str) -> str:
+    """Разница между рабочим скиллом и его черновиком. У нового скилла — весь файл."""
+    import difflib
+
+    draft = root / DRAFTS / name / "skill.py"
+    current = root / "skills" / name / "skill.py"
+    before = current.read_text(encoding="utf-8").splitlines() if current.is_file() else []
+    after = draft.read_text(encoding="utf-8").splitlines() if draft.is_file() else []
+    return "\n".join(
+        difflib.unified_diff(before, after, f"skills/{name}/skill.py", f"drafts/{name}/skill.py", lineterm="")
+    )
+
+
 #: Чем отвечает разбор, когда придраться не к чему. Ищется без учёта регистра,
 #: потому что модель пишет то «ЧИСТО», то «Чисто».
 CLEAN = "ЧИСТО"
@@ -270,7 +338,7 @@ def review_prompt(code: str) -> str:
 
 
 def report(
-    name: str, path: Path, tools: int, findings: str = "", remarks: str = ""
+    name: str, path: Path, tools: int, findings: str = "", remarks: str = "", *, improved: bool = False
 ) -> str:
     """Что доложить, когда скилл написан.
 
@@ -285,8 +353,9 @@ def report(
         verdict = "проверки прошёл, но есть замечания"
     else:
         verdict = "проверки прошёл, замечаний нет"
+    done = f"доработка скилла «{name}» готова" if improved else f"скилл «{name}» написан"
     return (
-        f"скилл «{name}» написан, {tools} инструмент(ов), {verdict}. "
+        f"{done}, {tools} инструмент(ов), {verdict}. "
         f"Посмотри {path.as_posix()} и скажи «прими скилл {name}»"
     )
 
@@ -370,6 +439,85 @@ class AuthorSkill(Skill):
                 "en": "I'll write it. About a minute, I'll report back.",
             },
         )
+
+    @tool(reversible=False)
+    async def improve(self, skill: str, request: str, language: str = "ru") -> ToolResult:
+        """Доработать установленный скилл по просьбе: агент перепишет файл, результат ляжет в черновики.
+
+        Рабочий скилл не трогается, пока доработку не примут. Уходит в фон, как
+        и написание нового.
+
+        :param skill: какой скилл дорабатывать — имя модуля или как его зовут вслух.
+        :param request: что изменить, своими словами.
+        :param language: язык доклада.
+        """
+        if not self._key or not self._url:
+            return ToolResult.failure(
+                "панель не настроена: нужен url и ключ CLI_CLAUDE",
+                speech={
+                    "ru": "Не могу дорабатывать скиллы: панель не настроена.",
+                    "en": "I can't improve skills: the panel isn't configured.",
+                },
+            )
+        installed = await asyncio.to_thread(installed_skills, self._root)
+        folder = pick_installed(skill, installed)
+        if not folder or not safe_name(folder):
+            listed = ", ".join(installed)
+            return ToolResult.failure(
+                f"скилл {skill!r} не найден; есть: {listed}",
+                speech={"ru": f"Не нашёл скилл {skill}.", "en": f"No skill named {skill}."},
+            )
+        if not request.strip():
+            return ToolResult.failure(
+                "не сказано, что доработать",
+                speech={"ru": f"Что доработать в {folder}?", "en": f"What should change in {folder}?"},
+            )
+        job = self.context.jobs.submit(
+            f"доработать скилл {folder}: {request}", self._improve(folder, request), language=language
+        )
+        if job is None:
+            return ToolResult.failure(
+                "все места заняты",
+                speech={"ru": "Сейчас и так три дела в работе, подожди.", "en": "Three things are already running."},
+            )
+        return ToolResult.success(
+            {"job": job.id, "skill": folder},
+            speech={
+                "ru": f"Отправил {folder} на доработку. Доложу, когда будет готово.",
+                "en": f"Sent {folder} for improvement. I'll report back.",
+            },
+        )
+
+    @tool(routable=False, phrases=["отклони черновик {name}", "удали черновик {name}"], reversible=False)
+    async def discard(self, name: str) -> ToolResult:
+        """Отклонить черновик: убрать его из `drafts/`, рабочий скилл не трогая.
+
+        :param name: имя черновика.
+        """
+        waiting = draft_names(self._root)
+        safe = pick_draft(name, waiting)
+        if not safe:
+            return ToolResult.failure(
+                f"черновика {name!r} нет",
+                speech={"ru": f"Черновика {name} не нашёл.", "en": f"No draft named {name}."},
+            )
+        await asyncio.to_thread(self._remove_draft, self._root / DRAFTS / safe)
+        self.log.info("Черновик %s отклонён", safe)
+        return ToolResult.success(
+            {"draft": safe}, speech={"ru": f"Черновик {safe} отклонён.", "en": f"Draft {safe} discarded."}
+        )
+
+    @staticmethod
+    def _remove_draft(folder: Path) -> None:
+        """Удалить файлы черновика — только известные, только внутри `drafts/`."""
+        for file_name in ("skill.py", "review.md"):
+            target = folder / file_name
+            if target.is_file():
+                target.unlink()
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
 
     def _jobs_submit(self, what: str, language: str) -> int | None:
         """Сдать написание в фоновые поручения."""
@@ -559,6 +707,37 @@ class AuthorSkill(Skill):
 
         self.log.info("Черновик скилла %s сохранён: %s", name, path)
         return report(name, path, code.count("@tool"), findings, remarks)
+
+    async def _improve(self, folder: str, request: str) -> str:
+        """Доработать скилл руками агента и положить черновик рядом. Возвращает доклад."""
+        source = self._root / "skills" / folder / "skill.py"
+        current = await asyncio.to_thread(source.read_text, encoding="utf-8")
+        name = skill_name(current)
+        code = await self._draft(improve_prompt(current, request))
+        if skill_name(code) != name:
+            # Сменённое имя — это уже другой скилл: выученное в памяти и
+            # настройки на него не сошлются. Такую доработку не принимаем.
+            raise ValueError(f"агент сменил имя в паспорте: {name} → {skill_name(code)}")
+        # Черновик кладётся по имени **папки**, а не паспорта: принятый, он обязан
+        # лечь на место рабочего (`powershell` зовёт себя `clipboard`).
+        path = draft_path(self._root, folder)
+        await asyncio.to_thread(self._save, path, code)
+
+        findings = await self._check(path)
+        if findings:
+            fixed = await self._draft(repair_prompt(code, findings))
+            if skill_name(fixed) == name:
+                await asyncio.to_thread(self._save, path, fixed)
+                code, findings = fixed, await self._check(path)
+
+        remarks = ""
+        if not findings and self._review:
+            remarks = await self._look_over(code)
+            if remarks:
+                await asyncio.to_thread(self._save, path.with_name("review.md"), remarks + "\n")
+
+        self.log.info("Доработка скилла %s сохранена: %s", folder, path)
+        return report(folder, path, code.count("@tool"), findings, remarks, improved=True)
 
     async def _look_over(self, code: str) -> str:
         """Показать написанное свежему агенту. Пусто — замечаний нет.

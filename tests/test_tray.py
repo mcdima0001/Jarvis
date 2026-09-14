@@ -25,6 +25,7 @@ from jarvis.core.tray.session import (
     StderrTail,
     TraySession,
     current_log_file,
+    fits_screen,
     live_log_command,
     panel_command,
     panel_geometry,
@@ -72,7 +73,7 @@ def _app(root: Path) -> Any:
         config=SimpleNamespace(
             app=SimpleNamespace(name="Jarvis"), root=root, logging=SimpleNamespace(level="INFO")
         ),
-        panel=SimpleNamespace(url="http://127.0.0.1:8766/?token=t"),
+        panel=SimpleNamespace(url="http://127.0.0.1:8766/?token=t", saved_window=lambda: (100, 50, 1400, 900)),
     )
 
 
@@ -209,11 +210,20 @@ def test_panel_window_takes_most_of_the_screen() -> None:
 
 
 async def test_panel_opens_with_token_from_the_app(tmp_path: Path) -> None:
-    opened: list[str] = []
-    session = TraySession(FakeIcon, opener=lambda path: None, panel=opened.append)
+    opened: list[tuple[str, Any]] = []
+    session = TraySession(FakeIcon, opener=lambda path: None, panel=lambda url, saved: opened.append((url, saved)))
     session.attach(_app(tmp_path))
     session.on_action("panel")
-    assert opened == ["http://127.0.0.1:8766/?token=t"]
+    assert opened == [("http://127.0.0.1:8766/?token=t", (100, 50, 1400, 900))]
+
+
+def test_saved_window_is_used_only_if_it_is_on_screen() -> None:
+    screen = (0, 0, 1920, 1200)
+    assert fits_screen((100, 50, 1400, 900), screen)
+    # Монитор справа отключили: окно осталось бы за краем.
+    assert not fits_screen((2100, 50, 1400, 900), screen)
+    # Второй монитор слева — отрицательные координаты законны.
+    assert fits_screen((-1500, 40, 1200, 800), (-1920, 0, 3840, 1200))
 
 
 def test_panel_without_app_falls_back_to_log(tmp_path: Path) -> None:
@@ -221,7 +231,7 @@ def test_panel_without_app_falls_back_to_log(tmp_path: Path) -> None:
     log = tmp_path / "jarvis.log"
     session = TraySession(
         FakeIcon, opener=lambda path: None, live_log=lambda path, level: watched.append(path),
-        log_file=lambda: log, panel=lambda url: None,
+        log_file=lambda: log, panel=lambda url, saved: None,
     )
     session.on_action("panel")
     assert watched == [log]

@@ -178,6 +178,18 @@ def normalize(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
+def ends_with_word(buffer: str, phrase: str) -> bool:
+    """Кончается ли набранное фразой, начатой с начала слова.
+
+    Без границы «доработает» будило реакцию на «работает», а «дебаг» — на
+    «баг» (живой запуск 14.09.2026): совпадение искалось как окончание строки.
+    """
+    if not buffer.endswith(phrase):
+        return False
+    before = buffer[: -len(phrase)]
+    return not before or not before[-1].isalnum()
+
+
 def is_sensitive(title: str, patterns: tuple[str, ...]) -> bool:
     """Похоже ли активное окно на то, где следить нельзя.
 
@@ -248,7 +260,9 @@ class Triggers:
         self._buffer = (self._buffer + char.lower())[-self._window :]
         moment = time.monotonic() if now is None else now
         for phrase in self._phrases:
-            if not self._buffer.endswith(phrase):
+            # Только с начала слова. Конец слова команде не ждём: «курс рубля»
+            # отвечает, не дожидаясь пробела, — ради этого наблюдатель и затевался.
+            if not ends_with_word(self._buffer, phrase):
                 continue
             last = self._fired.get(phrase)
             if last is not None and moment - last < self._cooldown:
@@ -322,20 +336,32 @@ class Reactions:
         self._buffer = self._buffer[:-1]
 
     def feed(self, char: str, *, now: float | None = None) -> "Reaction | None":
-        """Добавить символ и, если сложилась подстрока, вернуть реакцию.
+        """Добавить символ и, если только что закончилось слово из списка, вернуть реакцию.
+
+        **Реакция ждёт конца слова** — пробела, знака, Enter (`finish`). Иначе
+        «баг» срабатывал бы посреди «багаж», а «работает» — посреди «работаете».
+        Начало слова проверяется тоже: «доработает» — не «работает».
 
         Возвращается не только реплика, но и совпавшее слово и недавний набор:
         для готовой реплики хватит первого, а модель, если её включили, сочинит
         по контексту. Буфер, в отличие от триггеров, **не чистится** после
-        срабатывания: подстрока живёт внутри слов, стирать контекст незачем — от
-        повтора защищает пауза.
+        срабатывания: стирать контекст незачем — от повтора защищает пауза.
         """
         if not char:
             return None
         self._buffer = (self._buffer + char.lower())[-self._window :]
-        moment = time.monotonic() if now is None else now
+        if char.isalnum():
+            return None  # слово ещё не кончилось
+        return self._match(self._buffer[:-1], time.monotonic() if now is None else now)
+
+    def finish(self, *, now: float | None = None) -> "Reaction | None":
+        """Строка кончилась (Enter): последнее слово тоже закончено."""
+        return self._match(self._buffer, time.monotonic() if now is None else now)
+
+    def _match(self, typed: str, moment: float) -> "Reaction | None":
+        """Реакция на слово, которым кончается `typed`, если оно в списке."""
         for pattern in self._patterns:
-            if not self._buffer.endswith(pattern):
+            if not ends_with_word(typed, pattern):
                 continue
             last = self._fired.get(pattern)
             if last is not None and moment - last < self._cooldown:
@@ -345,7 +371,7 @@ class Reactions:
             index = self._turn.get(pattern, -1) + 1
             self._turn[pattern] = index
             return Reaction(
-                keyword=pattern, quip=quips[index % len(quips)], context=self._buffer
+                keyword=pattern, quip=quips[index % len(quips)], context=typed
             )
         return None
 
@@ -391,6 +417,10 @@ class Reactions:
             got = self.feed(char, now=now)
             if got is not None:
                 result = got
+        # Конец подачи — как Enter: последнее слово закончено, строка начинается
+        # заново. Без сброса два вызова подряд склеивались в «почемупочему».
+        result = result or self.finish(now=now)
+        self.reset()
         return result
 
 
@@ -708,10 +738,14 @@ class KeyboardWatcher:
             return
         if vk == _VK_RETURN:
             # Enter завершает строку. До него мы и реагируем — в этом вся суть,
-            # — а после него начинаем с чистого листа.
+            # — а после него начинаем с чистого листа. Реакция ждёт конца слова,
+            # и последнее слово строки заканчивает как раз Enter.
             self._triggers.reset()
             if self._reactions is not None:
+                ending = self._reactions.finish()
                 self._reactions.reset()
+                if ending is not None and self._on_react is not None:
+                    self._to_loop(lambda: self._on_react(ending))
             return
 
         if self._foreground_sensitive():
@@ -866,6 +900,10 @@ class KeysSkill(Skill):
         """
         if self.modes.active(DEAF):
             return
+        # Что именно сработало — иначе в логе видна одна реплика («Вот и
+        # славно»), и не понять, на какое слово она была (просьба 14.09.2026).
+        # Хвост набора короткий: это буфер реакций, а не переписка.
+        self.log.info("Реакция на «%s» (набрано: …%s)", reaction.keyword, reaction.context[-40:])
         self.context.announcer.offer(reaction.quip, importance=LOW, hold=False)
         if self._react_llm and self.context.llm.available:
             self.context.scope.spawn(

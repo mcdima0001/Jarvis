@@ -208,6 +208,21 @@ def _adopt_skill_config(directory: Path, into: dict[str, dict[str, Any]]) -> Non
     into[directory.name] = _deep_merge(into.get(directory.name, {}), _expand(raw))
 
 
+def load_skill_settings(path: Path, override: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Настройки одного скилла — так же, как при запуске: файл, ``${VAR}``, переопределение.
+
+    Нужно панели управления: поправили ``config.yaml`` скилла — перезагрузили его
+    с новыми настройками, не перезапуская ассистента.
+
+    :param path: путь к ``config.yaml`` скилла.
+    :param override: ``skills.settings.<имя>`` из главного конфига, если есть.
+    :raises ConfigError: YAML не разобрался или в нём не словарь.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    _adopt_skill_config(path.parent, found)
+    return _deep_merge(found.get(path.parent.name, {}), override or {})
+
+
 def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
     """Собрать конфигурацию LLM: провайдеры и профили задач."""
     providers: dict[str, ProviderConfig] = {}

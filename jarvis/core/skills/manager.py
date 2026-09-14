@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from jarvis.core.bus import EventBus
 from jarvis.core.config import SkillsConfig
@@ -151,6 +151,16 @@ class SkillManager:
         """Сменить список выключенных. Панель пишет его и в config.yaml —
         здесь только чтобы `adopt` не отказывал включённому на ходу."""
         self._config = replace(self._config, disabled=frozenset(names))
+
+    def set_settings(self, name: str, settings: Mapping[str, Any]) -> None:
+        """Заменить настройки скилла на ходу — панель правит его `config.yaml`.
+
+        Действуют со следующей загрузки скилла: панель сразу его перезагружает.
+        Ключ — имя в паспорте: по нему `load` и берёт настройки.
+        """
+        updated = dict(self._config.settings)
+        updated[name] = dict(settings)
+        self._config = replace(self._config, settings=updated)
 
     def tools_of(self, name: str) -> tuple[str, ...]:
         """Инструменты загруженного скилла; пусто, если он не загружен."""

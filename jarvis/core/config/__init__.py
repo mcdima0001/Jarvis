@@ -1,6 +1,6 @@
 """Конфигурация: типизированная схема и загрузчик."""
 
-from .loader import DEFAULT_CONFIG_PATH, load_config, load_dotenv
+from .loader import DEFAULT_CONFIG_PATH, load_config, load_dotenv, load_skill_settings
 from .schema import (
     AECConfig,
     AppConfig,
@@ -48,4 +48,5 @@ __all__ = [
     "WakeWordConfig",
     "load_config",
     "load_dotenv",
+    "load_skill_settings",
 ]

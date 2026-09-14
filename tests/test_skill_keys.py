@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -130,11 +132,41 @@ def test_reset_forgets_the_line() -> None:
 # --- реакции (ирония на набранное) ------------------------------------------
 
 
-def test_reaction_fires_on_a_substring() -> None:
-    """Реакция срабатывает на подстроку в наборе, а не на команду."""
+def test_reaction_fires_when_the_word_ends() -> None:
+    """Реакция срабатывает на слово из списка — когда слово закончено."""
     react = keys.Reactions({"не работает": ("Как всегда.",)})
-    quips = [r.quip for r in (react.feed(ch, now=0.0) for ch in "опять не работает") if r]
-    assert "Как всегда." in quips
+    quips = [r.quip for r in (react.feed(ch, now=0.0) for ch in "опять не работает.") if r]
+    assert quips == ["Как всегда."]
+
+
+def test_reaction_waits_for_the_end_of_the_word() -> None:
+    """Пока слово не закончено, реакции нет: «баг» — не начало «багаж»."""
+    react = keys.Reactions({"баг": ("Это не баг, сэр.",)}, cooldown_s=0.0)
+    assert [r for r in (react.feed(ch, now=0.0) for ch in "багаж ") if r] == []
+    assert react.finish(now=0.0) is None
+
+
+@pytest.mark.parametrize("typed", ["доработает ", "дебаг ", "отработает."])
+def test_reaction_needs_the_start_of_the_word(typed: str) -> None:
+    """«Доработает» — не «работает», «дебаг» — не «баг» (живой запуск 14.09.2026)."""
+    react = keys.Reactions({"работает": ("Не трогайте, сэр.",), "баг": ("Это не баг, сэр.",)}, cooldown_s=0.0)
+    assert [r for r in (react.feed(ch, now=0.0) for ch in typed) if r] == []
+
+
+def test_enter_finishes_the_last_word() -> None:
+    """Слово в самом конце строки заканчивает Enter — реакция всё равно звучит."""
+    react = keys.Reactions({"баг": ("Это не баг, сэр.",)})
+    for ch in "опять баг":
+        assert react.feed(ch, now=0.0) is None
+    ending = react.finish(now=0.0)
+    assert ending is not None and ending.keyword == "баг"
+
+
+def test_trigger_needs_the_start_of_the_word() -> None:
+    """Команда тоже только с начала слова, но конца слова не ждёт."""
+    triggers = keys.Triggers({"курс рубля": "курс рубля"})
+    assert _type(triggers, "перекурс рубля") == []
+    assert _type(triggers, "(курс рубля") == ["курс рубля"]
 
 
 def test_reaction_carries_keyword_and_context() -> None:

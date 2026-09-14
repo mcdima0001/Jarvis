@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hmac
 import json
 import logging
@@ -37,8 +38,9 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from jarvis.core.audio import outputs as audio_devices
+from jarvis.core.config import load_skill_settings
 from jarvis.core.contracts import Event
-from jarvis.core.errors import SkillError
+from jarvis.core.errors import ConfigError, SkillError
 from jarvis.core.logging.visible import console_view
 from jarvis.core.version import current
 
@@ -208,6 +210,12 @@ class ControlPanel:
             ("GET", "/api/modules"): self._modules,
             ("POST", "/api/modules"): self._toggle_module,
             ("POST", "/api/modules/reload"): self._reload_module,
+            ("GET", "/api/modules/detail"): self._module_detail,
+            ("POST", "/api/modules/config"): self._save_module_config,
+            ("POST", "/api/modules/improve"): self._improve_module,
+            ("GET", "/api/drafts"): self._drafts,
+            ("POST", "/api/drafts/accept"): self._accept_draft,
+            ("POST", "/api/drafts/discard"): self._discard_draft,
             ("GET", "/api/memory"): self._memory_view,
             ("POST", "/api/memory/forget"): self._forget,
             ("GET", "/api/settings"): self._settings,
@@ -218,6 +226,7 @@ class ControlPanel:
             ("GET", "/api/admin"): self._admin,
             ("POST", "/api/admin"): self._build_launcher,
             ("GET", "/api/log"): self._log,
+            ("POST", "/api/window"): self._remember_window,
         }
         route = routes.get((request.method, request.path))
         if route is None:
@@ -225,7 +234,7 @@ class ControlPanel:
             return json_response({"error": "нет такого запроса"}, status=405 if known else 404)
         try:
             return await route(request)
-        except (ValueError, SkillError) as exc:
+        except (ValueError, SkillError, ConfigError) as exc:
             # Отказ, понятный человеку, а не «сервер упал»: модуль не загрузился,
             # уже загружен, выключен — это ответ, а не авария панели.
             return json_response({"error": str(exc)}, status=400)
@@ -346,6 +355,146 @@ class ControlPanel:
         await self._skills.adopt(name)
         logger.info("Панель: модуль %s перезагружен", name)
         return json_response({"message": f"Модуль {name} перезагружен."})
+
+    # --- карточка модуля: команды, настройки, доработка ---------------------
+
+    def _candidate(self, name: str) -> Any:
+        for item in self._skills.candidates():
+            if item.name == name:
+                return item
+        raise ValueError(f"нет модуля {name!r}")
+
+    @staticmethod
+    def _config_file(candidate: Any) -> Path | None:
+        """Где лежат настройки модуля: `config.yaml` рядом с его `skill.py`.
+
+        У скилла одним файлом (`skills/demo.py`) своей папки нет — и настроек
+        рядом с ним не бывает.
+        """
+        path = Path(candidate.path)
+        return path.parent / "config.yaml" if path.name == "skill.py" else None
+
+    def _relative(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(self._config.root.resolve()).as_posix()
+        except ValueError:
+            return str(path)
+
+    async def _module_detail(self, request: Request) -> Response:
+        name = request.query.get("name", "")
+        candidate = self._candidate(name)
+        instance = self._skills.get(name)
+        meta = instance.meta if instance else None
+        specs = self._registry.catalog(skill=meta.name).specs if meta else ()
+        config = self._config_file(candidate)
+        text = await asyncio.to_thread(_read_or_empty, config) if config else ""
+        return json_response({
+            "name": name,
+            "passport": meta.name if meta else "",
+            "version": meta.version if meta else "",
+            "description": meta.description if meta else "",
+            "loaded": instance is not None,
+            "parent": candidate.parent,
+            "tools": [
+                {
+                    "name": spec.name,
+                    "description": (spec.description or "").strip().splitlines()[0] if spec.description else "",
+                    "phrases": list(spec.phrases),
+                    "routable": spec.routable,
+                    "reversible": spec.reversible,
+                }
+                for spec in specs
+            ],
+            "config": {
+                "editable": config is not None,
+                "exists": bool(config and config.is_file()),
+                "path": self._relative(config) if config else "",
+                "text": text,
+            },
+            # Подскилл дорабатывать нельзя: принятый черновик лёг бы не в ту папку.
+            "improvable": not candidate.parent and self._registry.has("author.improve"),
+        })
+
+    async def _save_module_config(self, request: Request) -> Response:
+        data = request.json()
+        name, text = str(data.get("name", "")), str(data.get("text", ""))
+        config = self._config_file(self._candidate(name))
+        if config is None:
+            raise ValueError("у этого модуля нет своей папки — настроек рядом с ним не бывает")
+        try:
+            parsed = yaml.safe_load(text) if text.strip() else {}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"YAML не разобрался: {exc}") from exc
+        if parsed is not None and not isinstance(parsed, dict):
+            raise ValueError("настройки должны быть словарём «ключ: значение»")
+
+        await asyncio.to_thread(_write_atomic, config, text if text.endswith("\n") else text + "\n")
+        overrides = ((await self._config_data()).get("skills") or {}).get("settings") or {}
+        settings = await asyncio.to_thread(load_skill_settings, config, overrides.get(name) or {})
+        instance = self._skills.get(name)
+        self._skills.set_settings(instance.meta.name if instance else name, settings)
+        logger.info("Панель: настройки модуля %s сохранены", name)
+        if instance is None:
+            return json_response({"message": f"Настройки {name} сохранены. Модуль не загружен — применятся при включении."})
+        await self._skills.adopt(name)
+        return json_response({"message": f"Настройки {name} сохранены, модуль перезагружен."})
+
+    async def _improve_module(self, request: Request) -> Response:
+        data = request.json()
+        name, wish = str(data.get("name", "")), str(data.get("request", "")).strip()
+        self._candidate(name)
+        if not wish:
+            raise ValueError("напиши, что доработать")
+        if not self._registry.has("author.improve"):
+            raise ValueError("модуль author не загружен — дорабатывать некому")
+        result = await self._registry.invoke("author.improve", {"skill": name, "request": wish})
+        if not result.ok:
+            raise ValueError(result.speech_for("ru") or str(result.error))
+        return json_response({
+            "message": "Отправил Claude на доработку. Это займёт пару минут: черновик появится "
+            "вверху вкладки «Модули», а я доложу голосом."
+        })
+
+    def _collect_drafts(self) -> list[dict[str, Any]]:
+        root = self._config.root
+        folder = root / "drafts"
+        rows: list[dict[str, Any]] = []
+        if not folder.is_dir():
+            return rows
+        for draft in sorted(folder.glob("*/skill.py")):
+            name = draft.parent.name
+            current = root / "skills" / name / "skill.py"
+            before = _read_or_empty(current).splitlines()
+            after = _read_or_empty(draft).splitlines()
+            review = draft.parent / "review.md"
+            rows.append({
+                "name": name,
+                "improvement": current.is_file(),
+                "diff": "\n".join(difflib.unified_diff(
+                    before, after, f"skills/{name}/skill.py", f"drafts/{name}/skill.py", lineterm=""
+                )),
+                "review": _read_or_empty(review).strip() if review.is_file() else "",
+            })
+        return rows
+
+    async def _drafts(self, request: Request) -> Response:
+        return json_response({"drafts": await asyncio.to_thread(self._collect_drafts)})
+
+    async def _draft_action(self, request: Request, tool_name: str) -> Response:
+        name = str(request.json().get("name", ""))
+        if not self._registry.has(tool_name):
+            raise ValueError("модуль author не загружен")
+        result = await self._registry.invoke(tool_name, {"name": name})
+        message = result.speech_for("ru") or str(result.error or "")
+        if not result.ok:
+            raise ValueError(message)
+        return json_response({"message": message})
+
+    async def _accept_draft(self, request: Request) -> Response:
+        return await self._draft_action(request, "author.accept")
+
+    async def _discard_draft(self, request: Request) -> Response:
+        return await self._draft_action(request, "author.discard")
 
     # --- память --------------------------------------------------------------
 
@@ -570,6 +719,41 @@ class ControlPanel:
             raise ValueError(f"сборка не удалась: {(errors or output)[-400:]}")
         logger.info("Панель: Jarvis.exe пересобран, права: %s", "администратор" if admin else "пользователь")
         return json_response({"message": (output.splitlines() or ["Собрано."])[-1] + " Действует со следующего запуска."})
+
+    # --- окно ----------------------------------------------------------------
+
+    def _window_file(self) -> Path:
+        memory = getattr(self._config, "memory", None)
+        base = getattr(memory, "dir", None) or self._config.root / "memory"
+        return Path(base) / "panel_window.json"
+
+    def saved_window(self) -> tuple[int, int, int, int] | None:
+        """Где окно панели было в прошлый раз: x, y, ширина, высота. ``None`` — не запоминали.
+
+        Страница сама сообщает своё положение (`/api/window`), а трей открывает
+        окно по нему (просьба владельца 14.09.2026). Edge в режиме `--app` сам
+        положение не помнит.
+        """
+        try:
+            data = json.loads(self._window_file().read_text(encoding="utf-8"))
+            geometry = tuple(int(data[key]) for key in ("x", "y", "width", "height"))
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return geometry if len(geometry) == 4 else None  # type: ignore[return-value]
+
+    async def _remember_window(self, request: Request) -> Response:
+        data = request.json()
+        try:
+            x, y, width, height = (int(data[key]) for key in ("x", "y", "width", "height"))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("положение окна — четыре целых числа") from exc
+        if not (320 <= width <= 20000 and 240 <= height <= 20000 and abs(x) <= 40000 and abs(y) <= 40000):
+            raise ValueError("странное положение окна, не запоминаю")
+        path = self._window_file()
+        payload = json.dumps({"x": x, "y": y, "width": width, "height": height})
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(_write_atomic, path, payload)
+        return json_response({"saved": True})
 
     # --- лог -----------------------------------------------------------------
 
