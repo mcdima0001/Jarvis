@@ -1,0 +1,337 @@
+"""Страж: сам замечает, что с компьютером неладно, и говорит об этом.
+
+Как в фильме: «Сэр, заряд десять процентов». Просьба владельца 14.09.2026.
+До этого Jarvis существовал ровно те секунды, пока к нему обращались, и узнать
+о севшей батарее или забитом диске можно было только самому.
+
+Что замечает: заряд (дважды — при низком и при критическом), свободное место на
+системном диске, процессор, загруженный подряд дольше заданного, и законченные
+загрузки. Пороги и частота — в config.yaml скилла, **замеры каждого прохода
+пишутся в лог**: порог, который нельзя проверить, не ставится.
+
+Говорит не сам, а через политику речи без вопроса (`Announcer`): ночью и во
+время «не слушаю» придержит, чаще раза в минуту не заговорит. Одно и то же
+предупреждение повторяется не чаще `repeat_after_min`.
+
+Зависимостей ноль: заряд и процессор — через WinAPI, диск и загрузки —
+стандартной библиотекой. Только Windows.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ctypes
+import os
+import shutil
+import time
+from ctypes import wintypes
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from jarvis.core.attention import LOW, NORMAL, URGENT
+from jarvis.core.contracts import ToolResult
+from jarvis.core.skills import HealthStatus, Skill, SkillMeta
+from jarvis.core.tools import tool
+from jarvis.core.tts.normalize import plural_form
+
+#: Недокачанные файлы браузеров и качалок: о таких рано говорить «загрузилось».
+PARTIAL = (".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload", ".!ut")
+PERCENT = ("процент", "процента", "процентов")
+GIGABYTE = ("гигабайт", "гигабайта", "гигабайт")
+MINUTE = ("минуту", "минуты", "минут")
+
+
+# --- замеры ---------------------------------------------------------------
+
+
+class _POWER(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", wintypes.DWORD),
+        ("BatteryFullLifeTime", wintypes.DWORD),
+    ]
+
+
+def battery() -> tuple[int, bool] | None:
+    """Заряд в процентах и «на зарядке ли»; ``None`` — батареи нет или не узнать."""
+    try:
+        status = _POWER()
+        if not ctypes.WinDLL("kernel32").GetSystemPowerStatus(ctypes.byref(status)):
+            return None
+    except (OSError, AttributeError):
+        return None
+    # 128 — «батареи нет», 255 — «состояние неизвестно»: настольный компьютер.
+    if status.BatteryFlag & 128 or status.BatteryLifePercent == 255:
+        return None
+    return int(status.BatteryLifePercent), status.ACLineStatus == 1
+
+
+def cpu_times() -> tuple[int, int, int] | None:
+    """Суммарные времена процессора: простой, ядро (с простоем), пользователь."""
+    try:
+        idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+        if not ctypes.WinDLL("kernel32").GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+    except (OSError, AttributeError):
+        return None
+
+    def value(stamp: wintypes.FILETIME) -> int:
+        return (stamp.dwHighDateTime << 32) | stamp.dwLowDateTime
+
+    return value(idle), value(kernel), value(user)
+
+
+def cpu_share(before: tuple[int, int, int], after: tuple[int, int, int]) -> float | None:
+    """Доля занятости всего процессора между двумя замерами, 0…1.
+
+    Время ядра у Windows включает простой, поэтому занятость — это всё время
+    минус простой, делённое на всё время.
+    """
+    idle = after[0] - before[0]
+    total = (after[1] - before[1]) + (after[2] - before[2])
+    if total <= 0:
+        return None
+    return max(0.0, min(1.0, 1 - idle / total))
+
+
+def system_drive() -> str:
+    """Системный диск: там живут программы и временные файлы."""
+    return (os.environ.get("SystemDrive") or "C:") + "\\"
+
+
+def downloads_dir() -> Path | None:
+    """Папка загрузок профиля."""
+    home = os.environ.get("USERPROFILE")
+    if not home:
+        return None
+    for name in ("Downloads", "Загрузки"):
+        path = Path(home) / name
+        if path.is_dir():
+            return path
+    return None
+
+
+def scan(folder: Path) -> dict[str, int]:
+    """Файлы папки загрузок: имя → размер. Подпапки не смотрим."""
+    found: dict[str, int] = {}
+    try:
+        for entry in os.scandir(folder):
+            if entry.is_file():
+                found[entry.name] = entry.stat().st_size
+    except OSError:
+        return {}
+    return found
+
+
+# --- решения (чистые функции) ---------------------------------------------
+
+
+@dataclass
+class BatteryWatch:
+    """Когда говорить о заряде: по разу на низкий и на критический.
+
+    На зарядке всё сбрасывается: сел, зарядил, снова сел — снова скажем.
+    """
+
+    low: int = 20
+    critical: int = 10
+    said: set[str] = field(default_factory=set)
+
+    def check(self, percent: int, charging: bool) -> tuple[str, str] | None:
+        """Реплика и важность; ``None`` — молчать."""
+        if charging:
+            self.said.clear()
+            return None
+        words = plural_form(percent, PERCENT)
+        if percent <= self.critical and "critical" not in self.said:
+            self.said.update({"critical", "low"})
+            return f"Сэр, заряд {percent} {words}. Пора на зарядку, скоро ноутбук выключится.", URGENT
+        if percent <= self.low and "low" not in self.said:
+            self.said.add("low")
+            return f"Сэр, заряд {percent} {words}.", NORMAL
+        return None
+
+
+@dataclass
+class CpuWatch:
+    """Процессор занят подряд дольше заданного — сказать один раз, пока не отпустит."""
+
+    busy: float = 0.9
+    minutes: float = 10.0
+    since: float | None = None
+    said: bool = False
+
+    def check(self, share: float, now: float) -> str | None:
+        if share < self.busy:
+            self.since, self.said = None, False
+            return None
+        if self.since is None:
+            self.since = now
+        lasted = (now - self.since) / 60
+        if not self.said and lasted >= self.minutes:
+            self.said = True
+            minutes = int(lasted)
+            return (
+                f"Сэр, процессор уже {minutes} {plural_form(minutes, MINUTE)} загружен на "
+                f"{round(share * 100)} {plural_form(round(share * 100), PERCENT)}. "
+                "Кто грузит, скажу по просьбе «что грузит процессор»."
+            )
+        return None
+
+
+@dataclass
+class DownloadWatch:
+    """Какие загрузки закончились.
+
+    Первый проход только запоминает, что уже лежит: иначе при запуске Jarvis
+    перечислил бы всю папку. Готовой считается загрузка, которая не выглядит
+    недокачанной и чей размер не изменился между двумя проходами — браузер
+    дописывает файл кусками и под своим, и под итоговым именем.
+    """
+
+    known: set[str] | None = None
+    sizes: dict[str, int] = field(default_factory=dict)
+
+    def check(self, files: dict[str, int]) -> list[str]:
+        if self.known is None:
+            self.known = set(files)
+            self.sizes = dict(files)
+            return []
+        finished = [
+            name for name, size in files.items()
+            if name not in self.known
+            and not name.lower().endswith(PARTIAL)
+            and self.sizes.get(name) == size
+            and size > 0
+        ]
+        self.known.update(finished)
+        # Удалённые забываем: скачали тот же файл заново — снова скажем.
+        self.known.intersection_update(files)
+        self.sizes = dict(files)
+        return sorted(finished)
+
+
+def download_line(names: list[str]) -> str:
+    """Реплика о законченных загрузках: название, а не путь; много — числом."""
+    if len(names) == 1:
+        return f"Загрузилось: {Path(names[0]).stem[:60]}."
+    return f"Загрузилось файлов: {len(names)}. Последний — {Path(names[-1]).stem[:60]}."
+
+
+# --- скилл ------------------------------------------------------------------
+
+
+class SentinelSkill(Skill):
+    """Слежение за машиной: заряд, диск, процессор, загрузки."""
+
+    meta = SkillMeta(
+        name="sentinel",
+        description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
+        version="0.1.0",
+        platforms=("windows",),
+        spoken=("страж", "слежение", "sentinel"),
+    )
+
+    async def on_setup(self) -> None:
+        """Прочитать пороги."""
+        setting = self.context.setting
+        self._every = max(5.0, float(setting("every_s", 30)))
+        self._battery = BatteryWatch(low=int(setting("battery_low", 20)), critical=int(setting("battery_critical", 10)))
+        self._disk_free_gb = float(setting("disk_free_gb", 10))
+        self._cpu = CpuWatch(busy=float(setting("cpu_busy", 90)) / 100, minutes=float(setting("cpu_busy_minutes", 10)))
+        self._downloads = DownloadWatch() if bool(setting("downloads", True)) else None
+        self._repeat_s = float(setting("repeat_after_min", 60)) * 60
+        self._last_said: dict[str, float] = {}
+        self._cpu_before: tuple[int, int, int] | None = None
+        self._last = ""
+
+    async def on_start(self) -> None:
+        """Начать смотреть."""
+        self.context.scope.spawn(self._watch(), name="sentinel-watch")
+
+    async def health(self) -> HealthStatus:
+        return HealthStatus.healthy(self._last) if self._last else HealthStatus.healthy()
+
+    @tool(
+        phrases=["как там ноутбук", "как там компьютер", "состояние компьютера", "состояние ноутбука",
+                 "сколько заряда", "сколько места на диске", "how is the computer"],
+        reversible=True,
+    )
+    async def status(self) -> ToolResult:
+        """Рассказать о машине: заряд, место на диске, загрузка процессора."""
+        power, free, share = await asyncio.to_thread(self._measure)
+        parts: list[str] = []
+        if power is not None:
+            percent, charging = power
+            parts.append(f"заряд {percent} {plural_form(percent, PERCENT)}{', заряжается' if charging else ''}")
+        if free is not None:
+            gigabytes = round(free)
+            parts.append(f"на диске свободно {gigabytes} {plural_form(gigabytes, GIGABYTE)}")
+        if share is not None:
+            parts.append(f"процессор занят на {round(share * 100)} {plural_form(round(share * 100), PERCENT)}")
+        text = "; ".join(parts) or "замерить не получилось"
+        return ToolResult.success(
+            {"battery": power, "disk_free_gb": free, "cpu": share},
+            speech={"ru": f"{text[:1].upper()}{text[1:]}.", "en": text},
+        )
+
+    # --- наблюдение ----------------------------------------------------------
+
+    def _measure(self) -> tuple[tuple[int, bool] | None, float | None, float | None]:
+        power = battery()
+        try:
+            free: float | None = shutil.disk_usage(system_drive()).free / 1024**3
+        except OSError:
+            free = None
+        now = cpu_times()
+        share = cpu_share(self._cpu_before, now) if self._cpu_before and now else None
+        self._cpu_before = now or self._cpu_before
+        return power, free, share
+
+    async def _watch(self) -> None:
+        folder = downloads_dir() if self._downloads is not None else None
+        while True:
+            try:
+                await self._check_once(folder)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — страж не имеет права умереть от одного замера
+                self.log.warning("Страж: проход не удался: %s", exc)
+            await asyncio.sleep(self._every)
+
+    async def _check_once(self, folder: Path | None) -> None:
+        power, free, share = await asyncio.to_thread(self._measure)
+        self._last = (
+            f"заряд {power[0] if power else '—'}%, диск {free:.1f} ГБ, процессор "
+            f"{round(share * 100) if share is not None else '—'}%" if free is not None else ""
+        )
+        # Замер каждого прохода — в лог: по нему проверяются пороги.
+        self.log.debug("Страж: %s", self._last or "замер не удался")
+
+        if power is not None:
+            said = self._battery.check(*power)
+            if said:
+                self._say("battery", said[0], said[1], repeat=False)
+        if free is not None and free < self._disk_free_gb:
+            gigabytes = max(0, round(free))
+            self._say("disk", f"Сэр, на системном диске осталось {gigabytes} {plural_form(gigabytes, GIGABYTE)}.", NORMAL)
+        if share is not None:
+            line = self._cpu.check(share, time.monotonic())
+            if line:
+                self._say("cpu", line, NORMAL, repeat=False)
+        if self._downloads is not None and folder is not None:
+            finished = self._downloads.check(await asyncio.to_thread(scan, folder))
+            if finished:
+                self._say(f"download:{finished[-1]}", download_line(finished), LOW, repeat=False)
+
+    def _say(self, key: str, text: str, importance: str, *, repeat: bool = True) -> None:
+        """Предложить реплику политике речи; одно и то же — не чаще `repeat_after_min`."""
+        now = time.monotonic()
+        if repeat and now - self._last_said.get(key, -1e9) < self._repeat_s:
+            return
+        self._last_said[key] = now
+        decision = self.context.announcer.offer(text, importance=importance, language="ru")
+        self.log.info("Страж (%s): %s → %s", importance, text, decision)
