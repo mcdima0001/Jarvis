@@ -7,6 +7,8 @@
 * ``--say "текст"`` — прогнать одну команду через роутер, минуя микрофон.
   Уши при этом не поднимаются: команда уже написана, распознавать нечего.
   С ``--no-voice`` не поднимается и синтез — ответ только печатается.
+* ``--tray`` — полный запуск без консоли, со значком в трее (так его зовёт
+  ``Jarvis.exe``). Ошибки запуска показываются окном.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import logging
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jarvis.core.app import JarvisApp
 from jarvis.core.assets import download_voice, list_voices, make_reference, preview_voices
@@ -25,6 +28,9 @@ from jarvis.core.config import DEFAULT_CONFIG_PATH, JarvisConfig, load_config
 from jarvis.core.contracts import detect_language
 from jarvis.core.errors import AudioError, ConfigError, JarvisError, STTError
 from jarvis.core.logging import setup_logging
+
+if TYPE_CHECKING:
+    from jarvis.core.tray import TraySession
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -53,6 +59,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-voice",
         action="store_true",
         help="с --say: не поднимать синтез, ответ только напечатать",
+    )
+    parser.add_argument(
+        "--tray",
+        action="store_true",
+        help="работать без консоли, со значком в трее (так запускает Jarvis.exe)",
     )
     parser.add_argument(
         "--devices",
@@ -194,7 +205,9 @@ def _run_utility(args: argparse.Namespace, config: JarvisConfig) -> int | None:
     return None
 
 
-async def _amain(config: JarvisConfig, args: argparse.Namespace) -> int:
+async def _amain(
+    config: JarvisConfig, args: argparse.Namespace, tray: TraySession | None = None
+) -> int:
     """Асинхронная часть запуска: поднимает приложение."""
     app = JarvisApp.build(config)
 
@@ -203,6 +216,8 @@ async def _amain(config: JarvisConfig, args: argparse.Namespace) -> int:
     if args.say:
         return await _say(app, args.say, voice=not args.no_voice)
 
+    if tray is not None:
+        tray.attach(app)
     await app.run()
     return 0
 
@@ -210,10 +225,25 @@ async def _amain(config: JarvisConfig, args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Синхронная точка входа."""
     args = _parse_args(argv)
+    if args.tray:
+        from jarvis.core.tray import run_in_tray
+
+        return run_in_tray(
+            lambda session: _main(args, session),
+            argv=list(sys.argv[1:] if argv is None else argv),
+        )
+    return _main(args)
+
+
+def _main(args: argparse.Namespace, tray: TraySession | None = None) -> int:
+    """Запуск по разобранным флагам; `tray` — значок, если консоли нет."""
     try:
         config = load_config(args.config)
         if args.log_level:
             config = replace(config, logging=replace(config.logging, level=args.log_level))
+        if tray is not None:
+            # Консоли нет: писать в неё некуда, а ошибку запуска покажет окно.
+            config = replace(config, logging=replace(config.logging, console=False))
 
         logger = setup_logging(config.logging)
         logger.info("Конфигурация загружена: %s", config.source)
@@ -222,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         if utility is not None:
             return utility
 
-        return asyncio.run(_amain(config, args))
+        return asyncio.run(_amain(config, args, tray))
     except KeyboardInterrupt:
         print("\nОстановлено пользователем")
         return 130
