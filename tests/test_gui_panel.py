@@ -328,15 +328,22 @@ async def test_drafts_show_diff_and_review_and_accept_through_author(tmp_path: P
 # --- положение окна ---------------------------------------------------------
 
 
-async def test_window_position_is_remembered(tmp_path: Path) -> None:
+def test_window_position_is_remembered_in_pixels(tmp_path: Path) -> None:
     panel, _, _ = _panel(tmp_path)
     assert panel.saved_window() is None
-    response = await _call(panel, "POST", "/api/window", body={"x": -1500, "y": 40, "width": 1400, "height": 900})
-    assert response.status == 200
-    assert panel.saved_window() == (-1500, 40, 1400, 900)
-    # Мусор не запоминается: трей открыл бы окно размером в точку.
-    bad = await _call(panel, "POST", "/api/window", body={"x": 0, "y": 0, "width": 5, "height": 5})
-    assert bad.status == 400 and panel.saved_window() == (-1500, 40, 1400, 900)
+    assert panel.remember_window((-1500, 40, 1773, 894))
+    assert panel.saved_window() == (-1500, 40, 1773, 894)
+    # Мусор не запоминается: свёрнутое окно Windows уносит в −32000.
+    assert not panel.remember_window((-32000, -32000, 160, 28))
+    assert panel.saved_window() == (-1500, 40, 1773, 894)
+
+
+def test_old_page_point_file_is_not_used(tmp_path: Path) -> None:
+    """Первая версия писала точки страницы: такие координаты поставили бы окно не туда."""
+    panel, _, _ = _panel(tmp_path)
+    (tmp_path / "memory").mkdir(exist_ok=True)
+    (tmp_path / "memory" / "panel_window.json").write_text('{"x": 10, "y": 10, "width": 1419, "height": 715}')
+    assert panel.saved_window() is None
 
 
 # --- память -----------------------------------------------------------------

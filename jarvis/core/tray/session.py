@@ -233,23 +233,6 @@ def fits_screen(
     return left <= grab_x < left + screen_width and top <= grab_y < top + screen_height
 
 
-def _virtual_screen() -> tuple[int, int, int, int] | None:
-    """Все мониторы вместе, в независимых точках."""
-    if sys.platform != "win32":
-        return None
-    import ctypes
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    try:
-        dpi = int(user32.GetDpiForSystem()) or 96
-    except AttributeError:
-        dpi = 96
-    scale = dpi / 96
-    # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN
-    left, top, width, height = (int(user32.GetSystemMetrics(index)) for index in (76, 77, 78, 79))
-    return round(left / scale), round(top / scale), round(width / scale), round(height / scale)
-
-
 def _work_area() -> tuple[tuple[int, int, int, int], int] | None:
     """Рабочий стол без панели задач и масштаб системы."""
     if sys.platform != "win32":
@@ -279,15 +262,26 @@ def panel_command(
 
 
 def open_panel(url: str, saved: tuple[int, int, int, int] | None = None) -> None:
-    """Открыть панель отдельным окном: там, где она была, либо на 90% рабочего стола."""
+    """Открыть панель отдельным окном: там, где она была, либо на 90% рабочего стола.
+
+    Флаги размера Edge соблюдает только при своём старте, а если он уже открыт
+    как обычный браузер — молча игнорирует. Поэтому сохранённое место окно
+    получает не флагами, а после появления: его ставит `window.place_new_window`.
+    """
     edge = next((path for path in EDGE_PATHS if path.exists()), None)
-    screen = _virtual_screen()
-    if saved is not None and (screen is None or fits_screen(saved, screen)):
-        geometry: tuple[int, int, int, int] | None = saved
-    else:
-        area = _work_area()
-        geometry = panel_geometry(*area) if area else None
-    command = panel_command(url, edge, geometry)
+    area = _work_area()
+    command = panel_command(url, edge, panel_geometry(*area) if area else None)
+    if saved is not None and command is not None and sys.platform == "win32":
+        import threading
+
+        from jarvis.core.gui import window
+
+        before = set(window.panel_windows())
+        subprocess.Popen(command)
+        threading.Thread(
+            target=window.place_new_window, args=(saved, before), name="panel-place", daemon=True
+        ).start()
+        return
     if command is not None:
         subprocess.Popen(command)
     elif sys.platform == "win32":

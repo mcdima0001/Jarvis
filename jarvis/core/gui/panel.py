@@ -114,6 +114,8 @@ class ControlPanel:
         self._heard = ""
         self._reply = ""
         self._outputs: dict[Any, str] = {}
+        #: Наблюдение за положением окна панели — только на Windows.
+        self._window_task: asyncio.Task[None] | None = None
 
     @property
     def service_name(self) -> str:
@@ -147,8 +149,13 @@ class ControlPanel:
             logger.warning("Панель управления не поднялась на порту %d: %s", self._server.port, exc)
             return
         logger.info("Панель управления: http://127.0.0.1:%d (окно — из трея)", self._server.port)
+        if sys.platform == "win32":
+            self._window_task = asyncio.create_task(self._watch_window(), name="panel-window")
 
     async def stop(self) -> None:
+        if self._window_task is not None:
+            self._window_task.cancel()
+            self._window_task = None
         await self._server.stop()
 
     # --- состояние по шине ---------------------------------------------------
@@ -226,7 +233,6 @@ class ControlPanel:
             ("GET", "/api/admin"): self._admin,
             ("POST", "/api/admin"): self._build_launcher,
             ("GET", "/api/log"): self._log,
-            ("POST", "/api/window"): self._remember_window,
         }
         route = routes.get((request.method, request.path))
         if route is None:
@@ -728,32 +734,47 @@ class ControlPanel:
         return Path(base) / "panel_window.json"
 
     def saved_window(self) -> tuple[int, int, int, int] | None:
-        """Где окно панели было в прошлый раз: x, y, ширина, высота. ``None`` — не запоминали.
+        """Где окно панели было в прошлый раз, в физических пикселях: x, y, ширина, высота.
 
-        Страница сама сообщает своё положение (`/api/window`), а трей открывает
-        окно по нему (просьба владельца 14.09.2026). Edge в режиме `--app` сам
-        положение не помнит.
+        Файл без пометки `"units": "px"` — от первой версии, где положение
+        сообщала страница в своих точках; такой не годится и не используется.
         """
         try:
             data = json.loads(self._window_file().read_text(encoding="utf-8"))
-            geometry = tuple(int(data[key]) for key in ("x", "y", "width", "height"))
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
-        return geometry if len(geometry) == 4 else None  # type: ignore[return-value]
-
-    async def _remember_window(self, request: Request) -> Response:
-        data = request.json()
-        try:
+            if data.get("units") != "px":
+                return None
             x, y, width, height = (int(data[key]) for key in ("x", "y", "width", "height"))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("положение окна — четыре целых числа") from exc
-        if not (320 <= width <= 20000 and 240 <= height <= 20000 and abs(x) <= 40000 and abs(y) <= 40000):
-            raise ValueError("странное положение окна, не запоминаю")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        return x, y, width, height
+
+    def remember_window(self, geometry: tuple[int, int, int, int]) -> bool:
+        """Запомнить положение окна. ``False`` — не похоже на настоящее окно."""
+        x, y, width, height = geometry
+        if not (320 <= width <= 20000 and 240 <= height <= 20000 and -30000 < x < 40000 and -30000 < y < 40000):
+            return False
         path = self._window_file()
-        payload = json.dumps({"x": x, "y": y, "width": width, "height": height})
-        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(_write_atomic, path, payload)
-        return json_response({"saved": True})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(path, json.dumps({"units": "px", "x": x, "y": y, "width": width, "height": height}))
+        return True
+
+    async def _watch_window(self) -> None:
+        """Раз в две секунды спрашивать у Windows, где окно панели, и запоминать изменения.
+
+        Спрашивается у Windows, а не у страницы: ставит окно на место тоже
+        WinAPI (см. `window.py`), и единицы у обоих концов обязаны совпадать.
+        """
+        from . import window
+
+        last = self.saved_window()
+        while True:
+            await asyncio.sleep(2.0)
+            try:
+                rect = await asyncio.to_thread(window.panel_rect)
+                if rect is not None and rect != last and await asyncio.to_thread(self.remember_window, rect):
+                    last = rect
+            except Exception as exc:  # noqa: BLE001 — наблюдение за окном не гасит панель
+                logger.debug("Панель: положение окна не прочитано: %s", exc)
 
     # --- лог -----------------------------------------------------------------
 

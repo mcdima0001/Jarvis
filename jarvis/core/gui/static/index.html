@@ -726,21 +726,6 @@ async function loadKeys() {
   }));
 }
 
-// --- положение окна -------------------------------------------------------
-// Edge в режиме приложения положение окна не помнит, поэтому окно сообщает его
-// само, а трей открывает панель там же. Перемещение окна событий не шлёт —
-// отсюда сверка раз в две секунды; отправляется только изменившееся.
-let lastWindow = "";
-function reportWindow() {
-  const geometry = { x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight };
-  const key = JSON.stringify(geometry);
-  if (key === lastWindow || geometry.width < 320 || geometry.height < 240) return;
-  lastWindow = key;
-  api("/api/window", geometry).catch(() => { lastWindow = ""; });
-}
-setInterval(reportWindow, 2000);
-window.addEventListener("beforeunload", reportWindow);
-
 // --- опрос ----------------------------------------------------------------
 async function refresh() {
   try {
