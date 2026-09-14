@@ -68,7 +68,9 @@ def _app(root: Path) -> Any:
     return SimpleNamespace(
         stopping=asyncio.Event(),
         events=LocalEventBus(),
-        config=SimpleNamespace(app=SimpleNamespace(name="Jarvis"), root=root),
+        config=SimpleNamespace(
+            app=SimpleNamespace(name="Jarvis"), root=root, logging=SimpleNamespace(level="INFO")
+        ),
         panel=SimpleNamespace(url="http://127.0.0.1:8766/?token=t"),
     )
 
@@ -169,23 +171,28 @@ async def test_icon_turns_ready_when_system_started(tmp_path: Path) -> None:
     assert session.icon.states[-1] == menu.READY  # type: ignore[attr-defined]
 
 
-def test_log_opens_live_window_on_current_file(tmp_path: Path) -> None:
-    watched: list[Path] = []
+async def test_log_opens_live_window_on_current_file(tmp_path: Path) -> None:
+    watched: list[tuple[Path, str]] = []
     log = tmp_path / "jarvis-2026-09-14.log"
     session = TraySession(
-        FakeIcon, opener=lambda path: None, live_log=watched.append, log_file=lambda: log
+        FakeIcon, opener=lambda path: None,
+        live_log=lambda path, level: watched.append((path, level)), log_file=lambda: log,
     )
+    session.attach(_app(tmp_path))
     session.on_action("log")
-    assert watched == [log]
+    # Уровень консоли из конфига: окно показывает то же, что консоль.
+    assert watched == [(log, "INFO")]
 
 
 def test_live_log_command_follows_the_file_and_survives_quotes() -> None:
-    command = live_log_command(Path("D:/Джарвис's/logs/jarvis.log"))
+    command = live_log_command(Path("D:/Джарвис's/logs/jarvis.log"), "INFO")
     script = command[-1]
     assert command[0] == "powershell.exe"
     assert "-Wait" in script and "-Encoding UTF8" in script
     # Одинарная кавычка в пути удвоена, иначе строка PowerShell оборвётся.
     assert "Джарвис''s" in script
+    # Отладочные строки отсеиваются: DEBUG в список показываемых не входит.
+    assert "$levels = @('INFO','WARNING','ERROR','CRITICAL')" in script
 
 
 async def test_panel_opens_with_token_from_the_app(tmp_path: Path) -> None:
@@ -200,7 +207,7 @@ def test_panel_without_app_falls_back_to_log(tmp_path: Path) -> None:
     watched: list[Path] = []
     log = tmp_path / "jarvis.log"
     session = TraySession(
-        FakeIcon, opener=lambda path: None, live_log=watched.append,
+        FakeIcon, opener=lambda path: None, live_log=lambda path, level: watched.append(path),
         log_file=lambda: log, panel=lambda url: None,
     )
     session.on_action("panel")

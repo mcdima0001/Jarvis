@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis.core.contracts import Event
+from jarvis.core.logging.visible import console_view
 from jarvis.core.version import current
 
 from .http import HttpServer, Request, Response, json_response
@@ -365,6 +366,8 @@ class ControlPanel:
             return json_response({"text": "", "offset": 0})
         offset = int(request.query.get("offset", "-1") or -1)
         text, offset = await asyncio.to_thread(tail, path, offset)
+        # Как в консоли: отладочные строки остаются в файле, а не в окне.
+        text = console_view(text, self._config.logging.level)
         return json_response({"text": text, "offset": offset})
 
 

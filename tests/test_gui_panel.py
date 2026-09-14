@@ -70,6 +70,7 @@ def _panel(tmp_path: Path) -> tuple[ControlPanel, FakeSkills, LocalEventBus]:
         gui=SimpleNamespace(port=0),
         skills=SimpleNamespace(paths=(tmp_path / "skills",)),
         audio=SimpleNamespace(output_names={}),
+        logging=SimpleNamespace(level="INFO"),
     )
     profiles = SimpleNamespace(
         tasks=lambda: ("intent",),

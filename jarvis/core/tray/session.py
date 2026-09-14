@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.core.contracts import Event, SystemStarted, SystemStopping
+from jarvis.core.logging.visible import RECORD, visible_levels
 
 from .menu import READY, STARTING, STOPPING, tip
 
@@ -132,18 +133,26 @@ def open_path(path: Path) -> None:
         logger.info("Открыть %s: вне Windows нечем", path)
 
 
-def live_log_command(path: Path, *, tail: int = 200) -> list[str]:
+def live_log_command(path: Path, level: str = "INFO", *, tail: int = 1500) -> list[str]:
     """Команда окна, где лог дописывается на глазах: `Get-Content -Wait`.
 
     Блокнот показывает снимок файла, а смотреть в лог нужно как раз по ходу
     дела — сказал команду и видишь, что с ней стало. Кодировка консоли ставится
     явно: иначе кириллица в Windows PowerShell приходит мусором.
+
+    Показывается то же, что в консоли (`jarvis/core/logging/visible.py`):
+    отладочные строки есть в файле, но в окне они топят нужное. Хвост берётся
+    длиннее, потому что большая его часть отсеется.
     """
     literal = str(path).replace("'", "''")
+    levels = ",".join(f"'{name}'" for name in visible_levels(level))
     script = (
         "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
         "$Host.UI.RawUI.WindowTitle = 'Jarvis — лог'; "
-        f"Get-Content -LiteralPath '{literal}' -Encoding UTF8 -Tail {tail} -Wait"
+        f"$levels = @({levels}); $show = $true; "
+        f"Get-Content -LiteralPath '{literal}' -Encoding UTF8 -Tail {tail} -Wait | ForEach-Object {{ "
+        f"if ($_ -match '{RECORD}') {{ $show = $levels -contains $Matches[1] }}; "
+        "if ($show) { $_ } }"
     )
     return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", script]
 
@@ -175,10 +184,10 @@ def open_panel(url: str) -> None:
         logger.info("Панель: %s", url)
 
 
-def open_live_log(path: Path) -> None:
+def open_live_log(path: Path, level: str = "INFO") -> None:
     """Открыть отдельное окно с логом в реальном времени."""
     if sys.platform == "win32":
-        subprocess.Popen(live_log_command(path), creationflags=subprocess.CREATE_NEW_CONSOLE)
+        subprocess.Popen(live_log_command(path, level), creationflags=subprocess.CREATE_NEW_CONSOLE)
     else:
         logger.info("Лог в реальном времени: tail -f %s", path)
 
@@ -198,7 +207,7 @@ class TraySession:
         name: str = "Jarvis",
         root: Path | None = None,
         opener: Callable[[Path], None] = open_path,
-        live_log: Callable[[Path], None] = open_live_log,
+        live_log: Callable[[Path, str], None] = open_live_log,
         log_file: Callable[[], Path | None] = current_log_file,
         panel: Callable[[str], None] = open_panel,
     ) -> None:
@@ -206,6 +215,8 @@ class TraySession:
         self._open_panel = panel
         #: Адрес панели с токеном. Появляется, когда приложение подключено.
         self.panel_url: str | None = None
+        #: Уровень консоли: окно лога показывает то же, что показала бы она.
+        self.log_level = "INFO"
         self.name = name
         self.root = root or Path.cwd()
         #: Выбран ли перезапуск: решает, что делать после остановки.
@@ -233,6 +244,7 @@ class TraySession:
         self.name = app.config.app.name
         self.root = app.config.root
         self.panel_url = app.panel.url if app.panel is not None else None
+        self.log_level = app.config.logging.level
         app.events.subscribe(SystemStarted.NAME, self._on_started)
         app.events.subscribe(SystemStopping.NAME, self._on_stopping)
         self._set(STARTING)
@@ -252,7 +264,7 @@ class TraySession:
             if path is None:
                 self._opener(self.root / "logs")
             else:
-                self._live_log(path)
+                self._live_log(path, self.log_level)
         elif action == "folder":
             self._opener(self.root)
         elif action in ("restart", "quit"):
