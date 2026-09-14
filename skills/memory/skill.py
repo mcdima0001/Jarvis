@@ -388,7 +388,10 @@ class MemorySkill(Skill):
         """Выключить фоновое пополнение профиля."""
         return await self.autosave(enabled=False)
 
-    @tool(phrases=["включи автопамять", "turn autosave on"], reversible=True)
+    # Модели и плану не показывается: на «не сохраняй» план выключил автопамять
+    # (14.09.2026, 17:14), хотя просили забыть выученную фразу. Голосом по
+    # фразам работает как раньше.
+    @tool(phrases=["включи автопамять", "turn autosave on"], routable=False, reversible=True)
     async def autosave(self, enabled: bool = True) -> ToolResult:
         """Включить или выключить фоновое пополнение профиля.
 

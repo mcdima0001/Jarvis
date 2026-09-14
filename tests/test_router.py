@@ -399,3 +399,42 @@ async def test_unnamed_phrase_may_command_but_not_chat(lights_registry: ToolRegi
     assert command.speech == "Свет включён."
     chat = await dispatcher.handle(Utterance(text="как дела"))
     assert chat.speech == "Болтаю."
+
+
+class _Retelling(_Refusing):
+    """Модель выбирает разговор, но вписывает в него свой пересказ."""
+
+    async def complete(self, request):
+        from jarvis.core.llm.protocol import LLMResponse, ToolCall
+
+        return LLMResponse(model=request.model, tool_calls=(ToolCall(
+            name="core__chat", arguments={"text": "Похоже, вы сказали «щитак». Уточните.", "language": "ru"},
+        ),))
+
+
+async def test_chat_gets_what_was_heard_not_the_model_retelling() -> None:
+    """Живой случай 14.09.2026: в журнал ложилось «Похоже, вы сказали…» как вопрос."""
+    from jarvis.core.router import LLMResolver
+
+    class Talk:
+        @tool(name="chat", reversible=True)
+        async def chat(self, text: str, language: str = "ru") -> ToolResult:
+            """Поговорить."""
+            return ToolResult.success(text)
+
+    registry = ToolRegistry()
+    for item in collect_tools(Talk(), namespace="core"):
+        registry.register(item)
+    resolver = LLMResolver(registry, _llm_service(_Retelling()), tasks=("intent",))
+
+    intent = await resolver.resolve(Utterance(text="щитак"))
+
+    assert intent is not None and intent.tool == "core.chat"
+    assert intent.arguments["text"] == "щитак"
+
+
+def test_plans_and_help_are_never_learned() -> None:
+    """«Не сохраняй» → план выключил автопамять и выучился (14.09.2026, 17:14)."""
+    from jarvis.core.router.resolvers.learned import NEVER_LEARN
+
+    assert {"core.plan", "core.later", "core.help"} <= NEVER_LEARN

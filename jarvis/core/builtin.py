@@ -899,7 +899,9 @@ class CoreTools:
             },
         )
 
-    @tool(name="status", phrases=["статус", "как дела", "status", "how are you"], reversible=True)
+    # «Как дела» — не про модули: на него отвечали «21 модулей, 143 команд»
+    # (14.09.2026, 17:13). Это вопрос для разговора, туда он и идёт.
+    @tool(name="status", phrases=["статус", "статус системы", "status"], reversible=True)
     async def status(self) -> ToolResult:
         """Показать состояние скиллов и подключённых моделей."""
         health = await self._skills.health()
@@ -933,8 +935,10 @@ class CoreTools:
             }
         else:
             speech = {
-                "ru": f"Всё работает: {len(health)} модулей, "
-                      f"{len(self._registry)} команд.{cost}{build_line}",
+                "ru": f"Всё работает: {len(health)} "
+                      f"{plural_form(len(health), ('модуль', 'модуля', 'модулей'))}, "
+                      f"{len(self._registry)} "
+                      f"{plural_form(len(self._registry), ('команда', 'команды', 'команд'))}.{cost}{build_line}",
                 "en": f"All good: {len(health)} modules, "
                       f"{len(self._registry)} commands.{cost}{build_line}",
             }
@@ -1123,7 +1127,10 @@ class CoreTools:
 
     @tool(
         name="forget_last",
-        phrases=["не сохраняй в память", "не запоминай", "не запоминай это",
+        # «Не сохраняй» без «в память» — так и говорят (14.09.2026, 17:14): без
+        # этой фразы оно ушло в модель, та построила план и выключила автопамять.
+        phrases=["не сохраняй в память", "не сохраняй", "не сохраняй это",
+                 "не запоминай", "не запоминай это",
                  "забудь это", "забудь последнюю команду", "не надо это запоминать",
                  "don't remember that", "forget that", "forget the last command"],
         reversible=False,

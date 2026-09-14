@@ -26,6 +26,8 @@ from jarvis.core.contracts import Intent, Utterance
 from jarvis.core.llm import LLMService
 from jarvis.core.tools import ToolRegistry
 
+from .fallback import CHAT_TOOL
+
 if TYPE_CHECKING:  # только для типов: резолверы друг о друге знать не обязаны
     from jarvis.core.situation import Situation
 
@@ -124,9 +126,16 @@ class LLMResolver:
             tool_name,
         )
 
+        arguments = dict(call.arguments)
+        if tool_name == CHAT_TOOL:
+            # Разговору — услышанное, а не пересказ модели. Выбрав разговор, она
+            # вписывала в `text` своё «Похоже, вы сказали „щитак“. Уточните…», и
+            # ассистент отвечал уже на это, а в журнал ложилось как вопрос
+            # владельца (14.09.2026, десяток записей за день).
+            arguments["text"] = utterance.text
         return Intent(
             tool=tool_name,
-            arguments=call.arguments,
+            arguments=arguments,
             confidence=0.85,
             resolver=self.name,
             utterance=utterance.text,
