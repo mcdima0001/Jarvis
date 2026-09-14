@@ -117,6 +117,13 @@ async def test_foreign_host_is_refused_even_with_token(tmp_path: Path) -> None:
     assert response.status == 403
 
 
+async def test_window_icon_is_the_tray_reactor(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    icon = await panel._handle(_request(panel, "GET", "/favicon.ico"))
+    assert icon.status == 200 and icon.content_type == "image/x-icon"
+    assert icon.body[:4] == b"\x00\x00\x01\x00"  # заголовок ICO
+
+
 async def test_page_needs_token_and_forbids_framing(tmp_path: Path) -> None:
     panel, _, _ = _panel(tmp_path)
     assert (await panel._handle(_request(panel, "GET", "/"))).status == 403

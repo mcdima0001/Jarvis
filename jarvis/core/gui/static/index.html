@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>J.A.R.V.I.S.</title>
+<link rel="icon" href="/favicon.ico">
 <style>
   :root {
     --bg: #030b12;
@@ -19,6 +20,16 @@
     --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
   }
   * { box-sizing: border-box; }
+  /* Полоса прокрутки в стиле интерфейса: тонкая, голубая, без стрелок. */
+  * { scrollbar-width: thin; scrollbar-color: rgba(79, 216, 255, 0.45) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: rgba(79, 216, 255, 0.04); }
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(79, 216, 255, 0.55), rgba(79, 216, 255, 0.25));
+    border: 1px solid rgba(143, 233, 255, 0.35);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  ::-webkit-scrollbar-button, ::-webkit-scrollbar-corner { display: none; background: transparent; }
   html, body { height: 100%; }
   body {
     margin: 0;

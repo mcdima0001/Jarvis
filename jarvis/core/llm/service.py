@@ -4,8 +4,8 @@
 `extract_intent`. Написано один раз и работает с любым провайдером, поэтому
 добавление Gemini или Groq не тянет за собой копирование промптов.
 
-Выбор модели идёт через профиль задачи (`dialog`, `code`, `summarize`,
-`intent`), а сменить модель можно на лету: `llm.set_model("code", "...")`.
+Выбор модели идёт через профиль задачи (`dialog`, `summarize`, `intent`,
+`plan`), а сменить модель можно на лету: `llm.set_model("dialog", "...")`.
 """
 
 from __future__ import annotations

@@ -231,12 +231,10 @@ llm:
       # Ответ произносится вслух: длинный никто не дослушает, а выход стоит
       # в разы дороже входа.
       max_tokens: 300
-    code:
-      provider: openai
-      model: gpt-5.5
-      reasoning: low
-      temperature: null
-      max_tokens: 4096
+    # Профилей `code` и `analysis` здесь больше нет (14.09.2026): их не вызывал
+    # ни один кусок кода, а в панели они выглядели так, будто код ассистенту
+    # пишет OpenAI. Код новых умений пишет Claude на сервере — скилл `author`
+    # через CloudCLI (`CLI_CLAUDE` в .env), мимо этих профилей.
     summarize:
       provider: openai
       model: gpt-5.4-nano
@@ -259,14 +257,6 @@ llm:
       reasoning: none
       temperature: 0.0
       max_tokens: 200
-    # Из кода не вызывается; стоит на дешёвой, чтобы новый вызов не начинался
-    # с дорогой модели.
-    analysis:
-      provider: openai
-      model: gpt-5.4-nano
-      reasoning: none
-      temperature: 0.4
-      max_tokens: 1024
     # Агентный цикл (`core.plan`): следующий шаг зависит от результата
     # предыдущего, и ошибка в середине дороже ошибки в разборе одной фразы.
     # Каждый виток тащит каталог; предел шагов (MAX_STEPS в jarvis/core/agent.py)

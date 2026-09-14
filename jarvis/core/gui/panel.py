@@ -49,6 +49,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 STATIC = Path(__file__).resolve().parent / "static"
+#: Значки трея: окно панели носит тот же.
+ICONS = Path(__file__).resolve().parent.parent / "tray"
 
 STARTING, READY, LISTENING, SPEAKING, STOPPING = "starting", "ready", "listening", "speaking", "stopping"
 
@@ -151,6 +153,12 @@ class ControlPanel:
         port = self._server.port
         if request.headers.get("host", "") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
             return Response(status=403, body="Чужой адрес".encode())
+
+        if request.path == "/favicon.ico":
+            # Значок окна и кнопки на панели задач — тот же реактор, что в трее.
+            # Без токена: секрета в нём нет, а браузер просит его сам.
+            icon = await asyncio.to_thread((ICONS / "jarvis.ico").read_bytes)
+            return Response(body=icon, content_type="image/x-icon")
 
         if request.path == "/":
             if not hmac.compare_digest(request.query.get("token", ""), self._token):
