@@ -108,7 +108,7 @@
   tr.child td:first-child { padding-left: 28px; }
   .mono { font-family: var(--mono); font-size: 13px; }
   .ok { color: var(--cyan); } .warn { color: var(--amber); } .bad { color: var(--red); }
-  button.act, input[type=password], input[type=text], input[type=time], select {
+  button.act, input[type=password], input[type=text], input[type=time], input[type=number], select {
     font: inherit; color: var(--text); background: rgba(3, 16, 26, 0.85);
     border: 1px solid var(--line); padding: 6px 10px; border-radius: 0;
   }
@@ -175,6 +175,17 @@
     text-decoration: underline dotted rgba(143, 233, 255, 0.5); text-underline-offset: 3px;
   }
   button.link:hover { color: var(--cyan); }
+  .setting {
+    display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1.2fr); gap: 8px 22px; align-items: start;
+    padding: 12px 0; border-bottom: 1px solid rgba(79, 216, 255, 0.08);
+  }
+  .setting .setting-title { color: var(--text); }
+  .setting .key { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .setting .hint { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .setting input[type=text], .setting input[type=number] { width: 100%; }
+  .setting textarea { min-height: 90px; }
+  .setting.changed .setting-title::after { content: " •"; color: var(--amber); }
+  @media (max-width: 760px) { .setting { grid-template-columns: 1fr; } }
   @media (max-width: 860px) {
     body { grid-template-columns: 1fr; overflow: auto; }
     .reactor-side { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -256,8 +267,15 @@
 
     <h2 class="caption">Настройки</h2>
     <p class="note" id="module-config-note"></p>
-    <textarea id="module-config" spellcheck="false"></textarea>
-    <div class="toolbar" style="margin-top:10px"><button class="act" id="module-config-save">Сохранить и перезагрузить модуль</button></div>
+    <div id="module-form"></div>
+    <div class="toolbar" style="margin-top:12px"><button class="act" id="module-form-save">Сохранить и перезагрузить модуль</button></div>
+    <details class="box" id="module-raw" style="margin-top:14px">
+      <summary><span>Файл целиком (YAML)</span><span class="small">для правок, которых нет в форме: комментарии, новые ключи</span></summary>
+      <div>
+        <textarea id="module-config" spellcheck="false"></textarea>
+        <div class="toolbar" style="margin-top:10px"><button class="act" id="module-config-save">Сохранить файл и перезагрузить модуль</button></div>
+      </div>
+    </details>
 
     <div id="module-improve-box">
       <h2 class="caption">Доработать с Claude</h2>
@@ -498,12 +516,96 @@ async function openModule(name) {
     $("module-config").value = config.text;
     $("module-config").disabled = !config.editable;
     $("module-config-save").disabled = !config.editable;
+    $("module-raw").hidden = !config.editable;
     $("module-config-note").textContent = config.editable
-      ? `${config.path}${config.exists ? "" : " — файла пока нет, сохранение создаст его"}. Перед сохранением YAML проверяется, модуль сразу перезагружается с новыми настройками. Ключи — через \${ИМЯ} из .env, сами значения сюда не пиши.`
+      ? `${config.path}. После сохранения модуль сразу перезагружается с новыми настройками.`
       : "У этого модуля нет своей папки — настроек рядом с ним не бывает.";
+    renderSettings(config);
     $("module-improve-box").hidden = !info.improvable;
   } catch (error) { toast(error.message, true); }
 }
+// Форма настроек: переключатели, числа, строки; списки — по строке на пункт;
+// словари — маленький YAML. Подсказка — комментарий над ключом в config.yaml.
+let settingControls = [];
+function firstSentence(text) {
+  const match = /^(.{0,140}?[.!?])(\s|$)/.exec(text);
+  return match ? match[1] : text.slice(0, 140);
+}
+function renderSettings(config) {
+  const box = $("module-form");
+  settingControls = [];
+  box.replaceChildren();
+  $("module-form-save").hidden = true;
+  if (!config.editable) return;
+  if (config.fields === null) {
+    box.append(el("p", { class: "warn" }, `Файл настроек не разобрался: ${config.error}. Поправь его целиком ниже.`));
+    $("module-raw").open = true;
+    return;
+  }
+  if (!config.fields.length) {
+    box.append(el("p", { class: "note" }, "Своих настроек у модуля нет."));
+    return;
+  }
+  for (const field of config.fields) {
+    const row = el("div", { class: "setting" });
+    const title = field.help ? firstSentence(field.help) : field.key;
+    const rest = field.help && field.help.length > title.length ? field.help.slice(title.length).trim() : "";
+    const label = el("div", {}, el("div", { class: "setting-title" }, title), el("div", { class: "key" }, field.key),
+      rest ? el("details", { class: "hint" }, el("summary", {}, "подробнее"), rest) : "");
+    let control;
+    let read;
+    if (field.env) {
+      control = el("div", { class: "small" }, "берётся из .env — меняется в «Настройках» → «Ключи»");
+      read = () => undefined;
+    } else if (field.kind === "bool") {
+      const input = el("input", { type: "checkbox" });
+      input.checked = !!field.value;
+      control = el("label", { class: "switch" }, input, el("span"));
+      read = () => input.checked;
+    } else if (field.kind === "int" || field.kind === "float") {
+      const input = el("input", { type: "number", step: field.kind === "int" ? "1" : "any" });
+      input.value = field.value;
+      control = input;
+      read = () => input.value === "" ? field.value : Number(input.value);
+    } else if (field.kind === "list") {
+      const input = el("textarea", { spellcheck: "false", placeholder: "по одному на строку" });
+      input.value = field.value.join("\n");
+      control = el("div", {}, input, el("div", { class: "small" }, "по одному на строку"));
+      read = () => input.value.split("\n").map((line) => line.trim()).filter(Boolean);
+    } else if (field.kind === "dict") {
+      const input = el("textarea", { spellcheck: "false" });
+      input.value = field.yaml;
+      control = el("div", {}, input, el("div", { class: "small" }, "в формате YAML"));
+      read = () => input.value;
+    } else {
+      const input = el("input", { type: "text", placeholder: field.kind === "null" ? "не задано" : "" });
+      input.value = field.value ?? "";
+      control = input;
+      read = () => field.kind === "null" && input.value === "" ? null : input.value;
+    }
+    row.append(label, control);
+    row.addEventListener("input", () => row.classList.add("changed"));
+    row.addEventListener("change", () => row.classList.add("changed"));
+    box.append(row);
+    if (!field.env) settingControls.push({ field, read, row });
+  }
+  $("module-form-save").hidden = !settingControls.length;
+}
+$("module-form-save").addEventListener("click", async () => {
+  const values = {};
+  const yamlFields = {};
+  for (const { field, read, row } of settingControls) {
+    if (!row.classList.contains("changed")) continue;
+    if (field.kind === "dict") yamlFields[field.key] = read();
+    else values[field.key] = read();
+  }
+  if (!Object.keys(values).length && !Object.keys(yamlFields).length) { toast("Ничего не изменено."); return; }
+  const button = $("module-form-save");
+  button.disabled = true;
+  const answer = await run(() => api("/api/modules/config", { name: moduleName, values, yaml: yamlFields }));
+  button.disabled = false;
+  if (answer) openModule(moduleName);
+});
 $("module-back").addEventListener("click", () => { showTab("modules"); refresh(); });
 $("module-reload").addEventListener("click", async () => {
   await run(() => api("/api/modules/reload", { name: moduleName }));

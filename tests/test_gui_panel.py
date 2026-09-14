@@ -274,8 +274,11 @@ async def test_module_detail_shows_tools_and_config(tmp_path: Path) -> None:
         "name": "keys.watch", "description": "Следить за клавиатурой.",
         "phrases": ["следи за клавиатурой"], "routable": False, "reversible": True,
     }]
-    assert info["config"] == {"editable": True, "exists": True, "path": "skills/keys/config.yaml",
-                              "text": "# настройки\nenabled: false\n"}
+    config = info["config"]
+    assert {key: config[key] for key in ("editable", "exists", "path", "text")} == {
+        "editable": True, "exists": True, "path": "skills/keys/config.yaml", "text": "# настройки\nenabled: false\n",
+    }
+    assert config["fields"][0]["key"] == "enabled" and config["fields"][0]["kind"] == "bool"
     assert info["improvable"] is True
 
 
@@ -297,6 +300,42 @@ async def test_saved_config_is_applied_and_module_reloaded(tmp_path: Path, monke
     # ${VAR} раскрыт так же, как при запуске, а модуль сразу перезагружен.
     assert skills.settings["keys"] == {"enabled": True, "key": "секрет"}
     assert skills.adopted == ["keys"]
+
+
+async def test_form_fields_come_from_config_with_hints(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    (tmp_path / "skills" / "keys" / "config.yaml").write_text(
+        "# Следить за клавиатурой.\nenabled: false\nkey: ${PANEL_X:-}\nreactions:\n  баг: [Фича.]\n", encoding="utf-8"
+    )
+    fields = _json(await _call(panel, "GET", "/api/modules/detail", query={"name": "keys"}))["config"]["fields"]
+    by_key = {field["key"]: field for field in fields}
+    assert by_key["enabled"]["kind"] == "bool" and by_key["enabled"]["help"] == "Следить за клавиатурой."
+    assert by_key["key"]["env"] is True
+    assert by_key["reactions"]["yaml"] == "баг:\n- Фича.\n"
+
+
+async def test_form_save_changes_only_touched_fields(tmp_path: Path) -> None:
+    original = "# Следить за клавиатурой.\nenabled: false   # да или нет\ntimeout: 15\nreactions:\n  баг: [Фича.]\n"
+    panel, skills, _ = _panel(tmp_path)
+    (tmp_path / "skills" / "keys" / "config.yaml").write_text(original, encoding="utf-8")
+    response = await _call(panel, "POST", "/api/modules/config", body={
+        "name": "keys", "values": {"enabled": True, "timeout": "30"}, "yaml": {"reactions": "баг: [Фича., Ну конечно.]"},
+    })
+    assert response.status == 200
+    text = (tmp_path / "skills" / "keys" / "config.yaml").read_text(encoding="utf-8")
+    assert text.startswith("# Следить за клавиатурой.\nenabled: true   # да или нет\ntimeout: 30\n")
+    assert skills.settings["keys"]["reactions"] == {"баг": ["Фича.", "Ну конечно."]}
+    assert skills.adopted == ["keys"]
+
+
+async def test_form_refuses_env_and_wrong_types(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    (tmp_path / "skills" / "keys" / "config.yaml").write_text("key: ${PANEL_X:-}\ntimeout: 15\n", encoding="utf-8")
+    env = await _call(panel, "POST", "/api/modules/config", body={"name": "keys", "values": {"key": "sk-leak"}})
+    assert env.status == 400
+    typed = await _call(panel, "POST", "/api/modules/config", body={"name": "keys", "values": {"timeout": "много"}})
+    assert typed.status == 400
+    assert (tmp_path / "skills" / "keys" / "config.yaml").read_text(encoding="utf-8") == "key: ${PANEL_X:-}\ntimeout: 15\n"
 
 
 async def test_improvement_goes_to_author(tmp_path: Path) -> None:

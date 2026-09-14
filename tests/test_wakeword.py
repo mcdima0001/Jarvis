@@ -147,6 +147,21 @@ def test_broken_hold_starts_over(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert fired == [half + HOLD_FRAMES]
 
 
+def test_detector_remembers_what_it_heard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """В лог уходит расслышанное: по «(0.00)» ложные срабатывания было не разобрать."""
+    detector = _detector(["[unk] джарвис"] * (HOLD_FRAMES + 2), tmp_path, monkeypatch)
+    _run(detector, HOLD_FRAMES)
+    assert detector.hypothesis == "[unk] джарвис"
+
+
+def test_longer_hold_needs_the_name_longer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`audio.wake_word.hold_ms`: с выдержкой вдвое больше имя срабатывает вдвое позже."""
+    guesses = ["джарвис"] * (HOLD_FRAMES * 2 + 5)
+    detector = _detector(guesses, tmp_path, monkeypatch)
+    detector._hold_ms = HOLD_MS * 2
+    assert _run(detector, len(guesses)) == [HOLD_FRAMES * 2 - 1]
+
+
 def test_decoder_is_refreshed_under_endless_background(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

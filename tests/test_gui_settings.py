@@ -10,6 +10,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jarvis.core.gui.http import (
     HttpServer,
@@ -20,12 +21,14 @@ from jarvis.core.gui.http import (
     parse_head,
 )
 from jarvis.core.gui.settings import (
+    describe_config,
     key_list,
     launcher_level,
     read_env,
     referenced_keys,
     set_disabled,
     set_scalar,
+    set_top_value,
     tail,
     update_env,
     valid_time,
@@ -142,6 +145,55 @@ def test_set_scalar_quotes_and_refuses_missing() -> None:
     assert '  address: "босс"' in set_scalar(SETTINGS, "persona", "address", "босс")
     with pytest.raises(ValueError):
         set_scalar(SETTINGS, "persona", "name", "x")
+
+
+SKILL_CONFIG = """# Настройки скилла «keys». Живут рядом с кодом.
+
+# Включён ли наблюдатель.
+# Выключен по умолчанию.
+enabled: false   # true — следить
+url: https://panel
+api_key: ${CLI_CLAUDE:-}
+timeout: 15
+# Окна, где не следим.
+skip:
+  - bitwarden
+  - банк
+reactions:
+  # комментарий внутри
+  "не работает": ["Как всегда, сэр."]
+review: true
+"""
+
+
+def test_config_becomes_form_fields_with_comment_hints() -> None:
+    fields = {item.key: item for item in describe_config(SKILL_CONFIG)}
+    assert list(fields) == ["enabled", "url", "api_key", "timeout", "skip", "reactions", "review"]
+    assert fields["enabled"].kind == "bool" and fields["enabled"].help == "Включён ли наблюдатель. Выключен по умолчанию."
+    assert fields["timeout"].kind == "int" and fields["url"].kind == "str"
+    assert fields["skip"].kind == "list" and fields["skip"].value == ["bitwarden", "банк"]
+    assert fields["reactions"].kind == "dict"
+    # Ссылка на .env — только для чтения, иначе форма затёрла бы её значением.
+    assert fields["api_key"].env and not fields["url"].env
+
+
+def test_simple_value_changes_in_place_and_keeps_the_comment() -> None:
+    updated = set_top_value(SKILL_CONFIG, "enabled", True)
+    assert "enabled: true   # true — следить" in updated
+    assert updated.replace("enabled: true", "enabled: false") == SKILL_CONFIG
+
+
+def test_list_is_rewritten_as_a_block_and_the_rest_is_untouched() -> None:
+    updated = set_top_value(SKILL_CONFIG, "skip", ["keepass", "пароль"])
+    assert "skip:\n- keepass\n- пароль\nreactions:" in updated
+    assert updated.startswith(SKILL_CONFIG.split("skip:")[0])
+    assert updated.endswith('review: true\n')
+    assert yaml.safe_load(updated)["reactions"] == {"не работает": ["Как всегда, сэр."]}
+
+
+def test_unknown_key_is_refused() -> None:
+    with pytest.raises(ValueError):
+        set_top_value(SKILL_CONFIG, "nope", 1)
 
 
 def test_quiet_time_format() -> None:

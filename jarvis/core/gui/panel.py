@@ -46,11 +46,13 @@ from jarvis.core.version import current
 
 from .http import HttpServer, Request, Response, json_response
 from .settings import (
+    describe_config,
     is_admin,
     key_list,
     launcher_level,
     set_disabled,
     set_scalar,
+    set_top_value,
     tail,
     update_env,
     valid_time,
@@ -394,6 +396,25 @@ class ControlPanel:
         specs = self._registry.catalog(skill=meta.name).specs if meta else ()
         config = self._config_file(candidate)
         text = await asyncio.to_thread(_read_or_empty, config) if config else ""
+        fields: list[dict[str, Any]] | None
+        error = ""
+        try:
+            fields = [
+                {
+                    "key": field.key,
+                    "value": field.value,
+                    "kind": field.kind,
+                    "help": field.help,
+                    "env": field.env,
+                    # Словари и списки словарей правятся в форме маленьким YAML.
+                    "yaml": yaml.safe_dump(
+                        field.value, allow_unicode=True, sort_keys=False, default_flow_style=False
+                    ) if field.kind == "dict" else "",
+                }
+                for field in describe_config(text)
+            ]
+        except ValueError as exc:
+            fields, error = None, str(exc)
         return json_response({
             "name": name,
             "passport": meta.name if meta else "",
@@ -416,6 +437,8 @@ class ControlPanel:
                 "exists": bool(config and config.is_file()),
                 "path": self._relative(config) if config else "",
                 "text": text,
+                "fields": fields,
+                "error": error,
             },
             # Подскилл дорабатывать нельзя: принятый черновик лёг бы не в ту папку.
             "improvable": not candidate.parent and self._registry.has("author.improve"),
@@ -423,10 +446,30 @@ class ControlPanel:
 
     async def _save_module_config(self, request: Request) -> Response:
         data = request.json()
-        name, text = str(data.get("name", "")), str(data.get("text", ""))
+        name = str(data.get("name", ""))
         config = self._config_file(self._candidate(name))
         if config is None:
             raise ValueError("у этого модуля нет своей папки — настроек рядом с ним не бывает")
+        if "text" in data:
+            text = str(data["text"])
+        else:
+            # Из формы: меняются только тронутые поля, остальной файл и его
+            # комментарии остаются как были.
+            text = await asyncio.to_thread(_read_or_empty, config)
+            fields = {field.key: field for field in describe_config(text)}
+            changes: dict[str, Any] = dict(data.get("values") or {})
+            for key, raw in (data.get("yaml") or {}).items():
+                try:
+                    changes[key] = yaml.safe_load(str(raw))
+                except yaml.YAMLError as exc:
+                    raise ValueError(f"поле {key}: YAML не разобрался: {exc}") from exc
+            for key, value in changes.items():
+                field = fields.get(key)
+                if field is None:
+                    raise ValueError(f"нет настройки {key!r}")
+                if field.env:
+                    raise ValueError(f"{key} берётся из .env — меняй ключ в «Настройках» панели")
+                text = set_top_value(text, key, _coerce(field.kind, value))
         try:
             parsed = yaml.safe_load(text) if text.strip() else {}
         except yaml.YAMLError as exc:
@@ -789,6 +832,20 @@ class ControlPanel:
         # Как в консоли: отладочные строки остаются в файле, а не в окне.
         text = console_view(text, self._config.logging.level)
         return json_response({"text": text, "offset": offset})
+
+
+def _coerce(kind: str, value: Any) -> Any:
+    """Привести значение из формы к типу поля: число из поля ввода приходит строкой."""
+    try:
+        if kind == "int" and not isinstance(value, bool):
+            return int(value)
+        if kind == "float" and not isinstance(value, bool):
+            return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"ожидалось число, а пришло {value!r}") from exc
+    if kind == "bool" and not isinstance(value, bool):
+        raise ValueError(f"ожидалось да или нет, а пришло {value!r}")
+    return value
 
 
 def _preview(value: Any) -> str:

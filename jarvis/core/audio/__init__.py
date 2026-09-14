@@ -133,6 +133,7 @@ def _vosk_wake_word(config: AudioConfig) -> WakeWord:
         model,
         phrases=config.wake_word.phrases,
         sample_rate=config.sample_rate,
+        hold_ms=config.wake_word.hold_ms,
     )
 
 

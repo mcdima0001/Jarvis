@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import re
 import sys
 import threading
 import time
@@ -188,6 +189,23 @@ def ends_with_word(buffer: str, phrase: str) -> bool:
         return False
     before = buffer[: -len(phrase)]
     return not before or not before[-1].isalnum()
+
+
+#: Слова, отрицающие следующее за ними: «не очень работает» — не «работает».
+_NEGATIONS = ("не", "ни", "нет", "нифига", "никак")
+
+
+def negated(typed: str, pattern: str) -> bool:
+    """Отрицается ли слово из списка стоящим перед ним «не» — в пределах двух слов.
+
+    Своя реакция на «не работает» в списке есть и побеждает сама, как более
+    длинная. А «не очень работает» и «не особо работает» будили «Вот и славно».
+    Смотрим только в пределах своей части фразы: «не спал, но работает» — уже
+    не отрицание.
+    """
+    head = typed[: -len(pattern)] if typed.endswith(pattern) else typed
+    clause = re.split(r"[,.;:!?—\-\"«»()]", head)[-1]
+    return any(word in _NEGATIONS for word in clause.split()[-2:])
 
 
 def is_sensitive(title: str, patterns: tuple[str, ...]) -> bool:
@@ -363,6 +381,9 @@ class Reactions:
         for pattern in self._patterns:
             if not ends_with_word(typed, pattern):
                 continue
+            if not pattern.startswith(_NEGATIONS) and negated(typed, pattern):
+                # «не очень работает»: шутить «Вот и славно» тут невпопад.
+                return None
             last = self._fired.get(pattern)
             if last is not None and moment - last < self._cooldown:
                 return None

@@ -559,6 +559,10 @@ class VoicePipeline:
         Дальше всё идёт по накатанному: открывается то же окно, что и после
         голого «Джарвис», а имя из расшифровки снимет `_strip_wake`.
         """
+        # Что детектор расслышал — до сброса, сброс это забудет. Число «(0.00)»
+        # в логе раньше ничего не значило: оценка обнулялась тем же сбросом, а
+        # разбирать ложные срабатывания нужно по тому, что именно услышано.
+        heard = str(getattr(self._wake_word, "hypothesis", "") or "")
         self._wake_word.reset()
         # В режиме «не слушаю» имя ничего не открывает и никого не будит.
         # Событие отсюда приглушает музыку, и без этой проверки каждое
@@ -568,8 +572,8 @@ class VoicePipeline:
             return
         self._follow_up_until = time.time() + self._config.wake_word.follow_up_s
         logger.info(
-            "Услышал имя (%.2f) — жду команду %.0f с",
-            getattr(self._wake_word, "score", 1.0),
+            "Услышал имя (детектор: %r) — жду команду %.0f с",
+            heard or self._wake_word.phrase,
             self._config.wake_word.follow_up_s,
         )
         self._events.emit(

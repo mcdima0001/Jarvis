@@ -212,7 +212,10 @@ class VoskWakeWord:
         *,
         phrases: Sequence[str] = ("джарвис",),
         sample_rate: int = 16000,
+        hold_ms: float = HOLD_MS,
     ) -> None:
+        #: Выдержка имени в гипотезе — `audio.wake_word.hold_ms`.
+        self._hold_ms = float(hold_ms)
         if not model.is_dir():
             raise AudioError(
                 f"Нет модели активации: {model}. Скачается сама при запуске, "
@@ -272,6 +275,15 @@ class VoskWakeWord:
         return self._words[0]
 
     @property
+    def hypothesis(self) -> str:
+        """Что декодер расслышал в момент срабатывания — для разбора ложных срабатываний.
+
+        Сам декодер знает только «джарвис» и «[unk]», так что ответ вида
+        «[unk] джарвис [unk]» говорит, сколько чужих слов было вокруг имени.
+        """
+        return getattr(self, "_hypothesis", "")
+
+    @property
     def score(self) -> float:
         """Насколько уверенно сработало в последний раз.
 
@@ -309,11 +321,12 @@ class VoskWakeWord:
             return False
 
         self._held_ms += frame.duration * 1000
-        if self._held_ms < HOLD_MS or self._fired:
+        if self._held_ms < self._hold_ms or self._fired:
             return False
 
         self._fired = True
         self._score = 1.0
+        self._hypothesis = partial
         return True
 
     def reset(self) -> None:

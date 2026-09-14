@@ -26,6 +26,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 #: ``${VAR}`` и ``${VAR:-значение}`` — так конфиг ссылается на `.env`.
 _REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
 #: Имя переменной окружения: иное в `.env` писать нельзя.
@@ -187,6 +189,119 @@ def set_scalar(yaml_text: str, section: str, key: str, value: object) -> str:
             lines[index] = f"{indent}{key}: {yaml_scalar(value)}{comment or ''}"
             return "\n".join(lines)
     raise ValueError(f"в config.yaml нет строки {section}.{key}")
+
+
+_TOP_KEY = re.compile(r"^([A-Za-z_][\w-]*):(.*)$")
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigField:
+    """Поле настроек скилла для формы: ключ верхнего уровня его `config.yaml`."""
+
+    key: str
+    value: object
+    #: bool, int, float, str, null, list, dict — чем его показывать.
+    kind: str
+    #: Комментарий над ключом в файле — это и есть подсказка к полю.
+    help: str
+    #: Значение ссылается на `.env` (`${VAR}`): в форме только для чтения, чтобы
+    #: не затереть ссылку на ключ его содержимым.
+    env: bool
+
+
+def _kind(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, list) and all(not isinstance(item, (list, dict)) for item in value):
+        return "list"
+    return "dict"
+
+
+def describe_config(text: str) -> list[ConfigField]:
+    """Разобрать `config.yaml` скилла на поля формы — в порядке файла.
+
+    Подсказка к полю — комментарий сразу над ключом (до пустой строки выше):
+    так владелец и авторы скиллов их и пишут.
+
+    :raises ValueError: YAML не разобрался или в нём не словарь.
+    """
+    try:
+        data = yaml.safe_load(text) if text.strip() else {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"YAML не разобрался: {exc}") from exc
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError("настройки должны быть словарём «ключ: значение»")
+
+    lines = text.splitlines()
+    fields: list[ConfigField] = []
+    for index, line in enumerate(lines):
+        match = _TOP_KEY.match(line)
+        if not match or match.group(1) not in data:
+            continue
+        key = match.group(1)
+        notes: list[str] = []
+        above = index - 1
+        while above >= 0 and lines[above].startswith("#"):
+            notes.insert(0, lines[above].lstrip("#").strip())
+            above -= 1
+        block = [match.group(2)] + [item for item in lines[index + 1 : _block_end(lines, index)]]
+        fields.append(ConfigField(
+            key=key,
+            value=data[key],
+            kind=_kind(data[key]),
+            help=" ".join(note for note in notes if note),
+            env="${" in "\n".join(block),
+        ))
+    return fields
+
+
+def _block_end(lines: list[str], start: int) -> int:
+    """Где кончается значение ключа: до первой строки с нулевым отступом, без хвостовых пустых."""
+    end = start + 1
+    while end < len(lines) and (not lines[end] or lines[end][0].isspace()):
+        end += 1
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return end
+
+
+def set_top_value(text: str, key: str, value: object) -> str:
+    """Задать значение ключа верхнего уровня, не трогая остальной файл.
+
+    Простое значение меняется на месте, комментарий в конце строки остаётся.
+    Список или словарь переписываются блоком — комментарии **внутри** него при
+    этом пропадают, всё остальное в файле остаётся байт в байт.
+
+    :raises ValueError: такого ключа в файле нет.
+    """
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        match = _TOP_KEY.match(line)
+        if not match or match.group(1) != key:
+            continue
+        end = _block_end(lines, index)
+        simple = not isinstance(value, (list, dict))
+        if simple and end == index + 1:
+            inline = re.match(rf"^{re.escape(key)}:\s*{_VALUE}(\s+#.*)?\s*$", line)
+            comment = inline.group(2) if inline and inline.group(2) else ""
+            lines[index] = f"{key}: {yaml_scalar(value)}{comment}"
+        else:
+            dumped = yaml.safe_dump(
+                {key: value}, allow_unicode=True, sort_keys=False, default_flow_style=False, width=4096
+            ).rstrip("\n")
+            lines[index:end] = dumped.split("\n")
+        return "\n".join(lines)
+    raise ValueError(f"в настройках нет ключа {key!r}")
 
 
 def launcher_level(data: bytes) -> str | None:

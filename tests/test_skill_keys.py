@@ -153,6 +153,23 @@ def test_reaction_needs_the_start_of_the_word(typed: str) -> None:
     assert [r for r in (react.feed(ch, now=0.0) for ch in typed) if r] == []
 
 
+@pytest.mark.parametrize("typed", ["не очень работает ", "не особо работает.", "ни разу не работает "])
+def test_negated_word_does_not_get_a_happy_reaction(typed: str) -> None:
+    react = keys.Reactions({"работает": ("Вот и славно.",)}, cooldown_s=0.0)
+    assert [r for r in (react.feed(ch, now=0.0) for ch in typed) if r] == []
+
+
+def test_negation_is_limited_to_its_own_clause() -> None:
+    react = keys.Reactions({"работает": ("Вот и славно.",)}, cooldown_s=0.0)
+    assert react.feed_pattern("не спал, но работает", now=0.0) is not None
+
+
+def test_explicit_negative_reaction_still_wins() -> None:
+    react = keys.Reactions({"работает": ("Вот и славно.",), "не работает": ("Как всегда, сэр.",)}, cooldown_s=0.0)
+    result = react.feed_pattern("опять не работает", now=0.0)
+    assert result is not None and result.keyword == "не работает"
+
+
 def test_enter_finishes_the_last_word() -> None:
     """Слово в самом конце строки заканчивает Enter — реакция всё равно звучит."""
     react = keys.Reactions({"баг": ("Это не баг, сэр.",)})
