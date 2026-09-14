@@ -160,6 +160,19 @@ class LLMConfig:
     default_task: str = "dialog"
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     profiles: Mapping[str, TaskProfile] = field(default_factory=dict)
+    #: Тарифы моделей для примерной цены в панели. OpenAI цену в ответе не
+    #: присылает, а знать хотя бы порядок трат владелец просил (14.09.2026).
+    prices: Mapping[str, "ModelPrice"] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ModelPrice:
+    """Тариф модели в долларах за миллион токенов."""
+
+    input: float
+    #: Вход из кеша: каталог инструментов со второй фразы идёт по нему.
+    cached: float
+    output: float
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

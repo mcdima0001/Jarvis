@@ -33,6 +33,7 @@ from jarvis.core.gui import ControlPanel
 from jarvis.core.jobs import Jobs
 from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
+from jarvis.core.llm.usage import UsageLog
 from jarvis.core.memory import Memory, build_memory
 from jarvis.core.meter import LoadReporter, Meter
 from jarvis.core.persona import FAREWELL, GREETING, Persona
@@ -164,6 +165,8 @@ class JarvisApp:
             # Режим «отвечай коротко» — про длину любого текста, который
             # ассистент произносит, а производит его не один инструмент.
             modes=modes,
+            # Расход по дням и примерная цена — вкладка «Расход» в панели.
+            usage=UsageLog(Path(config.memory.dir) / "usage", prices=config.llm.prices),
         )
 
         persona = Persona(

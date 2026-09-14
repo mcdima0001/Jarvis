@@ -10,9 +10,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from jarvis.core.contracts import detect_language
 from jarvis.core.errors import LLMError, LLMNotConfigured
@@ -21,6 +22,9 @@ from jarvis.core.tools import ToolCatalog
 
 from .profiles import ProfileRegistry
 from .protocol import LLMProvider, LLMRequest, LLMResponse, Message, ToolCall
+
+if TYPE_CHECKING:
+    from .usage import UsageLog
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +139,13 @@ class LLMService:
         providers: Mapping[str, LLMProvider],
         profiles: ProfileRegistry,
         modes: "Modes | None" = None,
+        usage: "UsageLog | None" = None,
     ) -> None:
         self._providers = dict(providers)
         self._profiles = profiles
         self._spending = Spending()
+        #: Расход по дням с примерной ценой — для вкладки «Расход» в панели.
+        self._usage = usage
         #: Режимы. Нужен ровно один — «отвечай коротко»: он про длину любого
         #: текста, который ассистент произносит, а производит текст не один
         #: инструмент. Место, через которое проходят все, здесь.
@@ -148,6 +155,11 @@ class LLMService:
     def spending(self) -> Spending:
         """Расход токенов с момента запуска."""
         return self._spending
+
+    @property
+    def usage(self) -> "UsageLog | None":
+        """Расход по дням; ``None`` — не ведётся."""
+        return self._usage
 
     @property
     def service_name(self) -> str:
@@ -232,6 +244,10 @@ class LLMService:
         response = await provider.complete(request)
 
         self._spending.add(profile.task, response.usage)
+        if self._usage is not None:
+            # Файл дня пишется в потоке: запись на диск в цикле событий
+            # задержала бы голос ради бухгалтерии.
+            await asyncio.to_thread(self._usage.add, profile.task, profile.model, response.usage)
         usage = response.usage
         logger.info(
             "LLM %s (%s): %s+%s токенов%s, всего за сеанс %s",

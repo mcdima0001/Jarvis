@@ -490,6 +490,38 @@ def test_follow_up_measured_from_speech_not_from_parsing(
     assert pipeline._extract_command("включи свет", spoken_at=now + 5) is None
 
 
+def test_late_name_without_name_in_text_is_not_a_call(pipeline: VoicePipeline) -> None:
+    """Живой случай 14.09.2026: детектор поймал «Джарвис» в песне Scorpions.
+
+    Речь (песня) началась в 13:45:59, «имя» — в 13:46:04, а расшифровка «Come
+    from. You'll know where you're going» ушла в разговор: окно открыл детектор,
+    и имя в тексте уже не требовалось.
+    """
+    now = time.time()
+    pipeline._follow_up_until = now + 10
+    pipeline._name_heard_at = now
+    started = now - 5.0
+    assert pipeline._extract_command("Come from. You'll know where you're going", spoken_at=started) is None
+
+
+def test_name_at_the_start_still_passes_when_garbled(pipeline: VoicePipeline) -> None:
+    """Настоящие команды без узнанного имени: детектор срабатывал не позже секунды от начала."""
+    now = time.time()
+    pipeline._follow_up_until = now + 10
+    pipeline._name_heard_at = now
+    assert pipeline._extract_command("Реза откройфанель", spoken_at=now - 0.8) == "Реза откройфанель"
+    # Имя узнано в тексте — правило не касается фразы вовсе, как бы поздно ни поймал детектор.
+    assert pipeline._extract_command("Джарвис, включи свет", spoken_at=now - 6) == "включи свет"
+
+
+def test_answer_after_listening_is_not_mistaken_for_a_late_name(pipeline: VoicePipeline) -> None:
+    """Голое «Джарвис» → «Слушаю» → команда: имя прозвучало до фразы, а не посреди неё."""
+    now = time.time()
+    pipeline._name_heard_at = now - 4
+    pipeline._follow_up_until = now + 6
+    assert pipeline._extract_command("включи свет", spoken_at=now) == "включи свет"
+
+
 async def test_window_opens_after_the_reply_is_spoken(
     registry: ToolRegistry, events: LocalEventBus
 ) -> None:

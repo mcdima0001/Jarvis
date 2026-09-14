@@ -540,3 +540,27 @@ async def test_draft_is_sent_back_with_revise(tmp_path: Path) -> None:
     assert panel._registry.calls[-1] == (  # type: ignore[attr-defined]
         "author.improve", {"skill": "keys", "request": "короче", "revise": True}
     )
+
+
+async def test_usage_tab_shows_today_with_price(tmp_path: Path) -> None:
+    """Просьба владельца: расход за сегодня с примерной ценой, отдельной вкладкой."""
+    from jarvis.core.config.schema import ModelPrice
+    from jarvis.core.llm.usage import UsageLog
+
+    panel, _, _ = _panel(tmp_path)
+    off = _json(await _call(panel, "GET", "/api/usage"))
+    assert off["enabled"] is False and off["profiles"][0]["task"] == "intent"
+
+    usage = UsageLog(tmp_path / "usage", prices={"gpt-5.4-nano": ModelPrice(input=0.2, cached=0.02, output=1.25)})
+    usage.add("intent", "gpt-5.4-nano", {"prompt_tokens": 1000, "completion_tokens": 10, "prompt_tokens_details": {"cached_tokens": 900}})
+    usage.add("place", "gpt-5.5", {"prompt_tokens": 500, "completion_tokens": 50})
+    panel._llm.usage = usage  # type: ignore[attr-defined]
+
+    data = _json(await _call(panel, "GET", "/api/usage"))
+    rows = {row["task"]: row for row in data["today"]["rows"]}
+    assert rows["intent"]["cached"] == 900 and rows["intent"]["cost"] > 0
+    assert rows["place"]["cost"] is None
+    assert data["today"]["total"]["unpriced"] == ["gpt-5.5"]
+    assert len(data["history"]) == 7
+    status = _json(await _call(panel, "GET", "/api/status"))
+    assert status["today"]["tokens"] == 1560

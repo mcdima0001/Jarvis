@@ -227,6 +227,7 @@ class ControlPanel:
             ("POST", "/api/drafts/accept"): self._accept_draft,
             ("POST", "/api/drafts/discard"): self._discard_draft,
             ("POST", "/api/drafts/revise"): self._revise_draft,
+            ("GET", "/api/usage"): self._usage,
             ("GET", "/api/memory"): self._memory_view,
             ("POST", "/api/memory/forget"): self._forget,
             ("GET", "/api/settings"): self._settings,
@@ -285,7 +286,41 @@ class ControlPanel:
                 "tokens": spending.total_tokens,
                 "by_task": dict(spending.by_task),
             },
+            "today": await self._today_usage(),
             "profiles": profiles,
+        })
+
+    async def _today_usage(self) -> dict[str, Any] | None:
+        """Итог дня для карточки на главной; ``None`` — расход по дням не ведётся."""
+        usage = getattr(self._llm, "usage", None)
+        if usage is None:
+            return None
+        return _usage_total(await asyncio.to_thread(usage.day))
+
+    async def _usage(self, request: Request) -> Response:
+        """Вкладка «Расход»: сегодня по задачам, последние дни и раскладка моделей."""
+        profiles = []
+        for task in self._llm.profiles.tasks():
+            profile = self._llm.profiles.get(task)
+            profiles.append({"task": task, "model": f"{profile.provider}/{profile.model}"})
+        usage = getattr(self._llm, "usage", None)
+        if usage is None:
+            return json_response({"enabled": False, "profiles": profiles})
+        today, history = await asyncio.to_thread(lambda: (usage.day(), usage.history()))
+        return json_response({
+            "enabled": True,
+            "profiles": profiles,
+            "today": {
+                "rows": [
+                    {
+                        "task": row.task, "model": row.model, "calls": row.calls, "prompt": row.prompt,
+                        "cached": row.cached, "completion": row.completion, "tokens": row.tokens, "cost": row.cost,
+                    }
+                    for row in today
+                ],
+                "total": _usage_total(today),
+            },
+            "history": [{"date": day.isoformat(), **_usage_total(rows)} for day, rows in history],
         })
 
     async def _output_label(self) -> str:
@@ -560,6 +595,8 @@ class ControlPanel:
                     before, after, f"skills/{name}/skill.py", f"drafts/{name}/skill.py", lineterm=""
                 )),
                 "review": _read_or_empty(review).strip() if review.is_file() else "",
+                # Файл целиком: панель прячет его под «Код», по умолчанию свёрнутым.
+                "code": "\n".join(after),
             })
         return rows
 
@@ -869,6 +906,17 @@ class ControlPanel:
         # Как в консоли: отладочные строки остаются в файле, а не в окне.
         text = console_view(text, self._config.logging.level)
         return json_response({"text": text, "offset": offset})
+
+
+def _usage_total(rows: Any) -> dict[str, Any]:
+    """Итог по строкам расхода: запросы, токены, примерная цена и модели без тарифа."""
+    unpriced = sorted({row.model for row in rows if row.cost is None and row.tokens})
+    return {
+        "calls": sum(row.calls for row in rows),
+        "tokens": sum(row.tokens for row in rows),
+        "cost": round(sum(row.cost or 0.0 for row in rows), 6),
+        "unpriced": unpriced,
+    }
 
 
 def _coerce(kind: str, value: Any) -> Any:

@@ -26,6 +26,7 @@ from .schema import (
     LLMConfig,
     LoggingConfig,
     MemoryConfig,
+    ModelPrice,
     PersonaConfig,
     ProviderConfig,
     RouterConfig,
@@ -260,7 +261,18 @@ def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
             f"llm.default_task={default_task!r} не найден среди профилей: "
             f"{', '.join(sorted(profiles))}"
         )
-    return LLMConfig(default_task=default_task, providers=providers, profiles=profiles)
+
+    prices: dict[str, ModelPrice] = {}
+    for model, raw in _section(section, "prices").items():
+        try:
+            prices[str(model)] = ModelPrice(
+                input=float(raw["input"]), cached=float(raw.get("cached", raw["input"])), output=float(raw["output"])
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"llm.prices.{model}: нужны числа input, output и необязательный cached ({exc})"
+            ) from exc
+    return LLMConfig(default_task=default_task, providers=providers, profiles=profiles, prices=prices)
 
 
 def load_config(path: Path | str | None = None, *, root: Path | None = None) -> JarvisConfig:
