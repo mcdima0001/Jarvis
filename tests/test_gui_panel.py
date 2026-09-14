@@ -616,3 +616,32 @@ async def test_improvement_can_choose_a_model(tmp_path: Path) -> None:
     assert panel._registry.calls[-1] == (  # type: ignore[attr-defined]
         "author.improve", {"skill": "keys", "request": "короче", "model": "opus"}
     )
+
+
+async def test_panel_opens_and_closes_by_voice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """«Открой панель» / «закрой панель» (просьба владельца 14.09.2026)."""
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "win32")
+    panel, _, _ = _panel(tmp_path)
+    windows: list[int] = []
+    launched: list[str] = []
+    focused: list[int] = []
+    closed: list[list[int]] = []
+    panel._panel_windows = lambda: list(windows)  # type: ignore[method-assign]
+    panel._launch_window = lambda url, saved: launched.append(url)  # type: ignore[method-assign]
+    panel._focus_window = focused.append  # type: ignore[method-assign]
+    panel._close_windows = lambda handles: closed.append(handles) or len(handles)  # type: ignore[method-assign]
+
+    first = await panel.open_panel()
+    assert first.speech_for("ru") == "Открываю панель." and launched and "token=" in launched[0]
+
+    windows.append(777)
+    again = await panel.open_panel()
+    assert again.speech_for("ru") == "Панель уже открыта — вывел вперёд." and focused == [777]
+    assert len(launched) == 1, "второе окно не открывается"
+
+    shut = await panel.close_panel()
+    assert shut.speech_for("ru") == "Закрыл панель." and closed == [[777]]
+    windows.clear()
+    assert (await panel.close_panel()).speech_for("ru") == "Панель и так закрыта."

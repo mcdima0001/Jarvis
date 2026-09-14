@@ -385,6 +385,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             fallback=str(stt.get("fallback") or ""),
             api_key=str(stt.get("api_key") or ""),
             timeout=float(stt.get("timeout", 10.0)),
+            streaming=bool(stt.get("streaming", True)),
             model=str(stt.get("model", "base")),
             device=str(stt.get("device", "auto")),
             compute_type=str(stt.get("compute_type", "int8")),

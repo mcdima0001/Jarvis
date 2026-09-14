@@ -28,6 +28,7 @@ import time
 from jarvis.core.errors import STTError
 
 from .protocol import STT, Transcript
+from .stream import STTStream
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,17 @@ class FallbackSTT:
         )
         await self._backup.start()
         self._backup_ready = True
+
+    def open_stream(self, *, sample_rate: int = 16000) -> STTStream | None:
+        """Поток — только у основного и только пока он не в блокировке после отказа.
+
+        Иначе каждая фраза после обрыва связи начиналась бы с ожидания таймаута
+        потока — ровно то, от чего блокировка и заведена.
+        """
+        if time.monotonic() < self._blocked_until:
+            return None
+        opener = getattr(self._primary, "open_stream", None)
+        return opener(sample_rate=sample_rate) if callable(opener) else None
 
     async def transcribe(self, audio: bytes, *, sample_rate: int = 16000) -> Transcript:
         """Распознать: сперва основным путём, при отказе — запасным."""

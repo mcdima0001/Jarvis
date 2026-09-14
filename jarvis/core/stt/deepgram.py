@@ -43,11 +43,14 @@ from jarvis.core.contracts import detect_language
 from jarvis.core.errors import STTError
 
 from .protocol import Transcript
+from .stream import DeepgramStream, live_query
 
 logger = logging.getLogger(__name__)
 
 #: Куда отправлять запись.
 _URL = "https://api.deepgram.com/v1/listen"
+#: Куда подключаться для потокового распознавания (`stream.py`).
+LIVE_URL = "wss://api.deepgram.com/v1/listen"
 
 #: Что просить у Deepgram, когда язык заранее неизвестен. Code-switching:
 #: модель сама разбирается, на каком языке говорят, и не отбрасывает второй.
@@ -98,9 +101,10 @@ def read_answer(data: dict) -> tuple[str, float, str, float]:
 class DeepgramSTT:
     """Распознавание речи через Deepgram."""
 
-    def __init__(self, config: STTConfig, *, api_key: str) -> None:
+    def __init__(self, config: STTConfig, *, api_key: str, live_url: str = LIVE_URL) -> None:
         self._config = config
         self._key = api_key
+        self._live_url = live_url
         self._client: httpx.AsyncClient | None = None
         #: Сколько секунд звука уже отправлено. Тариф считается по времени, и
         #: расход должен быть виден так же, как у языковой модели: иначе лимит
@@ -187,6 +191,33 @@ class DeepgramSTT:
             # как того и ждёт сервис.
             params["keyterm"] = list(self._config.keyterms)
         return params
+
+    def open_stream(self, *, sample_rate: int = 16000) -> DeepgramStream | None:
+        """Начать фразу в потоковом распознавании; ``None`` — поток выключен или недоступен.
+
+        Параметры те же, что у обычного запроса (модель, язык, подсказка
+        словаря), плюс формат звука: в потоке его не описывает WAV-заголовок.
+        """
+        if not self._key or not self._config.streaming:
+            return None
+        try:
+            import websockets  # noqa: F401
+        except ImportError:
+            logger.warning("Поток распознавания недоступен: нет пакета websockets")
+            return None
+        params = {**self._params(), "encoding": "linear16", "sample_rate": sample_rate, "channels": 1}
+        return DeepgramStream(
+            f"{self._live_url}?{live_query(params)}",
+            headers={"Authorization": f"Token {self._key}"},
+            timeout=self._config.timeout,
+            sample_rate=sample_rate,
+            fallback_language=self._config.fallback_language,
+            on_seconds=self._count_stream,
+        )
+
+    def _count_stream(self, seconds: float) -> None:
+        self._requests += 1
+        self._seconds += seconds
 
     async def transcribe(self, audio: bytes, *, sample_rate: int = 16000) -> Transcript:
         """Распознать моно-PCM 16 бит.

@@ -47,6 +47,9 @@ def _user32() -> Any:
         handle, handle, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
     ]
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.ShowWindow.argtypes = [handle, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [handle]
+    user32.PostMessageW.argtypes = [handle, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     return user32
 
 
@@ -86,6 +89,28 @@ def panel_windows() -> list[int]:
 
     user32.EnumWindows(callback_type(visit), 0)
     return found
+
+
+_SW_RESTORE = 9
+_WM_CLOSE = 0x0010
+
+
+def focus_window(hwnd: int) -> None:
+    """Вывести окно вперёд: свёрнутое — развернуть на прежнее место."""
+    user32 = _user32()
+    if user32 is None:
+        return
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, _SW_RESTORE)
+    user32.SetForegroundWindow(hwnd)
+
+
+def close_windows(handles: list[int]) -> int:
+    """Попросить окна закрыться — как крестиком. Возвращает, скольким отправили."""
+    user32 = _user32()
+    if user32 is None:
+        return 0
+    return sum(1 for hwnd in handles if user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0))
 
 
 def window_rect(hwnd: int) -> Geometry | None:

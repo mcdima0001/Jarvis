@@ -1675,3 +1675,89 @@ def test_first_command_falls_back_to_the_transcript(registry, events) -> None:
 
     assert pipeline._language_of("ОК", fallback="en") == "en"
     assert pipeline._language_of("ОК") == "ru", "без подсказок отвечаем по-русски"
+
+
+# --- потоковое распознавание ----------------------------------------------------
+
+
+class _FakeStream:
+    def __init__(self, *, text: str = "", fails: bool = False) -> None:
+        self.fed: list[bytes] = []
+        self.ended = False
+        self.cancelled = False
+        self._text = text
+        self._fails = fails
+
+    def feed(self, audio: bytes) -> None:
+        self.fed.append(audio)
+
+    def end(self) -> None:
+        self.ended = True
+
+    async def finish(self):
+        from jarvis.core.errors import STTError
+        from jarvis.core.stt import Transcript
+
+        if self._fails:
+            raise STTError("обрыв")
+        return Transcript(text=self._text, language="ru")
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def test_stream_opens_only_after_the_name_and_sends_the_start(pipeline: VoicePipeline) -> None:
+    """Приватность прежняя: до имени звук в облако не уходит, после — досылается начало."""
+    opened: list[_FakeStream] = []
+
+    def opener(*, sample_rate: int = 16000) -> _FakeStream:
+        opened.append(_FakeStream())
+        return opened[-1]
+
+    pipeline._open_stream = opener
+    pipeline._gate = True
+    pipeline._follow_up_until = 0.0
+    buffer = bytearray(b"\x01" * 3200)
+    assert pipeline._stream_utterance(buffer, None, b"\x01" * 3200) is None, "имени не было — потока нет"
+    assert opened == []
+
+    pipeline._follow_up_until = time.time() + 10
+    buffer.extend(b"\x02" * 960)
+    stream = pipeline._stream_utterance(buffer, None, b"\x02" * 960)
+    assert stream is opened[0]
+    assert stream.fed == [bytes(buffer)], "первым куском — накопленное начало фразы"
+    assert pipeline._stream_utterance(buffer, stream, b"\x03" * 960) is stream
+    assert stream.fed[-1] == b"\x03" * 960
+
+
+def test_closed_gate_cancels_the_stream(pipeline: VoicePipeline) -> None:
+    pipeline._gate = True
+    pipeline._follow_up_until = 0.0
+    stream = _FakeStream()
+    pipeline._submit(b"\x00" * 32000, stream)
+    assert stream.cancelled and pipeline._pending.empty()
+
+
+async def test_stream_text_is_used_and_a_broken_stream_falls_back(pipeline: VoicePipeline) -> None:
+    """Текст потока берётся как есть; сорвался поток — фраза уходит обычным путём."""
+    calls: list[int] = []
+
+    class Whole:
+        service_name = "whole"
+        ready = True
+
+        async def start(self) -> None: ...
+
+        async def stop(self) -> None: ...
+
+        async def transcribe(self, audio: bytes, *, sample_rate: int):
+            from jarvis.core.stt import Transcript
+
+            calls.append(len(audio))
+            return Transcript(text="", language="ru")
+
+    pipeline._stt = Whole()
+    await pipeline._process(b"\x00" * 32000, time.time(), _FakeStream(text=""))
+    assert calls == [], "поток ответил — целиком не распознаём"
+    await pipeline._process(b"\x00" * 32000, time.time(), _FakeStream(fails=True))
+    assert calls == [32000], "поток сорвался — та же фраза обычным путём"

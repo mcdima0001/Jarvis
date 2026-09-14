@@ -33,6 +33,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -40,9 +41,10 @@ import yaml
 
 from jarvis.core.audio import outputs as audio_devices
 from jarvis.core.config import load_skill_settings
-from jarvis.core.contracts import Event
+from jarvis.core.contracts import Event, ToolResult
 from jarvis.core.errors import ConfigError, SkillError
 from jarvis.core.logging.visible import console_view
+from jarvis.core.tools import collect_tools, tool
 from jarvis.core.version import current
 
 from .http import HttpServer, Request, Response, json_response
@@ -128,6 +130,14 @@ class ControlPanel:
         #: Отсчёты нагрузки за последний час: момент и доля ядра в процентах.
         self._load: deque[tuple[float, float]] = deque(maxlen=LOAD_POINTS)
         self._load_task: asyncio.Task[None] | None = None
+        #: Команды «открой / закрой панель», зарегистрированные на время работы.
+        self._tool_registrations: list[Any] = []
+        #: Чем окна ищутся, открываются и закрываются. Подменяется в тестах:
+        #: настоящие ходят в WinAPI и запускают Edge.
+        self._panel_windows: Callable[[], list[int]] = _panel_windows
+        self._focus_window: Callable[[int], None] = _focus_window
+        self._close_windows: Callable[[list[int]], int] = _close_windows
+        self._launch_window: Callable[[str, Any], None] = _launch_window
         # Токен один на все запуски, а не новый на каждый (14.09.2026): окно панели,
         # открытое до перезапуска Jarvis, иначе навсегда получало отказ и писало
         # «нет связи», хотя ассистент уже работал.
@@ -170,6 +180,10 @@ class ControlPanel:
             self._events.subscribe(name, handler)
         if getattr(self._meter, "enabled", False):
             self._load_task = asyncio.create_task(self._sample_load(), name="panel-load")
+        register = getattr(self._registry, "register", None)
+        if callable(register):
+            for item in collect_tools(self, namespace="core"):
+                self._tool_registrations.append(register(item))
         try:
             await self._server.start()
         except OSError as exc:
@@ -186,7 +200,44 @@ class ControlPanel:
             if task is not None:
                 task.cancel()
         self._window_task = self._load_task = None
+        for registration in self._tool_registrations:
+            registration.revoke()
+        self._tool_registrations.clear()
         await self._server.stop()
+
+    # --- голосом: «открой панель», «закрой панель» -----------------------------
+
+    @tool(
+        phrases=["открой панель", "открой свою панель", "покажи панель", "покажи свою панель",
+                 "открой панель управления", "open the panel", "show the panel"],
+        reversible=True,
+    )
+    async def open_panel(self) -> ToolResult:
+        """Открыть окно панели управления Jarvis; уже открыто — вывести вперёд."""
+        if sys.platform != "win32":
+            return ToolResult.failure("окно панели открывается только в Windows", speech={
+                "ru": "Панель открывается только на Windows.", "en": "The panel opens only on Windows."})
+        opened = await asyncio.to_thread(self._panel_windows)
+        if opened:
+            await asyncio.to_thread(self._focus_window, opened[0])
+            return ToolResult.success({"opened": False}, speech={
+                "ru": "Панель уже открыта — вывел вперёд.", "en": "The panel is already open."})
+        await asyncio.to_thread(self._launch_window, self.url, self.saved_window())
+        return ToolResult.success({"opened": True}, speech={"ru": "Открываю панель.", "en": "Opening the panel."})
+
+    @tool(
+        phrases=["закрой панель", "закрой свою панель", "спрячь панель", "убери панель",
+                 "закрой панель управления", "close the panel", "hide the panel"],
+        reversible=True,
+    )
+    async def close_panel(self) -> ToolResult:
+        """Закрыть окно панели управления Jarvis."""
+        opened = await asyncio.to_thread(self._panel_windows)
+        if not opened:
+            return ToolResult.success({"closed": 0}, speech={
+                "ru": "Панель и так закрыта.", "en": "The panel is already closed."})
+        closed = await asyncio.to_thread(self._close_windows, opened)
+        return ToolResult.success({"closed": closed}, speech={"ru": "Закрыл панель.", "en": "Panel closed."})
 
     # --- состояние по шине ---------------------------------------------------
 
@@ -1018,6 +1069,31 @@ def _coerce(kind: str, value: Any) -> Any:
 def _preview(value: Any) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     return text if len(text) <= PREVIEW else text[:PREVIEW] + "…"
+
+
+def _panel_windows() -> list[int]:
+    from . import window
+
+    return window.panel_windows()
+
+
+def _focus_window(hwnd: int) -> None:
+    from . import window
+
+    window.focus_window(hwnd)
+
+
+def _close_windows(handles: list[int]) -> int:
+    from . import window
+
+    return window.close_windows(handles)
+
+
+def _launch_window(url: str, saved: Any) -> None:
+    """Открыть окно тем же путём, что и трей: Edge без рамки, на прежнее место."""
+    from jarvis.core.tray.session import open_panel
+
+    open_panel(url, saved)
 
 
 def load_token(path: Path) -> str:

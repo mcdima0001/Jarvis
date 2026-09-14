@@ -50,12 +50,14 @@ from jarvis.core.contracts import (
     dominant_language,
 )
 from jarvis.core.dialogue import Conversation
+from jarvis.core.errors import STTError
 from jarvis.core.meter import Meter
 from jarvis.core.pending import TTL as PENDING_TTL
 from jarvis.core.persona import DONE, FAILED, LISTENING, WORKING, Persona
 from jarvis.core.router import Dispatcher
 from jarvis.core.state import DEAF, Modes, wakes_up
 from jarvis.core.stt import STT
+from jarvis.core.stt.stream import STTStream
 from jarvis.core.tts import TTS
 
 logger = logging.getLogger(__name__)
@@ -133,6 +135,10 @@ class VoicePipeline:
         self._vad = vad
         self._wake_word = wake_word
         self._stt = stt
+        #: Чем открыть потоковое распознавание фразы; ``None`` — движок не умеет
+        #: (Whisper, заглушка), и фраза идёт целиком, как раньше.
+        opener = getattr(stt, "open_stream", None)
+        self._open_stream = opener if callable(opener) else None
         self._tts = tts
         self._dispatcher = dispatcher
         self._events = events
@@ -160,7 +166,7 @@ class VoicePipeline:
 
         # Вместе со звуком храним момент, когда он прозвучал: окно ответа
         # должно отсчитываться от речи, а не от того, когда до неё дошли руки.
-        self._pending: asyncio.Queue[tuple[bytes, float]] = asyncio.Queue(
+        self._pending: asyncio.Queue[tuple[bytes, float, STTStream | None]] = asyncio.Queue(
             maxsize=max(1, config.pending_limit or _PENDING_LIMIT)
         )
         self._tasks: list[asyncio.Task[None]] = []
@@ -541,6 +547,8 @@ class VoicePipeline:
         buffer = bytearray()
         silence = 0
         speaking = False
+        #: Потоковое распознавание текущей фразы; ``None`` — не открыто.
+        stream: STTStream | None = None
 
         try:
             async for frame in self._source.frames():
@@ -549,6 +557,9 @@ class VoicePipeline:
                 if self._muted:
                     if speaking:
                         logger.debug("Свою речь не слушаю, накопленное отбрасываю")
+                    if stream is not None:
+                        stream.cancel()
+                        stream = None
                     buffer.clear()
                     silence = 0
                     speaking = False
@@ -567,6 +578,7 @@ class VoicePipeline:
                     if not speaking:
                         logger.debug("Начало речи")
                     buffer.extend(frame.data)
+                    stream = self._stream_utterance(buffer, stream, frame.data)
                     silence = 0
                     speaking = True
                     continue
@@ -576,13 +588,15 @@ class VoicePipeline:
 
                 # Немного тишины оставляем в конце: Whisper лучше слышит границу.
                 buffer.extend(frame.data)
+                stream = self._stream_utterance(buffer, stream, frame.data)
                 silence += 1
 
                 too_long = len(buffer) >= self._config.max_utterance_bytes
                 if silence >= self._config.silence_frames or too_long:
                     if too_long:
                         logger.debug("Фраза достигла предела длины, отправляю как есть")
-                    self._submit(bytes(buffer))
+                    self._submit(bytes(buffer), stream)
+                    stream = None
                     buffer.clear()
                     silence = 0
                     speaking = False
@@ -634,7 +648,30 @@ class VoicePipeline:
             )
         )
 
-    def _submit(self, audio: bytes) -> None:
+    def _stream_utterance(
+        self, buffer: bytearray, stream: STTStream | None, chunk: bytes
+    ) -> STTStream | None:
+        """Досылать фразу в потоковое распознавание — но только после имени.
+
+        Пока ворота закрыты, звук копится у нас и в облако не уходит, как и
+        раньше. Открылись (детектор услышал имя или открыто окно ответа) —
+        поток открывается, первым куском уходит накопленное начало фразы, а
+        дальше кадры идут по мере записи.
+        """
+        if stream is not None:
+            stream.feed(chunk)
+            return stream
+        if self._open_stream is None:
+            return None
+        spoken_at = time.time() - len(buffer) / 2 / self._config.sample_rate
+        if not self._worth_recognising(spoken_at):
+            return None
+        opened = self._open_stream(sample_rate=self._config.sample_rate)
+        if opened is not None:
+            opened.feed(bytes(buffer))
+        return opened
+
+    def _submit(self, audio: bytes, stream: STTStream | None = None) -> None:
         """Отправить фрагмент на распознавание, не блокируя захват.
 
         Вместе с фрагментом запоминается момент, когда он **начал** звучать.
@@ -644,6 +681,8 @@ class VoicePipeline:
         """
         if len(audio) < self._config.min_utterance_bytes:
             logger.debug("Фрагмент слишком короткий (%d байт), пропускаю", len(audio))
+            if stream is not None:
+                stream.cancel()
             return
         spoken_at = time.time() - len(audio) / 2 / self._config.sample_rate
         if not self._worth_recognising(spoken_at):
@@ -651,10 +690,18 @@ class VoicePipeline:
                 "Имени не было — фрагмент %.1f с не расшифровываю",
                 len(audio) / 2 / self._config.sample_rate,
             )
+            if stream is not None:
+                stream.cancel()
             return
+        if stream is not None:
+            # Итог просим сразу, а не когда до фразы дойдёт очередь разбора: пока
+            # выполняется прошлая команда, облако закрыло бы молчащий поток.
+            stream.end()
         try:
-            self._pending.put_nowait((audio, spoken_at))
+            self._pending.put_nowait((audio, spoken_at, stream))
         except asyncio.QueueFull:
+            if stream is not None:
+                stream.cancel()
             # Чаще всего это не «медленный компьютер», а посторонняя речь:
             # видео в колонках или разговор рядом. Whisper распознаёт примерно
             # в реальном времени, поэтому непрерывный фон забивает очередь.
@@ -689,32 +736,46 @@ class VoicePipeline:
     async def _consume(self) -> None:
         """Разбирать накопленные фрагменты по одному."""
         while True:
-            audio, spoken_at = await self._pending.get()
+            item = await self._pending.get()
+            audio, spoken_at = item[0], item[1]
+            stream = item[2] if len(item) > 2 else None
             try:
-                await self._process(audio, spoken_at)
+                await self._process(audio, spoken_at, stream)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Ошибка при разборе фрагмента")
 
-    async def _process(self, audio: bytes, spoken_at: float) -> None:
+    async def _process(self, audio: bytes, spoken_at: float, stream: STTStream | None = None) -> None:
         """Распознать фрагмент и обработать реплику.
 
         :param spoken_at: когда фраза прозвучала. Именно по этому времени
             проверяется окно ответа: распознавание идёт секунды, и сверяться
             с часами после него — значит закрывать окно раньше времени.
+        :param stream: потоковое распознавание этой фразы, если открывалось.
+            Сорвалось — та же фраза уходит обычным путём.
         """
         seconds = len(audio) / 2 / self._config.sample_rate
         started = time.perf_counter()
-        transcript = await self._stt.transcribe(audio, sample_rate=self._config.sample_rate)
+        transcript = None
+        how = ""
+        if stream is not None:
+            try:
+                transcript = await stream.finish()
+                how = ", поток"
+            except STTError as exc:
+                logger.warning("Поток распознавания сорвался (%s) — распознаю фразу целиком", exc)
+        if transcript is None:
+            transcript = await self._stt.transcribe(audio, sample_rate=self._config.sample_rate)
         if transcript.empty:
             logger.debug("Фрагмент %.1f с не дал текста", seconds)
             return
 
         logger.info(
-            "Распознано (%.1f с речи за %.1f с): %r",
+            "Распознано (%.1f с речи за %.1f с%s): %r",
             seconds,
             time.perf_counter() - started,
+            how,
             transcript.text,
             extra={"tone": "heard"},
         )
