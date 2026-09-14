@@ -25,8 +25,10 @@ from jarvis.core.gui.settings import (
     read_env,
     referenced_keys,
     set_disabled,
+    set_scalar,
     tail,
     update_env,
+    valid_time,
 )
 
 ENV = """# ключи
@@ -59,6 +61,12 @@ def test_key_list_never_contains_values() -> None:
 def test_references_are_collected_per_file() -> None:
     found = referenced_keys({"a.yaml": "${X} ${Y:-1}", "b.yaml": "${X}"})
     assert found == {"X": ("a.yaml", "b.yaml"), "Y": ("a.yaml",)}
+
+
+def test_examples_in_comments_are_not_keys() -> None:
+    """Панель показывала ключ VAR «не задан»: это пример `${VAR}` из комментария."""
+    found = referenced_keys({"a.yaml": "# те же ${VAR} работают и тут\nkey: ${REAL}  # ${ALSO_NOT}"})
+    assert found == {"REAL": ("a.yaml",)}
 
 
 def test_update_env_replaces_one_line_and_keeps_comments() -> None:
@@ -102,6 +110,42 @@ def test_set_disabled_rewrites_only_the_skills_line() -> None:
     # Такая же строка в чужой секции не тронута.
     assert "  disabled: [something]" in updated
     assert updated.replace("[keys, telegram]", "[]") == CONFIG
+
+
+SETTINGS = """audio:
+  engine: sounddevice
+  input_device: null       # null = по умолчанию
+  vad:
+    engine: silero
+persona:
+  address: сэр
+attention:
+  quiet_from: "23:30"
+"""
+
+
+def test_set_scalar_changes_one_value_and_keeps_the_comment() -> None:
+    updated = set_scalar(SETTINGS, "audio", "input_device", "Микрофон (Audio Device), MME")
+    assert '  input_device: "Микрофон (Audio Device), MME"       # null = по умолчанию' in updated
+    back = set_scalar(updated, "audio", "input_device", None)
+    assert back == SETTINGS
+
+
+def test_set_scalar_touches_only_first_level_keys() -> None:
+    """`audio.engine` и `audio.vad.engine` называются одинаково."""
+    updated = set_scalar(SETTINGS, "audio", "engine", "null")
+    assert '  engine: "null"' in updated and "    engine: silero" in updated
+
+
+def test_set_scalar_quotes_and_refuses_missing() -> None:
+    assert '  quiet_from: "22:00"' in set_scalar(SETTINGS, "attention", "quiet_from", "22:00")
+    assert '  address: "босс"' in set_scalar(SETTINGS, "persona", "address", "босс")
+    with pytest.raises(ValueError):
+        set_scalar(SETTINGS, "persona", "name", "x")
+
+
+def test_quiet_time_format() -> None:
+    assert valid_time("23:30") and valid_time("") and not valid_time("24:00") and not valid_time("7:30")
 
 
 def test_set_disabled_refuses_strange_names_and_missing_line() -> None:

@@ -147,6 +147,32 @@ def test_broken_hold_starts_over(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert fired == [half + HOLD_FRAMES]
 
 
+def test_decoder_is_refreshed_under_endless_background(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Под фоном конца фразы нет, и гипотеза копилась: нагрузка росла с 3% до 38%.
+
+    Декодер обязан начинаться заново раз в `REFRESH_MS`, если имени не слышно.
+    """
+    from jarvis.core.audio.wakeword import REFRESH_MS
+
+    frames = int(REFRESH_MS / FRAME_MS)
+    detector = _detector(["[unk]"] * (frames * 3), tmp_path, monkeypatch)
+    before = detector._recognizer
+    _run(detector, frames + 1)
+    assert detector._recognizer is not before, "декодер не пересоздан за REFRESH_MS фона"
+
+
+def test_refresh_never_cuts_the_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пока имя в гипотезе, сброса нет: иначе оно оборвалось бы на полуслове."""
+    from jarvis.core.audio.wakeword import REFRESH_MS
+
+    frames = int(REFRESH_MS / FRAME_MS)
+    guesses = ["[unk]"] * (frames - 2) + ["джарвис"] * (HOLD_FRAMES + 5)
+    detector = _detector(guesses, tmp_path, monkeypatch)
+    assert _run(detector, len(guesses)) == [frames - 2 + HOLD_FRAMES - 1]
+
+
 def test_unusable_spellings_are_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

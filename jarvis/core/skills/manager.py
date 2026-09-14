@@ -154,8 +154,24 @@ class SkillManager:
 
     def tools_of(self, name: str) -> tuple[str, ...]:
         """Инструменты загруженного скилла; пусто, если он не загружен."""
-        record = self._records.get(name)
+        record = self._records.get(self.resolve(name))
         return tuple(record.scope.tool_names) if record else ()
+
+    def resolve(self, name: str) -> str:
+        """Имя в паспорте по имени папки — или то же имя, если записи нет.
+
+        Обычно они совпадают, но не обязаны: самописный скилл из папки
+        `powershell` назвал себя `clipboard` (14.09.2026). Выключатель в конфиге
+        и панель знают папку, а записи хранятся по паспорту, и `unload` по
+        имени папки молча ничего не делал — модуль оставался загруженным, а
+        повторное включение падало на «уже загружен».
+        """
+        if name in self._records:
+            return name
+        for key, record in self._records.items():
+            if record.candidate.name == name:
+                return key
+        return name
 
     @property
     def tree(self) -> tuple[str, ...]:
@@ -181,8 +197,8 @@ class SkillManager:
         return tuple(listed + orphans)
 
     def get(self, name: str) -> Skill | None:
-        """Вернуть экземпляр скилла по имени."""
-        record = self._records.get(name)
+        """Вернуть экземпляр скилла по имени (из паспорта или папки)."""
+        record = self._records.get(self.resolve(name))
         return record.instance if record else None
 
     # --- жизненный цикл ----------------------------------------------------
@@ -288,7 +304,7 @@ class SkillManager:
 
     async def unload(self, name: str) -> None:
         """Остановить скилл и отозвать все его регистрации."""
-        record = self._records.pop(name, None)
+        record = self._records.pop(self.resolve(name), None)
         if record is None:
             return
         try:
@@ -313,8 +329,8 @@ class SkillManager:
         Уже загруженный скилл тут не ошибка: «подключи такой-то» на знакомом
         имени естественно означает «перечитай его с диска».
         """
-        if name in self._records:
-            return await self.reload(name)
+        if self.resolve(name) in self._records:
+            return await self.reload(self.resolve(name))
         if name in self._config.disabled:
             raise SkillError(f"Скилл {name!r} отключён в конфиге")
 

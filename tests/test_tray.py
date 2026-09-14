@@ -27,6 +27,7 @@ from jarvis.core.tray.session import (
     current_log_file,
     live_log_command,
     panel_command,
+    panel_geometry,
     restart_command,
     run_in_tray,
 )
@@ -193,6 +194,18 @@ def test_live_log_command_follows_the_file_and_survives_quotes() -> None:
     assert "Джарвис''s" in script
     # Отладочные строки отсеиваются: DEBUG в список показываемых не входит.
     assert "$levels = @('INFO','WARNING','ERROR','CRITICAL')" in script
+    # Цвета как у консоли: предупреждение жёлтое, сказанное зелёное.
+    assert "Write-Host" in script and "'Yellow'" in script and "'Отвечаю:'" in script
+    assert "__" not in script, "в скрипте осталась неподставленная метка"
+
+
+def test_panel_window_takes_most_of_the_screen() -> None:
+    # Рабочий стол 1920×1140 без масштаба — окно как на снимке владельца.
+    x, y, width, height = panel_geometry((0, 0, 1920, 1140), 96)
+    assert (width, height) == (1728, 946)
+    assert (x, y) == (23, 14)
+    # Масштаб 150%: те же доли, но в независимых точках.
+    assert panel_geometry((0, 0, 2880, 1710), 144) == (x, y, width, height)
 
 
 async def test_panel_opens_with_token_from_the_app(tmp_path: Path) -> None:

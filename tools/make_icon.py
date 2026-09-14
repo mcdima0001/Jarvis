@@ -66,7 +66,16 @@ def draw(size: int, ring: tuple[int, int, int], glow: tuple[int, int, int]) -> I
     return picture.resize((size, size), Image.Resampling.LANCZOS)
 
 
+#: PNG для окна панели. Edge берёт значок окна и кнопки на панели задач из
+#: страницы, и 16 точек из ICO он растягивал в мыло — нужны крупные.
+PNG_SIZES = (32, 48, 64, 128, 256)
+
+
 def main() -> None:
+    ring, glow = PALETTES["jarvis.ico"]
+    for size in PNG_SIZES:
+        draw(size, ring, glow).save(OUT / f"jarvis-{size}.png", format="PNG", optimize=True)
+    print(f"{OUT}: jarvis-{{{','.join(map(str, PNG_SIZES))}}}.png")
     for name, (ring, glow) in PALETTES.items():
         frames = [draw(size, ring, glow) for size in SIZES]
         largest = frames[-1]

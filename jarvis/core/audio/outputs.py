@@ -1,18 +1,20 @@
-"""Аудиовыходы: какие есть, как их называют вслух и как найти названный.
+"""Звуковые устройства: какие есть, как их называют вслух и как найти названное.
 
-Нужно ради одной просьбы владельца: выбирать голосом, куда ассистент говорит
-(«говори через колонку»). Сменить устройство на ходу ничего не стоит: вывод
-открывает поток заново на каждую реплику (`SoundDeviceSink`), так что следующая
-реплика просто уходит в другое место.
+Нужно ради двух просьб владельца: выбирать голосом, куда ассистент говорит
+(«говори через колонку»), и выбирать в панели, какой микрофон он слушает.
+Сменить выход на ходу ничего не стоит: вывод открывает поток заново на каждую
+реплику (`SoundDeviceSink`). Микрофон держится открытым всё время, поэтому он
+меняется в конфиге и действует после перезапуска.
 
 **Список устройств у PortAudio грязный**, и показывать его как есть нельзя.
 Одна и та же колонка видна четырьмя интерфейсами (MME, DirectSound, WASAPI,
 WDM-KS), а виртуальные выходы Voicemeeter повторяются под одним именем по пять
-раз. Поэтому играем через **MME** — тем же путём, каким звучит голос по
+раз. Поэтому работаем через **MME** — тем же путём, каким звучит голос по
 умолчанию, и он у владельца слышен. Беда MME одна: имена обрезаны до 31 знака
 («Динамики (VB-Audio Voicemeeter »), поэтому полные имена берутся у
-DirectSound, где они целые. WASAPI в общем режиме не годится вовсе: частоту
-голоса он не пересчитывает и не открывается.
+DirectSound, где они целые. Через сам DirectSound голос молча уходил в никуда
+(замер петлёй, `docs/lessons.md`). WASAPI в общем режиме не пересчитывает
+частоту и не открывается вовсе.
 
 **Имя устройства — не то, как его называют.** «Onboard Speaker (Audio Device)»
 никто не произносит, говорят «динамики ноутбука». Отсюда `audio.output_names`:
@@ -39,18 +41,20 @@ from typing import Any
 from jarvis.core.text import best_match
 from jarvis.core.text.matching import forms, touches
 
-#: Через что играть, по предпочтению. MME — путь голоса по умолчанию.
+#: Через что играть и слушать, по предпочтению. MME — путь по умолчанию.
 PLAYBACK_HOSTAPIS = ("MME", "Windows DirectSound")
 #: У кого брать полные имена.
 NAMES_HOSTAPI = "Windows DirectSound"
 #: Длина, до которой MME обрезает имя устройства.
 MME_NAME_LIMIT = 31
 
-#: Служебные «устройства», которые означают «системный выход» и сами по себе
-#: ничего не называют.
+#: Служебные «устройства», которые означают «системное по умолчанию» и сами по
+#: себе ничего не называют.
 _GENERIC = (
     "первичный звуковой драйвер",
+    "первичный драйвер записи звука",
     "primary sound driver",
+    "primary sound capture driver",
     "переназначение звуковых устр",
     "microsoft sound mapper",
 )
@@ -75,7 +79,7 @@ SIMILARITY = 0.75
 
 @dataclass(frozen=True, slots=True)
 class Output:
-    """Аудиовыход, через который можно говорить."""
+    """Звуковое устройство: выход, через который говорить, или микрофон."""
 
     #: Номер устройства у PortAudio. Живёт до перезапуска: после него номера
     #: другие, поэтому выбор запоминается по имени.
@@ -83,15 +87,28 @@ class Output:
     name: str
     #: Как называть вслух.
     spoken: str
+    #: Имя, как его отдал PortAudio в том интерфейсе, через который работаем
+    #: (у MME — обрезанное). Нужно для конфига: по нему устройство и открывается.
+    raw: str = ""
+    hostapi: str = ""
 
 
 def spoken_name(name: str, names: Mapping[str, str]) -> str:
-    """Название выхода для речи: из `audio.output_names`, иначе имя без скобок."""
+    """Название устройства для речи: из `audio.output_names`, иначе имя без скобок."""
     low = name.lower()
     for part, spoken in names.items():
         if part and part.lower() in low:
             return spoken
     return " ".join(re.sub(r"[()]", " ", name).split())
+
+
+def config_value(device: Output) -> str:
+    """Как записать устройство в конфиг, чтобы sounddevice нашёл ровно его.
+
+    Одно имя видно в четырёх интерфейсах, и по голому имени sounddevice
+    отвечает «нашлось несколько». Имя вместе с интерфейсом совпадает точно.
+    """
+    return f"{device.raw}, {device.hostapi}" if device.hostapi else device.raw
 
 
 def _hostapi_name(device: Mapping[str, Any], hostapis: Sequence[Mapping[str, Any]]) -> str:
@@ -107,16 +124,15 @@ def _full_name(name: str, full_names: Sequence[str]) -> str:
     return next((full for full in full_names if full.startswith(head)), head)
 
 
-def usable_outputs(
+def _usable(
     devices: Sequence[Mapping[str, Any]],
     hostapis: Sequence[Mapping[str, Any]],
-    names: Mapping[str, str] | None = None,
+    names: Mapping[str, str],
+    channels: str,
 ) -> list[Output]:
-    """Выходы для выбора голосом: один интерфейс, полные имена, без служебных и повторов."""
-    names = names or {}
     by_api: dict[str, list[tuple[int, Mapping[str, Any]]]] = {}
     for index, device in enumerate(devices):
-        if int(device.get("max_output_channels", 0) or 0) <= 0:
+        if int(device.get(channels, 0) or 0) <= 0:
             continue
         by_api.setdefault(_hostapi_name(device, hostapis), []).append((index, device))
 
@@ -127,15 +143,33 @@ def usable_outputs(
     seen: set[str] = set()
     result: list[Output] = []
     for index, device in chosen:
-        name = str(device.get("name", "")).strip() if api != "MME" else str(device.get("name", ""))
-        if api == "MME":
-            name = _full_name(name, full_names).strip()
+        raw = str(device.get("name", ""))
+        name = (_full_name(raw, full_names) if api == "MME" else raw).strip()
         key = name.lower()
         if not name or key in seen or any(generic in key for generic in _GENERIC):
             continue
         seen.add(key)
-        result.append(Output(index=index, name=name, spoken=spoken_name(name, names)))
+        result.append(
+            Output(index=index, name=name, spoken=spoken_name(name, names), raw=raw, hostapi=api or "")
+        )
     return result
+
+
+def usable_outputs(
+    devices: Sequence[Mapping[str, Any]],
+    hostapis: Sequence[Mapping[str, Any]],
+    names: Mapping[str, str] | None = None,
+) -> list[Output]:
+    """Выходы для выбора голосом: один интерфейс, полные имена, без служебных и повторов."""
+    return _usable(devices, hostapis, names or {}, "max_output_channels")
+
+
+def usable_inputs(
+    devices: Sequence[Mapping[str, Any]],
+    hostapis: Sequence[Mapping[str, Any]],
+) -> list[Output]:
+    """Микрофоны: по тем же правилам, что и выходы."""
+    return _usable(devices, hostapis, {}, "max_input_channels")
 
 
 def is_default(query: str) -> bool:
@@ -200,3 +234,11 @@ def query_outputs(names: Mapping[str, str] | None = None) -> list[Output]:
 
     sd = _import_sounddevice()
     return usable_outputs(list(sd.query_devices()), list(sd.query_hostapis()), names)
+
+
+def query_inputs() -> list[Output]:
+    """Спросить у PortAudio, какие микрофоны есть. Блокирующий вызов."""
+    from .devices import _import_sounddevice
+
+    sd = _import_sounddevice()
+    return usable_inputs(list(sd.query_devices()), list(sd.query_hostapis()))

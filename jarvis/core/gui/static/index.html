@@ -4,7 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>J.A.R.V.I.S.</title>
-<link rel="icon" href="/favicon.ico">
+<link rel="icon" type="image/png" sizes="256x256" href="/icon-256.png">
+<link rel="icon" type="image/png" sizes="128x128" href="/icon-128.png">
+<link rel="icon" type="image/png" sizes="64x64" href="/icon-64.png">
+<link rel="icon" type="image/png" sizes="48x48" href="/icon-48.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <style>
   :root {
     --bg: #030b12;
@@ -15,8 +19,10 @@
     --cyan-dim: rgba(79, 216, 255, 0.5);
     --amber: #ffa928;
     --red: #ff5a5a;
+    --green: #6ee7a0;
     --text: #d6f4ff;
     --muted: #6f97a8;
+    --dim: #4f6f7c;
     --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
   }
   * { box-sizing: border-box; }
@@ -34,101 +40,125 @@
   body {
     margin: 0;
     background:
-      radial-gradient(circle at 28% 50%, rgba(79, 216, 255, 0.10), transparent 45%),
+      radial-gradient(circle at 18% 50%, rgba(79, 216, 255, 0.10), transparent 45%),
       linear-gradient(rgba(79, 216, 255, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
       linear-gradient(90deg, rgba(79, 216, 255, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
       var(--bg);
     color: var(--text);
-    font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+    font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
     display: grid;
-    grid-template-columns: minmax(300px, 400px) 1fr;
+    grid-template-columns: minmax(300px, 30%) 1fr;
     overflow: hidden;
   }
   /* --- реактор ------------------------------------------------------------ */
   .reactor-side {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 18px; padding: 24px; border-right: 1px solid var(--line);
+    gap: 18px; padding: 24px; border-right: 1px solid var(--line); min-height: 0;
   }
-  .reactor { width: min(340px, 90%); aspect-ratio: 1; position: relative; }
+  .reactor { width: min(380px, 90%); aspect-ratio: 1; position: relative; max-width: 100%; }
   .reactor svg { width: 100%; height: 100%; overflow: visible; }
   .spin { transform-origin: 200px 200px; animation: spin 40s linear infinite; }
   .spin.rev { animation-direction: reverse; animation-duration: 26s; }
   .spin.fast { animation-duration: 9s; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .glow { filter: drop-shadow(0 0 6px var(--cyan)) drop-shadow(0 0 14px rgba(79, 216, 255, 0.5)); }
-  .core { transition: r 0.25s, fill 0.4s; }
   body[data-state="speaking"] .core { animation: pulse 0.5s ease-in-out infinite alternate; }
   body[data-state="listening"] .arc-live { stroke: var(--amber); }
   body[data-state="starting"] .arc-live, body[data-state="offline"] .arc-live { stroke: var(--muted); }
   @keyframes pulse { from { opacity: 0.65; } to { opacity: 1; } }
   .title {
-    font-family: "Segoe UI", sans-serif; font-weight: 600; letter-spacing: 0.35em;
-    font-size: 22px; color: var(--cyan-soft); text-shadow: 0 0 12px var(--cyan);
+    font-weight: 600; letter-spacing: 0.35em; font-size: 24px;
+    color: var(--cyan-soft); text-shadow: 0 0 12px var(--cyan);
   }
   .state-line { color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase; font-size: 12px; }
   .state-line b { color: var(--cyan); font-weight: 600; }
   body[data-state="listening"] .state-line b { color: var(--amber); }
-  .said { width: 100%; max-width: 340px; font-size: 13px; color: var(--muted); min-height: 3.5em; }
-  .said div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .said { width: 100%; max-width: 420px; font-size: 13.5px; color: var(--muted); display: grid; gap: 6px; }
+  /* Реплика целиком: длинная фраза переносится, а не обрезается. */
+  .said div { overflow-wrap: anywhere; max-height: 9em; overflow-y: auto; }
   .said span { color: var(--text); }
   /* --- правая часть ------------------------------------------------------- */
   main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
-  nav { display: flex; gap: 2px; padding: 14px 20px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  nav { display: flex; gap: 2px; padding: 14px 20px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: end; }
   nav button {
-    background: none; border: 0; color: var(--muted); padding: 10px 16px; cursor: pointer;
-    font: inherit; letter-spacing: 0.1em; text-transform: uppercase; font-size: 12px;
+    background: none; border: 0; color: var(--muted); padding: 10px 18px; cursor: pointer;
+    font: inherit; letter-spacing: 0.12em; text-transform: uppercase; font-size: 13px;
     border-bottom: 2px solid transparent;
   }
   nav button:hover { color: var(--cyan-soft); }
   nav button[aria-selected="true"] { color: var(--cyan); border-bottom-color: var(--cyan); text-shadow: 0 0 8px var(--cyan-dim); }
-  section { display: none; padding: 20px; overflow: auto; flex: 1; }
+  nav .spacer { flex: 1; }
+  nav button.gear { display: flex; gap: 8px; align-items: center; }
+  nav button.gear svg { width: 17px; height: 17px; }
+  section { display: none; padding: 20px 24px; overflow: auto; flex: 1; min-height: 0; }
   section.on { display: block; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
   .card {
-    background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; position: relative;
+    background: var(--panel); border: 1px solid var(--line); padding: 14px 18px; position: relative;
     clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
   }
-  .card h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
-  .big { font-size: 22px; color: var(--cyan-soft); font-weight: 600; }
-  .small { color: var(--muted); font-size: 12px; }
+  .card h3, h2.caption { margin: 0 0 6px; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  h2.caption { margin: 26px 0 10px; font-size: 12.5px; color: var(--cyan-soft); }
+  h2.caption:first-child { margin-top: 0; }
+  .big { font-size: 24px; color: var(--cyan-soft); font-weight: 600; }
+  .small { color: var(--muted); font-size: 12.5px; }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   td { padding: 8px; border-bottom: 1px solid rgba(79, 216, 255, 0.08); vertical-align: middle; }
   tr.child td:first-child { padding-left: 28px; }
-  .mono { font-family: var(--mono); font-size: 12.5px; }
+  .mono { font-family: var(--mono); font-size: 13px; }
   .ok { color: var(--cyan); } .warn { color: var(--amber); } .bad { color: var(--red); }
-  button.act, input[type=password], input[type=text] {
+  button.act, input[type=password], input[type=text], input[type=time], select {
     font: inherit; color: var(--text); background: rgba(3, 16, 26, 0.85);
-    border: 1px solid var(--line); padding: 6px 10px;
+    border: 1px solid var(--line); padding: 6px 10px; border-radius: 0;
   }
+  select option { background: #06141d; }
   button.act { cursor: pointer; color: var(--cyan); letter-spacing: 0.06em; }
   button.act:hover { border-color: var(--cyan); box-shadow: 0 0 10px rgba(79, 216, 255, 0.25); }
   button.act:disabled { opacity: 0.4; cursor: default; }
   button.act.danger { color: var(--amber); }
-  input:focus, button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 1px; }
+  input:focus, select:focus, button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 1px; }
   .switch { position: relative; width: 42px; height: 22px; display: inline-block; }
   .switch input { opacity: 0; width: 0; height: 0; }
   .switch span { position: absolute; inset: 0; border: 1px solid var(--line); background: rgba(3, 16, 26, 0.85); cursor: pointer; transition: 0.2s; }
   .switch span::after { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: var(--muted); transition: 0.2s; }
   .switch input:checked + span { border-color: var(--cyan); }
   .switch input:checked + span::after { left: 23px; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
-  .keyrow { display: flex; gap: 8px; flex-wrap: wrap; }
-  .keyrow input { flex: 1; min-width: 160px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .row > select, .row > input[type=text] { flex: 1; min-width: 220px; }
+  .field { display: grid; grid-template-columns: minmax(160px, 220px) 1fr; gap: 10px 18px; align-items: center; margin-bottom: 14px; }
+  .field > label { color: var(--muted); }
+  @media (max-width: 760px) { .field { grid-template-columns: 1fr; } }
+  /* --- лог: те же цвета, что у консоли ----------------------------------- */
   #log {
-    margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
-    color: #9fc7d6; background: rgba(2, 10, 16, 0.7); border: 1px solid var(--line); padding: 12px; min-height: 100%;
+    margin: 0; font-family: var(--mono); font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+    color: #cfe7f0; background: rgba(2, 10, 16, 0.7); border: 1px solid var(--line); padding: 14px; min-height: 100%;
   }
-  #log .w { color: var(--amber); } #log .e { color: var(--red); } #log .i { color: var(--text); }
+  #log .dim { color: var(--dim); }
+  #log .w { color: #f5d547; } #log .e { color: #ff6b6b; } #log .c { color: #ff4d4d; font-weight: 700; }
+  #log .heard { color: #4fd8ff; } #log .said { color: var(--green); }
+  #tab-log { display: none; flex-direction: column; }
+  #tab-log.on { display: flex; }
+  #tab-log .scroll { flex: 1; overflow: auto; min-height: 0; }
   .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   .toast {
-    position: fixed; right: 20px; bottom: 20px; max-width: 420px; background: rgba(8, 28, 42, 0.95);
+    position: fixed; right: 20px; bottom: 20px; max-width: 460px; background: rgba(8, 28, 42, 0.95);
     border: 1px solid var(--cyan); padding: 12px 16px; box-shadow: 0 0 20px rgba(79, 216, 255, 0.25);
     opacity: 0; transform: translateY(8px); transition: 0.25s; pointer-events: none;
   }
   .toast.on { opacity: 1; transform: none; }
   .toast.error { border-color: var(--red); }
-  .note { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; max-width: 70ch; }
-  @media (max-width: 760px) {
+  .note { color: var(--muted); font-size: 13px; margin: 0 0 14px; max-width: 80ch; }
+  details.box { background: var(--panel); border: 1px solid var(--line); margin-bottom: 10px; }
+  details.box > summary { cursor: pointer; padding: 10px 14px; list-style: none; display: flex; gap: 10px; align-items: center; }
+  details.box > summary::before { content: "›"; color: var(--cyan); transition: 0.2s; display: inline-block; }
+  details.box[open] > summary::before { transform: rotate(90deg); }
+  details.box > div { padding: 0 14px 12px; }
+  .value { font-family: var(--mono); font-size: 12.5px; color: #b9d9e5; overflow-wrap: anywhere; }
+  ol.guide { margin: 0; padding-left: 22px; display: grid; gap: 8px; max-width: 80ch; }
+  ol.guide code, .note code { font-family: var(--mono); color: var(--cyan-soft); background: rgba(79, 216, 255, 0.08); padding: 1px 5px; }
+  .badge { display: inline-block; padding: 2px 10px; border: 1px solid currentColor; font-size: 12px; letter-spacing: 0.08em; }
+  @media (max-width: 860px) {
     body { grid-template-columns: 1fr; overflow: auto; }
     .reactor-side { border-right: 0; border-bottom: 1px solid var(--line); }
     main { height: auto; }
@@ -146,7 +176,7 @@
       </g>
       <g class="spin rev" fill="none" stroke="var(--cyan)">
         <circle cx="200" cy="200" r="158" stroke-width="22" stroke-opacity="0.18"/>
-        <path class="arc-live glow" d="M 58 200 A 142 142 0 0 1 342 200" stroke-width="16" stroke-linecap="butt" stroke-opacity="0.85"/>
+        <path class="arc-live glow" d="M 58 200 A 142 142 0 0 1 342 200" stroke-width="16" stroke-opacity="0.85"/>
       </g>
       <g class="spin fast" fill="none" stroke="var(--cyan)">
         <circle cx="200" cy="200" r="118" stroke-width="2" stroke-dasharray="2 7" stroke-opacity="0.7"/>
@@ -169,30 +199,41 @@
   <nav role="tablist">
     <button role="tab" data-tab="status" aria-selected="true">Статус</button>
     <button role="tab" data-tab="modules">Модули</button>
-    <button role="tab" data-tab="keys">Ключи</button>
+    <button role="tab" data-tab="memory">Память</button>
     <button role="tab" data-tab="admin">Права</button>
     <button role="tab" data-tab="log">Лог</button>
+    <span class="spacer"></span>
+    <button role="tab" data-tab="settings" class="gear" title="Настройки">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2"/>
+        <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>
+      </svg>
+      Настройки
+    </button>
   </nav>
 
   <section id="tab-status" class="on">
     <div class="grid" id="status-cards"></div>
-    <h3 class="small" style="margin:22px 0 8px;letter-spacing:.14em;text-transform:uppercase">Модели по задачам</h3>
+    <h2 class="caption">Модели по задачам</h2>
     <table><thead><tr><th>Задача</th><th>Модель</th><th>Токенов за сеанс</th></tr></thead><tbody id="profiles"></tbody></table>
   </section>
 
   <section id="tab-modules">
-    <p class="note">Выключенный модуль выгружается сразу и не загрузится после перезапуска (строка <span class="mono">skills.disabled</span> в config.yaml). Подмодуль работает только вместе с главным.</p>
+    <p class="note">Выключенный модуль выгружается сразу и не загрузится после перезапуска (строка <code>skills.disabled</code> в config.yaml). Подмодуль работает только вместе с главным.</p>
     <table><thead><tr><th>Модуль</th><th>Версия</th><th>Команд</th><th>Состояние</th><th>Включён</th><th></th></tr></thead><tbody id="modules"></tbody></table>
   </section>
 
-  <section id="tab-keys">
-    <p class="note">Ключи хранятся в <span class="mono">.env</span>. Значения здесь не показываются — только задан ли ключ и какой он длины. Новый ключ начнёт работать после перезапуска Jarvis.</p>
-    <table><thead><tr><th>Переменная</th><th>Состояние</th><th>Где используется</th><th style="width:40%">Заменить</th></tr></thead><tbody id="keys"></tbody></table>
+  <section id="tab-memory">
+    <p class="note">Что Jarvis помнит: разделы документов (факты, предпочтения, выученные команды) и журналы. Запись из документа можно удалить — это навсегда.</p>
+    <h2 class="caption">Документы</h2>
+    <div id="memory-documents"></div>
+    <h2 class="caption">Журналы</h2>
+    <div id="memory-journals"></div>
   </section>
 
   <section id="tab-admin">
     <div class="grid" id="admin-cards"></div>
-    <p class="note" style="margin-top:16px">Права задаёт <span class="mono">Jarvis.exe</span>: с правами он просит подтверждение UAC при каждом запуске, зато Jarvis может управлять программами, запущенными от администратора. Изменение пересобирает exe и действует со следующего запуска.</p>
+    <p class="note" style="margin-top:16px">Права задаёт <code>Jarvis.exe</code>: с правами он просит подтверждение UAC при каждом запуске, зато Jarvis может управлять программами, запущенными от администратора. Изменение пересобирает exe и действует со следующего запуска.</p>
     <div class="toolbar">
       <button class="act" id="build-admin">Собрать с правами администратора</button>
       <button class="act danger" id="build-user">Собрать без прав</button>
@@ -204,7 +245,52 @@
       <label class="small"><input type="checkbox" id="follow" checked> прокручивать за новыми строками</label>
       <button class="act" id="log-clear">Очистить окно</button>
     </div>
-    <pre id="log"></pre>
+    <div class="scroll" id="log-scroll"><pre id="log"></pre></div>
+  </section>
+
+  <section id="tab-settings">
+    <h2 class="caption">Звук</h2>
+    <div class="field">
+      <label for="set-output">Откуда говорит Jarvis</label>
+      <div class="row"><select id="set-output"></select><button class="act" data-save="output">Применить</button></div>
+      <label for="set-input">Какой микрофон слушает</label>
+      <div class="row"><select id="set-input"></select><button class="act" data-save="input">Сохранить</button></div>
+    </div>
+    <p class="note">Выход меняется сразу — это то же, что сказать «говори через …». Микрофон начнёт работать после перезапуска.</p>
+
+    <h2 class="caption">Манера</h2>
+    <div class="field">
+      <label for="set-address">Как обращается</label>
+      <div class="row"><input type="text" id="set-address" maxlength="40" placeholder="сэр"><button class="act" data-save="address">Сохранить</button></div>
+      <label>Время тишины</label>
+      <div class="row">
+        <span class="small">с</span><input type="time" id="set-quiet-from">
+        <span class="small">до</span><input type="time" id="set-quiet-to">
+        <button class="act" data-save="quiet">Сохранить</button>
+      </div>
+    </div>
+    <p class="note">В тишину Jarvis сам не заговаривает, кроме напоминаний. Пустое время — тишины нет.</p>
+
+    <h2 class="caption">Ключи</h2>
+    <p class="note">Ключи хранятся в <code>.env</code>. Значения здесь не показываются — только задан ли ключ и какой он длины. Новый ключ начнёт работать после перезапуска Jarvis.</p>
+    <table><thead><tr><th>Переменная</th><th>Состояние</th><th>Где используется</th><th style="width:42%">Заменить</th></tr></thead><tbody id="keys"></tbody></table>
+
+    <h2 class="caption">Расширение браузера</h2>
+    <p class="row" style="margin:0 0 12px"><span id="ext-status" class="badge">—</span><span class="small" id="ext-detail"></span></p>
+    <ol class="guide">
+      <li>Запусти Jarvis хотя бы раз — он создаст <code>extension\token.json</code>. <span id="ext-token" class="small"></span></li>
+      <li>Открой страницу расширений: в Chrome и Edge — <code>chrome://extensions</code>, в Яндекс Браузере — <code>browser://extensions</code>. Адрес нужно вставить в строку браузера руками: ссылкой туда перейти нельзя.</li>
+      <li>Включи <b>режим разработчика</b> — переключатель справа сверху.</li>
+      <li>Нажми <b>«Загрузить распакованное расширение»</b> и выбери папку <code id="ext-folder">extension</code>.
+        <div class="row" style="margin-top:6px">
+          <button class="act" id="ext-open">Открыть папку расширения</button>
+          <button class="act" id="ext-copy">Скопировать путь</button>
+        </div>
+      </li>
+      <li>Статус выше сменится на «подключено», а в логе появится «Расширение подключилось».</li>
+      <li>После обновления Jarvis нажми «Обновить» у расширения на той же странице: распакованные расширения браузер сам не перечитывает.</li>
+    </ol>
+    <p class="note" style="margin-top:12px">Firefox: <code>about:debugging#/runtime/this-firefox</code> → «Загрузить временное дополнение» → <code>manifest.json</code> в той же папке. Firefox снимает такое дополнение при перезапуске.</p>
   </section>
 </main>
 
@@ -238,7 +324,7 @@ function toast(text, error = false) {
   box.classList.toggle("error", error);
   box.classList.add("on");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => box.classList.remove("on"), 4200);
+  toast.timer = setTimeout(() => box.classList.remove("on"), 4500);
 }
 
 function el(tag, attrs = {}, ...children) {
@@ -259,6 +345,11 @@ function card(title, value, note = "") {
 function duration(seconds) {
   const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60);
   return h ? `${h} ч ${m} мин` : `${m} мин`;
+}
+
+async function run(action) {
+  try { const answer = await action(); if (answer && answer.message) toast(answer.message); return answer; }
+  catch (error) { toast(error.message, true); }
 }
 
 // --- вкладки --------------------------------------------------------------
@@ -309,18 +400,12 @@ async function loadModules() {
     toggle.checked = !item.disabled;
     toggle.addEventListener("change", async () => {
       toggle.disabled = true;
-      try {
-        const answer = await api("/api/modules", { name: item.name, enabled: toggle.checked });
-        toast(answer.message);
-      } catch (error) {
-        toast(error.message, true);
-      }
+      await run(() => api("/api/modules", { name: item.name, enabled: toggle.checked }));
       loadModules();
     });
     const reload = el("button", { class: "act", onclick: async () => {
       reload.disabled = true;
-      try { toast((await api("/api/modules/reload", { name: item.name })).message); }
-      catch (error) { toast(error.message, true); }
+      await run(() => api("/api/modules/reload", { name: item.name }));
       loadModules();
     } }, "Перезагрузить");
     reload.disabled = !item.loaded;
@@ -338,31 +423,42 @@ async function loadModules() {
   }));
 }
 
-// --- ключи ----------------------------------------------------------------
-async function loadKeys() {
-  const { keys } = await api("/api/keys");
-  $("keys").replaceChildren(...keys.map((key) => {
-    const input = el("input", { type: "password", placeholder: key.present ? "новое значение" : "вставь ключ", autocomplete: "off", spellcheck: "false" });
-    const save = el("button", { class: "act", onclick: async () => {
-      try {
-        toast((await api("/api/keys", { name: key.name, value: input.value })).message);
-        input.value = "";
-        loadKeys();
-      } catch (error) { toast(error.message, true); }
-    } }, input.value ? "Сохранить" : "Сохранить");
-    const remove = el("button", { class: "act danger", onclick: async () => {
-      if (!confirm(`Удалить ${key.name} из .env?`)) return;
-      try { toast((await api("/api/keys", { name: key.name, value: "" })).message); loadKeys(); }
-      catch (error) { toast(error.message, true); }
-    } }, "Убрать");
-    remove.disabled = !key.present;
-    return el("tr", {},
-      el("td", { class: "mono" }, key.name),
-      el("td", {}, key.present ? el("span", { class: "ok" }, `задан · ${key.length} знаков`) : el("span", { class: "warn" }, "не задан")),
-      el("td", { class: "small" }, key.used_by.join(", ") || "нигде в конфиге"),
-      el("td", {}, el("div", { class: "keyrow" }, input, save, remove)),
-    );
+// --- память ---------------------------------------------------------------
+const memoryOpen = new Set();
+function remember(details, key) {
+  if (memoryOpen.has(key)) details.open = true;
+  details.addEventListener("toggle", () => details.open ? memoryOpen.add(key) : memoryOpen.delete(key));
+  return details;
+}
+async function loadMemory() {
+  const { documents, journals } = await api("/api/memory");
+  $("memory-documents").replaceChildren(...documents.map((doc) => {
+    const rows = doc.items.map((item) => el("tr", {},
+      el("td", { class: "mono", style: "width:28%" }, item.key),
+      el("td", {}, el("div", { class: "value" }, item.value)),
+      el("td", { style: "width:1%" }, el("button", { class: "act danger", onclick: async () => {
+        if (!confirm(`Удалить «${item.key}» из раздела ${doc.namespace}? Это навсегда.`)) return;
+        await run(() => api("/api/memory/forget", { namespace: doc.namespace, key: item.key }));
+        loadMemory();
+      } }, "Удалить")),
+    ));
+    const body = rows.length
+      ? el("table", {}, el("tbody", {}, ...rows))
+      : el("div", { class: "small" }, "пусто");
+    return remember(el("details", { class: "box" },
+      el("summary", {}, el("span", {}, doc.namespace), el("span", { class: "small" }, `записей: ${doc.items.length}`)),
+      el("div", {}, body),
+    ), `doc:${doc.namespace}`);
   }));
+  $("memory-journals").replaceChildren(...journals.map((journal) => remember(el("details", { class: "box" },
+    el("summary", {}, el("span", {}, journal.name), el("span", { class: "small" }, `последних: ${journal.entries.length}`)),
+    el("div", {}, journal.entries.length
+      ? el("table", {}, el("tbody", {}, ...journal.entries.map((entry) => el("tr", {},
+          el("td", { class: "mono small", style: "width:1%;white-space:nowrap" }, entry.time),
+          el("td", {}, entry.text, entry.tags.length ? el("span", { class: "small" }, `  #${entry.tags.join(" #")}`) : ""),
+        ))))
+      : el("div", { class: "small" }, "пусто")),
+  ), `journal:${journal.name}`)));
 }
 
 // --- права ----------------------------------------------------------------
@@ -377,8 +473,7 @@ async function loadAdmin() {
 async function build(admin) {
   const buttons = [$("build-admin"), $("build-user")];
   buttons.forEach((b) => b.disabled = true);
-  try { toast((await api("/api/admin", { admin })).message); }
-  catch (error) { toast(error.message, true); }
+  await run(() => api("/api/admin", { admin }));
   buttons.forEach((b) => b.disabled = false);
   loadAdmin();
 }
@@ -386,7 +481,12 @@ $("build-admin").addEventListener("click", () => build(true));
 $("build-user").addEventListener("click", () => build(false));
 
 // --- лог ------------------------------------------------------------------
+// Разбор строки как у консоли: время и имя логгера приглушены, уровень и текст
+// цветом уровня, услышанное голубым, сказанное зелёным.
+const RECORD = /^(\d[\d.:, /-]*) (DEBUG|INFO|WARNING|ERROR|CRITICAL)(\s+)(\S+)(\s+)(.*)$/;
+const LEVEL_CLASS = { WARNING: "w", ERROR: "e", CRITICAL: "c" };
 let logOffset = -1;
+let recordClass = "";
 async function loadLog() {
   const { text, offset } = await api(`/api/log?offset=${logOffset}`);
   logOffset = offset;
@@ -395,21 +495,105 @@ async function loadLog() {
   const fragment = document.createDocumentFragment();
   for (const line of text.split("\n")) {
     if (!line) continue;
-    const kind = / (WARNING|ERROR|CRITICAL) /.exec(line)?.[1];
-    fragment.append(el("span", { class: kind === "WARNING" ? "w" : kind ? "e" : / INFO /.test(line) ? "i" : "" }, line), "\n");
+    const m = RECORD.exec(line);
+    if (!m) {
+      fragment.append(el("span", { class: recordClass }, line), "\n");
+      continue;
+    }
+    const [, time, level, pad, name, gap, message] = m;
+    let cls = LEVEL_CLASS[level] || "";
+    if (!cls && message.startsWith("Распознано")) cls = "heard";
+    else if (!cls && message.startsWith("Отвечаю:")) cls = "said";
+    recordClass = cls;
+    fragment.append(
+      el("span", { class: "dim" }, `${time} `),
+      el("span", { class: LEVEL_CLASS[level] || "" }, level + pad),
+      el("span", { class: "dim" }, name + gap),
+      el("span", { class: cls }, message),
+      "\n",
+    );
   }
   box.append(fragment);
-  while (box.childNodes.length > 6000) box.removeChild(box.firstChild);
-  if ($("follow").checked) box.parentElement.scrollTop = box.parentElement.scrollHeight;
+  while (box.childNodes.length > 20000) box.removeChild(box.firstChild);
+  if ($("follow").checked) $("log-scroll").scrollTop = $("log-scroll").scrollHeight;
 }
 $("log-clear").addEventListener("click", () => $("log").replaceChildren());
+
+// --- настройки ------------------------------------------------------------
+let settings = null;
+function fillSelect(select, options, current, emptyLabel) {
+  select.replaceChildren(el("option", { value: "" }, emptyLabel), ...options.map((item) => {
+    const option = el("option", { value: item.value }, item.label);
+    if (item.value === current) option.selected = true;
+    return option;
+  }));
+  if (!current) select.value = "";
+}
+async function loadSettings() {
+  settings = await api("/api/settings");
+  fillSelect($("set-output"), settings.output.options.map((o) => ({ value: o.name, label: o.spoken === o.name ? o.name : `${o.spoken} — ${o.name}` })), settings.output.current, "выход по умолчанию");
+  fillSelect($("set-input"), settings.input.options.map((o) => ({ value: o.value, label: o.name })), settings.input.current || "", "микрофон по умолчанию");
+  $("set-address").value = settings.address;
+  $("set-quiet-from").value = settings.quiet_from;
+  $("set-quiet-to").value = settings.quiet_to;
+  const ext = settings.extension;
+  $("ext-status").textContent = ext.connected ? "подключено" : "не подключено";
+  $("ext-status").className = `badge ${ext.connected ? "ok" : "warn"}`;
+  $("ext-detail").textContent = ext.detail;
+  $("ext-folder").textContent = ext.folder;
+  $("ext-token").textContent = ext.token ? "(файл уже есть)" : "(файла пока нет)";
+  await loadKeys();
+}
+document.querySelectorAll("[data-save]").forEach((button) => button.addEventListener("click", async () => {
+  const kind = button.dataset.save;
+  button.disabled = true;
+  if (kind === "output") await run(() => api("/api/settings", { field: "output", value: $("set-output").value }));
+  if (kind === "input") await run(() => api("/api/settings", { field: "input", value: $("set-input").value || null }));
+  if (kind === "address") await run(() => api("/api/settings", { field: "address", value: $("set-address").value }));
+  if (kind === "quiet") {
+    const first = await run(() => api("/api/settings", { field: "quiet_from", value: $("set-quiet-from").value }));
+    if (first) await run(() => api("/api/settings", { field: "quiet_to", value: $("set-quiet-to").value }));
+  }
+  button.disabled = false;
+  loadSettings().catch((error) => toast(error.message, true));
+}));
+$("ext-open").addEventListener("click", () => run(() => api("/api/extension/folder", {})));
+$("ext-copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(settings.extension.folder); toast("Путь скопирован."); }
+  catch { toast(settings.extension.folder); }
+});
+
+async function loadKeys() {
+  const { keys } = await api("/api/keys");
+  $("keys").replaceChildren(...keys.map((key) => {
+    const input = el("input", { type: "password", placeholder: key.present ? "новое значение" : "вставь ключ", autocomplete: "off", spellcheck: "false" });
+    const save = el("button", { class: "act", onclick: async () => {
+      await run(() => api("/api/keys", { name: key.name, value: input.value }));
+      input.value = "";
+      loadKeys();
+    } }, "Сохранить");
+    const remove = el("button", { class: "act danger", onclick: async () => {
+      if (!confirm(`Удалить ${key.name} из .env?`)) return;
+      await run(() => api("/api/keys", { name: key.name, value: "" }));
+      loadKeys();
+    } }, "Убрать");
+    remove.disabled = !key.present;
+    return el("tr", {},
+      el("td", { class: "mono" }, key.name),
+      el("td", {}, key.present ? el("span", { class: "ok" }, `задан · ${key.length} знаков`) : el("span", { class: "warn" }, "не задан")),
+      el("td", { class: "small" }, key.used_by.join(", ") || "нигде в конфиге"),
+      el("td", {}, el("div", { class: "row" }, input, save, remove)),
+    );
+  }));
+}
 
 // --- опрос ----------------------------------------------------------------
 async function refresh() {
   try {
     if (tab === "modules") await loadModules();
-    if (tab === "keys") await loadKeys();
+    if (tab === "memory") await loadMemory();
     if (tab === "admin") await loadAdmin();
+    if (tab === "settings") await loadSettings();
   } catch (error) { toast(error.message, true); }
 }
 loadStatus();

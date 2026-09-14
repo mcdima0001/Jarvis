@@ -103,7 +103,7 @@ version = { attr = "jarvis.__version__" }
 include = ["jarvis*"]
 
 [tool.setuptools.package-data]
-jarvis = ["py.typed", "core/tray/*.ico", "core/gui/static/*"]
+jarvis = ["py.typed", "core/tray/*.ico", "core/tray/*.png", "core/gui/static/*"]
 
 # Линтер. Набор правил выбран не по вкусу, а по тому, что он реально ловит в
 # этом проекте: девять из первых двенадцати находок оказались **осиротевшими

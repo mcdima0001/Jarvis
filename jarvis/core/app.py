@@ -317,7 +317,8 @@ class JarvisApp:
 
         panel = (
             ControlPanel(
-                config=config, events=events, registry=registry, skills=skills, llm=llm, sink=audio.sink
+                config=config, events=events, registry=registry, skills=skills, llm=llm,
+                memory=memory, sink=audio.sink,
             )
             if config.gui.enabled
             else None

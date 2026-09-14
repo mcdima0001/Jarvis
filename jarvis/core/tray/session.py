@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.core.contracts import Event, SystemStarted, SystemStopping
-from jarvis.core.logging.visible import RECORD, visible_levels
+from jarvis.core.logging.visible import visible_levels
 
 from .menu import READY, STARTING, STOPPING, tip
 
@@ -147,14 +147,43 @@ def live_log_command(path: Path, level: str = "INFO", *, tail: int = 1500) -> li
     literal = str(path).replace("'", "''")
     levels = ",".join(f"'{name}'" for name in visible_levels(level))
     script = (
-        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-        "$Host.UI.RawUI.WindowTitle = 'Jarvis — лог'; "
-        f"$levels = @({levels}); $show = $true; "
-        f"Get-Content -LiteralPath '{literal}' -Encoding UTF8 -Tail {tail} -Wait | ForEach-Object {{ "
-        f"if ($_ -match '{RECORD}') {{ $show = $levels -contains $Matches[1] }}; "
-        "if ($show) { $_ } }"
+        _LIVE_LOG.replace("__LEVELS__", levels)
+        .replace("__PATH__", literal)
+        .replace("__TAIL__", str(tail))
     )
     return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", script]
+
+
+#: Скрипт окна лога. Цвета те же, что у консоли (`logging/colors.py`): время и
+#: имя логгера приглушены, предупреждение жёлтое, ошибка красная, услышанное
+#: голубое, сказанное зелёное. В файле пометки «услышал/сказал» нет, поэтому она
+#: узнаётся по началу сообщения конвейера — «Распознано» и «Отвечаю:».
+#: Строки продолжения (стек ошибки) наследуют цвет и видимость своей записи.
+_LIVE_LOG = (
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+    "$Host.UI.RawUI.WindowTitle = 'Jarvis — лог'; "
+    "$levels = @(__LEVELS__); $show = $true; $color = 'Gray'; "
+    "Get-Content -LiteralPath '__PATH__' -Encoding UTF8 -Tail __TAIL__ -Wait | ForEach-Object { "
+    "$line = $_; "
+    "if ($line -match '^(\\d[\\d.:, /-]*) (DEBUG|INFO|WARNING|ERROR|CRITICAL)(\\s+)(\\S+\\s+)(.*)$') { "
+    "$time = $Matches[1]; $level = $Matches[2]; $pad = $Matches[3]; $name = $Matches[4]; $text = $Matches[5]; "
+    "$show = $levels -contains $level; "
+    "if ($show) { "
+    "$color = 'Gray'; "
+    "if ($level -eq 'WARNING') { $color = 'Yellow' } "
+    "elseif ($level -eq 'ERROR') { $color = 'Red' } "
+    "elseif ($level -eq 'CRITICAL') { $color = 'Magenta' } "
+    "elseif ($text.StartsWith('Распознано')) { $color = 'Cyan' } "
+    "elseif ($text.StartsWith('Отвечаю:')) { $color = 'Green' }; "
+    "$levelColor = 'Gray'; if ($level -ne 'INFO') { $levelColor = $color }; "
+    "Write-Host ($time + ' ') -ForegroundColor DarkGray -NoNewline; "
+    "Write-Host ($level + $pad) -ForegroundColor $levelColor -NoNewline; "
+    "Write-Host $name -ForegroundColor DarkGray -NoNewline; "
+    "Write-Host $text -ForegroundColor $color "
+    "} "
+    "} elseif ($show) { Write-Host $line -ForegroundColor $color } "
+    "}"
+)
 
 
 #: Где обычно стоит Edge. Окно `--app` — без адресной строки и вкладок, как
@@ -165,17 +194,62 @@ EDGE_PATHS = (
 )
 
 
-def panel_command(url: str, edge: Path | None) -> list[str] | None:
+#: Какую долю рабочего стола занимает окно панели. Подобрано по снимку
+#: владельца (14.09.2026): при 1180×760 лог переносился на каждой строке.
+PANEL_WIDTH, PANEL_HEIGHT, PANEL_MARGIN = 0.9, 0.83, 0.012
+
+
+def panel_geometry(work_area: tuple[int, int, int, int], dpi: int = 96) -> tuple[int, int, int, int]:
+    """Положение и размер окна панели в независимых точках: x, y, ширина, высота.
+
+    Edge ждёт размеры в точках без учёта масштаба Windows, а рабочий стол
+    процесс, объявивший осведомлённость о масштабе, получает в физических
+    пикселях. Отсюда деление на `dpi / 96`.
+    """
+    left, top, right, bottom = work_area
+    scale = dpi / 96 if dpi else 1.0
+    width, height = (right - left) / scale, (bottom - top) / scale
+    return (
+        round(left / scale + width * PANEL_MARGIN),
+        round(top / scale + height * PANEL_MARGIN),
+        round(width * PANEL_WIDTH),
+        round(height * PANEL_HEIGHT),
+    )
+
+
+def _work_area() -> tuple[tuple[int, int, int, int], int] | None:
+    """Рабочий стол без панели задач и масштаб системы."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    rect = wintypes.RECT()
+    if not user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):  # SPI_GETWORKAREA
+        return None
+    try:
+        dpi = int(user32.GetDpiForSystem())
+    except AttributeError:
+        dpi = 96
+    return (rect.left, rect.top, rect.right, rect.bottom), dpi
+
+
+def panel_command(
+    url: str, edge: Path | None, geometry: tuple[int, int, int, int] | None = None
+) -> list[str] | None:
     """Команда окна панели; ``None`` — Edge нет, откроется обычный браузер."""
     if edge is None:
         return None
-    return [str(edge), f"--app={url}", "--window-size=1180,760"]
+    x, y, width, height = geometry or (40, 40, 1180, 760)
+    return [str(edge), f"--app={url}", f"--window-size={width},{height}", f"--window-position={x},{y}"]
 
 
 def open_panel(url: str) -> None:
     """Открыть панель отдельным окном."""
     edge = next((path for path in EDGE_PATHS if path.exists()), None)
-    command = panel_command(url, edge)
+    area = _work_area()
+    command = panel_command(url, edge, panel_geometry(*area) if area else None)
     if command is not None:
         subprocess.Popen(command)
     elif sys.platform == "win32":

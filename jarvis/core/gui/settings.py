@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import re
 import sys
@@ -63,10 +64,14 @@ def referenced_keys(sources: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
     """Какие переменные упоминаются в каких файлах конфига."""
     found: dict[str, list[str]] = {}
     for source, text in sources.items():
-        for match in _REFERENCE.finditer(text):
-            users = found.setdefault(match.group(1), [])
-            if source not in users:
-                users.append(source)
+        for line in text.splitlines():
+            # Комментарии не считаются: в них живут примеры вида `${VAR}`, и
+            # панель показывала несуществующий ключ VAR «не задан».
+            code = line.split("#", 1)[0]
+            for match in _REFERENCE.finditer(code):
+                users = found.setdefault(match.group(1), [])
+                if source not in users:
+                    users.append(source)
     return {name: tuple(users) for name, users in found.items()}
 
 
@@ -136,6 +141,52 @@ def set_disabled(yaml_text: str, names: Iterable[str]) -> str:
             lines[index] = f"{indent}disabled: [{', '.join(listed)}]{comment or ''}"
             return "\n".join(lines)
     raise ValueError("в config.yaml нет строки skills.disabled")
+
+
+#: Время тишины: «ЧЧ:ММ» или пусто.
+_TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def valid_time(value: str) -> bool:
+    """Годится ли строка как время тишины: «23:30» или пусто (тишины нет)."""
+    return value == "" or bool(_TIME.match(value))
+
+
+def yaml_scalar(value: object) -> str:
+    """Значение для одной строки YAML. Строки — в кавычках JSON: это валидный YAML."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+_VALUE = r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|[^#]*?)"
+
+
+def set_scalar(yaml_text: str, section: str, key: str, value: object) -> str:
+    """Поменять одно значение ``section.key`` в тексте YAML, сохранив комментарий.
+
+    Ищется только ключ первого уровня внутри секции (отступ два пробела): у
+    `audio.engine` и `audio.vad.engine` одно имя, и перепутать их нельзя.
+
+    :raises ValueError: нет такой секции или строки.
+    """
+    lines = yaml_text.split("\n")
+    in_section = False
+    pattern = re.compile(rf"^(  ){re.escape(key)}:\s*{_VALUE}(\s+#.*)?\s*$")
+    for index, line in enumerate(lines):
+        if re.match(r"^\S", line):
+            in_section = line.startswith(f"{section}:")
+            continue
+        match = pattern.match(line) if in_section else None
+        if match:
+            indent, _, comment = match.groups()
+            lines[index] = f"{indent}{key}: {yaml_scalar(value)}{comment or ''}"
+            return "\n".join(lines)
+    raise ValueError(f"в config.yaml нет строки {section}.{key}")
 
 
 def launcher_level(data: bytes) -> str | None:

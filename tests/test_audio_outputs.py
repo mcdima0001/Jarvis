@@ -16,7 +16,14 @@ import pytest
 from jarvis.core import builtin
 from jarvis.core.audio.devices import SoundDeviceSink
 from jarvis.core.audio.null import NullAudioSink
-from jarvis.core.audio.outputs import Output, find_output, is_default, usable_outputs
+from jarvis.core.audio.outputs import (
+    Output,
+    config_value,
+    find_output,
+    is_default,
+    usable_inputs,
+    usable_outputs,
+)
 from jarvis.core.audio.protocol import SelectableSink
 from jarvis.core.builtin import OUTPUT_MEMORY, CoreTools
 from jarvis.core.config import AudioConfig
@@ -76,6 +83,21 @@ def test_short_mme_name_is_not_stretched_to_a_longer_one() -> None:
         _device("Динамики (VB-Audio Voicemeeter VAIO)", 1),
     ]
     assert [output.name for output in usable_outputs(devices, HOSTAPIS)] == ["Динамики"]
+
+
+def test_microphones_follow_the_same_rules_and_carry_config_value() -> None:
+    devices = [
+        _device("Переназначение звуковых устр. - Input", 0, outputs=0) | {"max_input_channels": 2},
+        # Ровно 31 знак: столько оставляет MME.
+        _device("Микрофон (Realtek High Definiti", 0, outputs=0) | {"max_input_channels": 2},
+        _device("Первичный драйвер записи звука", 1, outputs=0) | {"max_input_channels": 2},
+        _device("Микрофон (Realtek High Definition Audio)", 1, outputs=0) | {"max_input_channels": 2},
+        _device("Динамики (JBL Flip 6)", 0),
+    ]
+    inputs = usable_inputs(devices, HOSTAPIS)
+    assert [item.name for item in inputs] == ["Микрофон (Realtek High Definition Audio)"]
+    # В конфиг — обрезанное имя MME вместе с интерфейсом: так sounddevice найдёт одно.
+    assert config_value(inputs[0]) == "Микрофон (Realtek High Definiti, MME"
 
 
 def test_spoken_names_come_from_config_or_the_name_itself() -> None:

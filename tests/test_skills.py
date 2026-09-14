@@ -103,6 +103,34 @@ async def test_unload_revokes_everything(
     assert registry.phrase_index() == {}
 
 
+async def test_folder_name_and_passport_name_are_interchangeable(
+    tmp_path: Path, events: LocalEventBus, registry: ToolRegistry, memory, llm, tts
+) -> None:
+    """Папка `powershell`, а в паспорте `clipboard` (живой случай 14.09.2026).
+
+    Панель выключала модуль по имени папки, `unload` его не находил, модуль
+    оставался загруженным, и включение падало на «уже загружен».
+    """
+    directory = tmp_path / "skills"
+    (directory / "powershell").mkdir(parents=True)
+    (directory / "powershell" / "skill.py").write_text(
+        _GOOD_SKILL.format(version="1").replace('name="demo"', 'name="clipboard"'), encoding="utf-8"
+    )
+    manager = _manager(directory, events, registry, memory, llm, tts)
+    await manager.start()
+    assert manager.loaded == ("clipboard",)
+    assert manager.get("powershell") is manager.get("clipboard")
+    assert manager.tools_of("powershell") == ("clipboard.do_it",)
+
+    await manager.unload("powershell")
+    assert manager.loaded == ()
+
+    await manager.adopt("powershell")
+    await manager.adopt("powershell")  # второй раз — перезагрузка, а не «уже загружен»
+    assert manager.loaded == ("clipboard",)
+    await manager.stop()
+
+
 async def test_reload_picks_up_changes(
     skills_dir: Path, events: LocalEventBus, registry: ToolRegistry, memory, llm, tts
 ) -> None:
