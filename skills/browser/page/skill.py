@@ -92,6 +92,21 @@ MAX_AVOID = 16
 SITE_FRESH_MIN = 20.0
 TRACK_FRESH_MIN = 5.0
 
+#: По этим словам в отказе расширения видно, что страница не отвечает вовсе, а
+#: не «не нашлось». Первое пишет само расширение после пробы, второе — Jarvis,
+#: если ответа не было до предела ожидания.
+UNREACHABLE_MARKS = ("страница не отвечает", "расширение не ответило")
+
+
+class PageUnreachable(Exception):
+    """Страница не отвечает — дальнейшие попытки команды бессмысленны.
+
+    Живой случай 14.09.2026 на YouTube: план молчал, и после него `_act` честно
+    шёл пробовать поиск на сайте и выученное — ещё два раза по двенадцать
+    секунд. Команда целиком упиралась в предел в тридцать секунд, а владелец
+    слышал «инструмент не ответил» вместо причины.
+    """
+
 ACTION = Literal[
     "play",
     "pause",
@@ -1468,7 +1483,28 @@ class PageSkill(Skill):
 
     # --- работа ------------------------------------------------------------
 
-    async def _act(
+    async def _act(self, action: str, **options: Any) -> ToolResult:
+        """Выполнить действие в подходящей вкладке (см. `_act_inner`).
+
+        Обёртка ловит одно: страница не отвечает. Тогда остальные способы не
+        перебираются — каждый упёрся бы в ту же молчащую вкладку, — а причина
+        сразу говорится вслух.
+        """
+        try:
+            return await self._act_inner(action, **options)
+        except PageUnreachable as exc:
+            reason = str(exc)
+            self.log.warning("Страница не отвечает, дальше не пробую: %s", reason)
+            said = reason.removeprefix("страница недоступна: ").removeprefix("страница не отвечает: ")
+            return ToolResult.failure(
+                reason,
+                speech={
+                    "ru": f"Страница не отвечает: {said}. Открой вкладку и повтори.",
+                    "en": "The page isn't responding. Open the tab and try again.",
+                },
+            )
+
+    async def _act_inner(
         self,
         action: str,
         *,
@@ -1694,8 +1730,14 @@ class PageSkill(Skill):
         # «что вообще произошло»: план, который ушёл, и ответ, который пришёл.
         # Условных подробностей тут больше нет — на них уже наступали.
         self.log.debug("План %s → ответ %s", steps, result.value if result.ok else result.error)
+        if not result.ok and any(mark in str(result.error or "") for mark in UNREACHABLE_MARKS):
+            raise PageUnreachable(str(result.error))
         if not result.ok or not isinstance(result.value, Mapping):
             return None
+        if result.value.get("woke"):
+            self.log.info("Вкладка молчала (%s) — открыл её, и она ожила", result.value["woke"])
+        if result.value.get("frames") == "top":
+            self.log.info("Вложенные кадры страницы не отвечали — план выполнен в верхнем")
         if result.value.get("done"):
             return dict(result.value)
 

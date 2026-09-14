@@ -219,6 +219,27 @@ async def test_track_goes_to_yandex_music_even_with_youtube_open(loaded, monkeyp
     await manager.stop()
 
 
+async def test_silent_page_fails_fast_with_the_reason(loaded, monkeypatch) -> None:
+    """Живой случай 14.09.2026: вкладка YouTube молчала, а Jarvis пробовал ещё два способа.
+
+    Каждый стоил двенадцати секунд, и владелец слышал «инструмент не ответил
+    за 30 секунд» вместо причины.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"error": "страница не отвечает: вкладка заморожена браузером, вкладка в фоне"}]
+
+    result = await registry.invoke("page.pause", {})
+
+    assert not result.ok
+    runs = [call for call in fake.CALLS if call[0] == "run"]
+    assert len(runs) == 1, "после молчания страницы других попыток нет"
+    assert "вкладка заморожена браузером" in (result.speech_for("ru") or "")
+    await manager.stop()
+
+
 async def test_named_site_still_wins(loaded, monkeypatch) -> None:
     """«Включи X на ютубе» — сайт назван прямо, туда и идём."""
     manager, registry, _ = loaded
@@ -682,6 +703,9 @@ class FakeBrowserSkill(Skill):
         """Выполнить план в странице."""
         CALLS.append(("run", plan, tab))
         reply = REPLIES.pop(0) if REPLIES else {"done": None}
+        if "error" in reply:
+            # Так отказывает настоящий `_page_call`: причина от расширения в тексте.
+            return ToolResult.failure(f"страница недоступна: {reply['error']}")
         return ToolResult.success(dict(reply))
 
     @tool(routable=False)

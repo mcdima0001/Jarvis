@@ -317,6 +317,113 @@ async function arrived(tab, was, timeout = 6000) {
 }
 
 /**
+ * Сколько ждать пробу страницы, мс. Проба — пустая функция: в живой вкладке она
+ * возвращается за миллисекунды, так что три секунды — это уже «не отвечает».
+ */
+const PROBE_MS = 3000;
+
+/** Обещание, которое сдаётся по времени. Сам вызов браузера отменить нельзя. */
+function withTimeout(promise, ms) {
+  let timer = null;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timeout")), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/** Почему вкладка может молчать — словами, которые Jarvis произнесёт вслух. */
+async function describeTab(tab) {
+  let fresh = tab;
+  try {
+    fresh = await chrome.tabs.get(tab.id);
+  } catch (error) {
+    return "вкладку закрыли";
+  }
+  const parts = [];
+  if (fresh.discarded) parts.push("вкладка выгружена браузером");
+  if (fresh.frozen) parts.push("вкладка заморожена браузером");
+  if (!fresh.active) parts.push("вкладка в фоне");
+  try {
+    const window = await chrome.windows.get(fresh.windowId);
+    if (window.state === "minimized") parts.push("окно свёрнуто");
+  } catch (error) {
+    // Окно не прочиталось — не повод терять остальное.
+  }
+  if (fresh.status && fresh.status !== "complete") parts.push("страница ещё грузится");
+  return parts.join(", ") || "браузер не сообщает почему";
+}
+
+/**
+ * Можно ли работать со страницей — и во всех ли кадрах.
+ *
+ * Живой случай 14.09.2026 на YouTube: вкладку расширение находило сразу, а
+ * **любой** план в ней молчал — даже «нажать Поиск», где нет ни одного
+ * ожидания. `executeScript` просто не возвращался, и каждая попытка стоила
+ * Jarvis двенадцати секунд, а команда целиком — тридцати. Причин две, и
+ * снаружи они выглядят одинаково: браузер заморозил вкладку (тогда не отвечает
+ * даже верхний кадр) или завис один из вложенных фреймов (реклама, служебный
+ * фрейм), а впрыскивание во все кадры ждёт каждый.
+ *
+ * Поэтому до плана — две пустые пробы. Верхний кадр молчит — вкладку
+ * **открываем**: замороженная оживает, когда её видно, а выгруженная при
+ * открытии перезагружается сама (владелец: «можно открыть — не проблема»).
+ * Не ожила и после этого — понятная ошибка с состоянием вкладки. Молчат только
+ * вложенные — план идёт в верхнем кадре, а не виснет. Проба пустая, поэтому
+ * повторять её безопасно; сам план после таймаута не повторяется — он мог уже
+ * нажать.
+ *
+ * @returns {Promise<{everyFrame: boolean, woke: string}>} все ли кадры
+ *   отвечают и почему вкладку пришлось открыть (пусто — не пришлось).
+ */
+async function reachable(tab) {
+  const probe = () => true;
+  const top = () => withTimeout(chrome.scripting.executeScript({ target: { tabId: tab.id }, func: probe }), PROBE_MS);
+  let woke = "";
+  try {
+    await top();
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "timeout") {
+      throw error;
+    }
+    woke = await describeTab(tab);
+    if (!(await wake(tab))) {
+      throw new Error(`страница не отвечает: ${woke}`);
+    }
+    try {
+      await top();
+    } catch (again) {
+      throw new Error(`страница не отвечает даже открытой: ${woke}`);
+    }
+  }
+  try {
+    await withTimeout(
+      chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: probe }),
+      PROBE_MS,
+    );
+    return { everyFrame: true, woke };
+  } catch (error) {
+    return { everyFrame: false, woke };
+  }
+}
+
+/** Открыть вкладку, чтобы браузер её разморозил или перезагрузил. */
+async function wake(tab) {
+  try {
+    const fresh = await chrome.tabs.update(tab.id, { active: true });
+    const window = await chrome.windows.get(fresh.windowId);
+    await chrome.windows.update(
+      fresh.windowId,
+      window.state === "minimized" ? { state: "normal", focused: true } : { focused: true },
+    );
+    // Выгруженная вкладка при открытии грузится заново — ждём, как после перехода.
+    await loaded(await chrome.tabs.get(tab.id), 8000);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
  * Выполнить в странице то, что умеет page.js.
  *
  * Впрыскивается во все кадры сразу: плеер часто живёт во вложенном фрейме
@@ -493,11 +600,22 @@ async function run(action, params) {
     if (!isWebUrl(tab.url)) {
       throw new Error("на служебной странице ничего не нажать");
     }
+    const { everyFrame, woke } = await reachable(tab);
     const done =
       action === "page"
-        ? await inPage(tab, jarvisRunPlan, [params.plan || []], true)
+        ? await inPage(tab, jarvisRunPlan, [params.plan || []], everyFrame)
         : await inPage(tab, jarvisProbe, [params.limit || 40], false);
-    return { ...done, tabId: tab.id, windowId: tab.windowId, title: tab.title, url: tab.url };
+    return {
+      ...done,
+      // Какие кадры участвовали: «top» значит, что вложенные молчали и их обошли.
+      frames: everyFrame ? "all" : "top",
+      // Почему вкладку пришлось открыть; пусто — ответила сразу.
+      woke,
+      tabId: tab.id,
+      windowId: tab.windowId,
+      title: tab.title,
+      url: tab.url,
+    };
   }
 
   throw new Error(`неизвестная команда: ${action}`);
