@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -39,6 +40,10 @@ if TYPE_CHECKING:
     from jarvis.core.tts import TTS
 
 logger = logging.getLogger(__name__)
+
+#: Сколько ждать остановки одного скилла. Зависший скилл не имеет права держать
+#: выключение всего ассистента (14.09.2026: скилл браузера ждал порт вечно).
+SKILL_STOP_TIMEOUT_S = 10.0
 
 
 @dataclass(slots=True)
@@ -319,7 +324,11 @@ class SkillManager:
             return
         try:
             if record.started:
-                await record.instance.on_stop()
+                await asyncio.wait_for(record.instance.on_stop(), SKILL_STOP_TIMEOUT_S)
+        except TimeoutError:
+            logger.warning(
+                "Скилл %s не остановился за %.0f с — выгружаю как есть", name, SKILL_STOP_TIMEOUT_S
+            )
         except Exception:
             logger.exception("Скилл %s упал при остановке", name)
         finally:

@@ -337,3 +337,48 @@ async def test_adopting_what_is_not_on_disk_is_an_error(
 
     with pytest.raises(SkillError):
         await manager.adopt("призрак")
+
+
+_HANGING_SKILL = '''
+import asyncio
+
+from jarvis.core.contracts import ToolResult
+from jarvis.core.skills import Skill, SkillMeta
+from jarvis.core.tools import tool
+
+
+class HangingSkill(Skill):
+    """Скилл, который не может остановиться — как браузер 14.09.2026."""
+
+    meta = SkillMeta(name="hanging", description="Висит на остановке")
+
+    async def on_stop(self) -> None:
+        await asyncio.Event().wait()
+
+    @tool(reversible=True)
+    async def ping(self) -> ToolResult:
+        """Ответить."""
+        return ToolResult.success("pong")
+'''
+
+
+async def test_hanging_skill_is_unloaded_by_timeout(
+    tmp_path: Path, events: LocalEventBus, registry: ToolRegistry, memory, llm, tts, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Зависший на остановке скилл не держит выключение всего ассистента."""
+    import asyncio
+
+    from jarvis.core.skills import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "SKILL_STOP_TIMEOUT_S", 0.1)
+    directory = tmp_path / "skills"
+    directory.mkdir()
+    (directory / "hanging.py").write_text(_HANGING_SKILL, encoding="utf-8")
+    manager = _manager(directory, events, registry, memory, llm, tts)
+    await manager.start()
+    assert registry.has("hanging.ping")
+
+    await asyncio.wait_for(manager.stop(), 2.0)
+
+    assert manager.loaded == ()
+    assert not registry.has("hanging.ping"), "инструменты сняты, хоть остановка и не дождалась"

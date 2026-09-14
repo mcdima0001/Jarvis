@@ -35,6 +35,10 @@ from urllib.parse import parse_qs, urlsplit
 
 logger = logging.getLogger(__name__)
 
+#: Сколько ждать, пока порт закроется окончательно. Дольше — не ждём: выключение
+#: ассистента важнее последнего соединения с браузером.
+STOP_TIMEOUT_S = 3.0
+
 #: Константа из RFC 6455: подмешивается к ключу клиента при рукопожатии.
 _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -191,18 +195,32 @@ class WebSocketServer:
         logger.info("Жду расширение на %s", self.address)
 
     async def stop(self) -> None:
-        """Закрыть порт и все соединения."""
+        """Закрыть порт и все соединения.
+
+        **Порт закрывается первым.** Живой случай 14.09.2026: выключение Jarvis
+        повисло навсегда. Порядок был «соединения → обработчики → порт», а
+        расширение, увидев разрыв, через секунду подключалось снова — и новое
+        соединение успевало прийти до закрытия порта. `wait_closed` ждёт каждый
+        обработчик, этот уже никто не отменял, и за скиллом браузера стояло
+        выключение всей системы. Закрытый порт новых соединений не принимает.
+        """
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
         for client in list(self._clients):
             await self._drop(client)
-        for handler in list(self._handlers):
-            handler.cancel()
-        if self._handlers:
-            await asyncio.gather(*self._handlers, return_exceptions=True)
-            self._handlers.clear()
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        while self._handlers:
+            # Круг, а не один проход: обработчик мог появиться, пока ждали прежние.
+            pending = list(self._handlers)
+            for handler in pending:
+                handler.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            self._handlers.difference_update(pending)
+        if server is not None:
+            try:
+                await asyncio.wait_for(server.wait_closed(), STOP_TIMEOUT_S)
+            except TimeoutError:
+                logger.warning("Порт %s не закрылся за %.0f с — бросаю ожидание", self.address, STOP_TIMEOUT_S)
 
     async def send(self, text: str) -> int:
         """Отправить команду браузеру.

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
@@ -15,6 +16,10 @@ from typing import Protocol, runtime_checkable
 from jarvis.core.errors import JarvisError
 
 logger = logging.getLogger(__name__)
+
+#: Сколько ждать остановки одного сервиса. Больше скилла: у менеджера скиллов
+#: внутри свои пределы на каждый скилл, и их сумме нужно место.
+SERVICE_STOP_TIMEOUT_S = 20.0
 
 
 @runtime_checkable
@@ -103,7 +108,15 @@ class ServiceRunner:
         while self._started:
             service = self._started.pop()
             try:
-                await service.stop()
+                await asyncio.wait_for(service.stop(), SERVICE_STOP_TIMEOUT_S)
                 logger.debug("Сервис %s остановлен", service.service_name)
+            except TimeoutError:
+                # Один зависший сервис не должен держать выключение: остальные
+                # (микрофон, память) остановятся, и процесс сможет выйти.
+                logger.warning(
+                    "Сервис %s не остановился за %.0f с — иду дальше",
+                    service.service_name,
+                    SERVICE_STOP_TIMEOUT_S,
+                )
             except Exception:
                 logger.exception("Ошибка при остановке сервиса %s", service.service_name)
