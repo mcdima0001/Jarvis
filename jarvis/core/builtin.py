@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from jarvis.core.agent import Outcome, Planner, Step
 from jarvis.core.audio.outputs import Output, find_output, is_default, query_outputs
 from jarvis.core.audio.protocol import SelectableSink
-from jarvis.core.contracts import Intent, ToolResult
+from jarvis.core.contracts import LIVE_SPEECH, Intent, ToolResult
 from jarvis.core.dialogue import Conversation
 from jarvis.core.errors import AudioError
 from jarvis.core.jobs import Jobs, busy_line, shorten
@@ -311,14 +311,25 @@ class CoreTools:
         # речь, потому что своего же ответа минутной давности не помнил.
         # Последняя реплика владельца сюда не идёт — это и есть `text`.
         history = self._conversation.messages()[:-1]
+        system = f"{system} {self._situation.describe(code)}"
+        await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))
+        # Голосовой конвейер умеет говорить по ходу: первое предложение звучит,
+        # пока модель пишет остальные (просьба владельца 14.09.2026 «отвечать
+        # моментально»). Остальным вызывающим — план, фон, текстовый ввод без
+        # конвейера — нужен готовый текст, и для них всё как раньше.
+        streaming = getattr(self._llm, "ask_stream", None)
+        if LIVE_SPEECH.get() and streaming is not None:
+            pieces = streaming(
+                text, task="dialog", system=system, context=context or None, history=history
+            )
+            return ToolResult(ok=True, speech_stream=pieces)
         answer = await self._llm.ask(
             text,
             task="dialog",
-            system=f"{system} {self._situation.describe(code)}",
+            system=system,
             context=context or None,
             history=history,
         )
-        await self._memory.remember(f"Вопрос: {text}", tags=("dialog",))
         return ToolResult.success(answer, speech=answer)
 
     @tool(name="plan", reversible=False)

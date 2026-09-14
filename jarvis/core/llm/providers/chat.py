@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -70,6 +71,45 @@ class ChatCompletionsProvider:
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Отправить запрос и разобрать ответ."""
         return await self._exchange(self.payload(request))
+
+    async def stream(self, request: LLMRequest, usage: dict[str, Any]) -> AsyncIterator[str]:
+        """Ответ по мере написания — куски текста по порядку.
+
+        Нужен разговору: ответ модели в секунду длиной начинает звучать с
+        первым предложением, а не когда дописан весь (просьба владельца
+        14.09.2026 «отвечать моментально»). Инструменты в потоке не
+        разбираются: поток просят только там, где ждут текст.
+
+        Расход приходит последним куском (`stream_options.include_usage`) и
+        кладётся в `usage`. Отказ сервера — та же ошибка, что и у `complete`.
+        """
+        body = self.payload(request)
+        body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
+        try:
+            async with self._http().stream("POST", "/chat/completions", json=body) as response:
+                if response.is_error:
+                    await response.aread()
+                    raise self.failure(response)
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Кусок потока не JSON: %r", data[:200])
+                        continue
+                    if chunk.get("usage"):
+                        usage.update(chunk["usage"])
+                    for choice in chunk.get("choices") or []:
+                        text = (choice.get("delta") or {}).get("content")
+                        if text:
+                            yield text
+        except httpx.HTTPError as exc:
+            raise LLMError(f"Сеть недоступна при обращении к {self.title}: {exc}") from exc
 
     def payload(self, request: LLMRequest) -> dict[str, Any]:
         """Тело запроса: то, в чём провайдеры не расходятся."""

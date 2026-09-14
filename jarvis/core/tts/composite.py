@@ -389,7 +389,9 @@ class CompositeTTS:
         Сбой глотаем намеренно: приготовление — услуга, а не обещание. Не
         получилось — реплика просто синтезируется в свой черёд, как раньше.
         """
-        if not text.strip() or self._cache is None:
+        # Кеш длинное не примет, и заготовка ушла бы в никуда — а реплику потом
+        # синтезировали бы второй раз, уже вслух.
+        if not text.strip() or self._cache is None or not worth_caching(text):
             return
         with suppress(Exception):
             await self.synthesize(text, language=language)

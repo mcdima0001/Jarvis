@@ -7,10 +7,19 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .intent import Intent
+
+#: Умеет ли тот, кто зовёт инструмент, произносить ответ по мере написания.
+#: Ставит голосовой конвейер на время своей команды. Остальные вызывающие —
+#: план, фоновое поручение, тесты — ждут готовый текст в `speech`, и для них
+#: ничего не меняется: инструмент смотрит сюда и отдаёт поток только тому, кто
+#: его ждёт.
+LIVE_SPEECH: ContextVar[bool] = ContextVar("LIVE_SPEECH", default=False)
 
 #: Реплика инструмента. Четыре вида, от простого к полному:
 #:
@@ -50,6 +59,10 @@ class ToolResult:
     #: подтверждённый шаг **не получает новых прав** — он идёт тем же путём,
     #: что и команда, сказанная вслух с самого начала.
     confirm: "Intent | None" = None
+    #: Ответ, который ещё пишется: куски текста по порядку. Отдаётся вместо
+    #: `speech` и только когда `LIVE_SPEECH` включён — резать на предложения и
+    #: произносить будет тот, кто его включил.
+    speech_stream: "AsyncIterator[str] | None" = None
 
     @classmethod
     def success(

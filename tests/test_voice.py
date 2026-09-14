@@ -1761,3 +1761,32 @@ async def test_stream_text_is_used_and_a_broken_stream_falls_back(pipeline: Voic
     assert calls == [], "поток ответил — целиком не распознаём"
     await pipeline._process(b"\x00" * 32000, time.time(), _FakeStream(fails=True))
     assert calls == [32000], "поток сорвался — та же фраза обычным путём"
+
+
+async def test_activation_sound_plays_when_the_phrase_ends_and_only_once(pipeline: VoicePipeline) -> None:
+    """«Моментально» (14.09.2026): отклик — при конце фразы, а не после расшифровки."""
+    played: list[str] = []
+
+    async def play() -> None:
+        played.append("отклик")
+
+    pipeline._play_activation = play  # type: ignore[method-assign]
+    pipeline._activation = (b"\x00\x00", 16000)
+    now = time.time()
+    pipeline._follow_up_until = now + 10
+    pipeline._name_heard_at = now - 0.5  # имя прозвучало в начале фразы
+
+    pipeline._submit(b"\x00" * 32000)  # фраза в секунду, начата ~1 с назад
+    await asyncio.sleep(0)
+    assert played == ["отклик"], "отклик — сразу при конце фразы"
+    audio, spoken_at, _ = pipeline._pending.get_nowait()
+    assert spoken_at in pipeline._early_ack
+
+
+def test_late_name_gets_no_early_sound(pipeline: VoicePipeline) -> None:
+    """Имя посреди фразы — примета песни: пищать на неё незачем."""
+    pipeline._activation = (b"\x00\x00", 16000)
+    now = time.time()
+    pipeline._name_heard_at = now
+    pipeline._acknowledge_early(now - 5)
+    assert pipeline._early_ack == set() and pipeline._sound_task is None

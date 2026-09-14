@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jarvis.core.contracts import detect_language
 from jarvis.core.errors import LLMError, LLMNotConfigured
@@ -21,7 +22,14 @@ from jarvis.core.state import BRIEF, Modes
 from jarvis.core.tools import ToolCatalog
 
 from .profiles import ProfileRegistry
-from .protocol import LLMProvider, LLMRequest, LLMResponse, Message, ToolCall
+from .protocol import (
+    LLMProvider,
+    LLMRequest,
+    LLMResponse,
+    Message,
+    StreamingProvider,
+    ToolCall,
+)
 
 if TYPE_CHECKING:
     from .usage import UsageLog
@@ -224,6 +232,23 @@ class LLMService:
             коротко»: просьбы уложиться в предложение модель иногда не слышит,
             а потолок слышит всегда.
         """
+        profile, provider, request = self._prepare(
+            messages, task=task, tools=tools, tool_choice=tool_choice, max_tokens=max_tokens
+        )
+        response = await provider.complete(request)
+        await self._account(profile, response.usage)
+        return response
+
+    def _prepare(
+        self,
+        messages: Sequence[Message],
+        *,
+        task: str | None,
+        tools: Sequence[Mapping[str, object]] = (),
+        tool_choice: str = "auto",
+        max_tokens: int | None = None,
+    ) -> tuple[Any, LLMProvider, LLMRequest]:
+        """Профиль задачи, её провайдер и готовый запрос — общее у ответа целиком и потоком."""
         profile = self._profiles.get(task)
         provider = self._provider(profile.provider)
 
@@ -241,14 +266,15 @@ class LLMService:
             reasoning=profile.reasoning,
         )
         logger.debug("LLM запрос: задача=%s модель=%s", profile.task, profile.model)
-        response = await provider.complete(request)
+        return profile, provider, request
 
-        self._spending.add(profile.task, response.usage)
+    async def _account(self, profile: Any, usage: Mapping[str, Any]) -> None:
+        """Записать расход запроса: в сеанс, в файл дня и в лог."""
+        self._spending.add(profile.task, usage)
         if self._usage is not None:
             # Файл дня пишется в потоке: запись на диск в цикле событий
             # задержала бы голос ради бухгалтерии.
-            await asyncio.to_thread(self._usage.add, profile.task, profile.model, response.usage)
-        usage = response.usage
+            await asyncio.to_thread(self._usage.add, profile.task, profile.model, usage)
         logger.info(
             "LLM %s (%s): %s+%s токенов%s, всего за сеанс %s",
             profile.task,
@@ -258,7 +284,6 @@ class LLMService:
             f", ${float(usage['cost']):.5f}" if usage.get("cost") else "",
             self._spending.total_tokens,
         )
-        return response
 
     # --- задачи ------------------------------------------------------------
 
@@ -280,6 +305,54 @@ class LLMService:
             сказал, ты ответил» значило бы платить токенами за то, что формат
             выражает бесплатно.
         """
+        messages, limit = self._question(prompt, system=system, context=context, history=history)
+        response = await self.complete(messages, task=task, max_tokens=limit)
+        return response.text
+
+    async def ask_stream(
+        self,
+        prompt: str,
+        *,
+        task: str | None = None,
+        system: str | None = None,
+        context: str | None = None,
+        history: Sequence[Message] = (),
+    ) -> AsyncIterator[str]:
+        """То же, что `ask`, но ответ отдаётся кусками по мере написания.
+
+        Сорвалось **до первого куска** — спрашиваем обычным запросом: у него
+        свои поправки отказов (OpenAI учится на отвергнутых параметрах), и
+        потерять ответ из-за потока было бы глупо. Сорвалось посреди ответа —
+        ошибка идёт наверх: половину уже произнесли, и начинать заново нельзя.
+        """
+        messages, limit = self._question(prompt, system=system, context=context, history=history)
+        profile, provider, request = self._prepare(messages, task=task, max_tokens=limit)
+        if not isinstance(provider, StreamingProvider):
+            yield (await self.complete(messages, task=task, max_tokens=limit)).text
+            return
+        usage: dict[str, Any] = {}
+        started = False
+        try:
+            async for piece in provider.stream(request, usage):
+                started = True
+                yield piece
+        except LLMError as exc:
+            if started:
+                raise
+            logger.warning("Поток ответа модели не открылся (%s) — спрашиваю целиком", exc)
+            yield (await self.complete(messages, task=task, max_tokens=limit)).text
+            return
+        await self._account(profile, usage)
+
+    def _question(
+        self,
+        prompt: str,
+        *,
+        system: str | None,
+        context: str | None,
+        history: Sequence[Message],
+    ) -> tuple[list[Message], int | None]:
+        """Переписка для одиночного вопроса и потолок ответа под режим «коротко»."""
         messages: list[Message] = []
         brief = self._brief_line(prompt)
         if system or brief:
@@ -288,10 +361,7 @@ class LLMService:
             messages.append(Message.system(f"Контекст:\n{context}"))
         messages.extend(history)
         messages.append(Message.user(prompt))
-        response = await self.complete(
-            messages, task=task, max_tokens=BRIEF_TOKENS if brief else None
-        )
-        return response.text
+        return messages, BRIEF_TOKENS if brief else None
 
     def _brief_line(self, prompt: str) -> str:
         """Что дописать к подсказке в режиме «отвечай коротко».

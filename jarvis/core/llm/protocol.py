@@ -11,7 +11,7 @@ DeepSeek…) переписывал бы одну и ту же логику пр
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, AsyncIterator, Mapping, Protocol, Sequence, runtime_checkable
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -120,4 +120,21 @@ class LLMProvider(Protocol):
 
     async def aclose(self) -> None:
         """Закрыть соединения."""
+        ...
+
+
+@runtime_checkable
+class StreamingProvider(Protocol):
+    """Провайдер, который умеет отдавать ответ по мере написания.
+
+    Это **умение, а не обязанность** — как поток у синтеза: провайдер без него
+    отвечает целиком через `complete`, и работает всё как раньше.
+    """
+
+    def stream(self, request: LLMRequest, usage: dict[str, Any]) -> AsyncIterator[str]:
+        """Куски текста ответа по порядку.
+
+        :param usage: сюда кладётся расход, когда ответ дописан: у потока он
+            приходит последним куском, и вернуть его иначе некуда.
+        """
         ...

@@ -24,6 +24,7 @@ import asyncio
 import difflib
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 from jarvis.core.attention import Announcer
@@ -38,6 +39,7 @@ from jarvis.core.audio import (
 from jarvis.core.bus import EventBus
 from jarvis.core.config import AudioConfig
 from jarvis.core.contracts import (
+    LIVE_SPEECH,
     AnnouncementRequested,
     AssistantReplied,
     AssistantSpeaking,
@@ -58,6 +60,7 @@ from jarvis.core.router import Dispatcher
 from jarvis.core.state import DEAF, Modes, wakes_up
 from jarvis.core.stt import STT
 from jarvis.core.stt.stream import STTStream
+from jarvis.core.text.sentences import SentenceSplitter
 from jarvis.core.tts import TTS
 
 logger = logging.getLogger(__name__)
@@ -202,6 +205,8 @@ class VoicePipeline:
         self._activation: tuple[bytes, int] | None = None
         #: Ссылку держим, чтобы задачу не собрал сборщик мусора на полпути.
         self._sound_task: asyncio.Task[None] | None = None
+        #: Фразы (по моменту начала), на которые отклик уже прозвучал при сабмите.
+        self._early_ack: set[float] = set()
         #: Говорим по одной реплике за раз. Пока ответы шли только на команды,
         #: очередь получалась сама собой; напоминание же срабатывает когда
         #: угодно, в том числе посреди ответа, — и две реплики полезли бы в
@@ -340,24 +345,35 @@ class VoicePipeline:
         # уже должен знать, о чём речь, — иначе доклад фоновой задачи или
         # сработавшее напоминание придут в разговор, где последней реплики нет.
         self._conversation.said(utterance.text)
-        result = await self._run(utterance)
+        # Конвейер умеет произносить ответ по ходу написания — объявляем это
+        # инструменту. Задача в `_run` копирует контекст при создании, поэтому
+        # ставится до неё и снимается после.
+        live = LIVE_SPEECH.set(True)
+        try:
+            result = await self._run(utterance)
+        finally:
+            LIVE_SPEECH.reset(live)
         # Диспетчер решил, что это было не к нам (слова из песни, чужой разговор):
         # молчим совсем — «Готово» в ответ на «люблю тебя» хуже тишины.
         if isinstance(result.value, dict) and result.value.get("ignored"):
             return result
-        # Вариант выбирает персона, а не скилл: она помнит, что уже говорила, и
-        # у каждой команды своя память — «пауза» не вытесняет «включаю».
-        options = result.speech_options(utterance.language)
-        reply = self._persona.choose(
-            result.tool or "tool", options, utterance.language
-        ) or self._describe(result, utterance.language)
+        if result.speech_stream is not None:
+            reply = await self._say_stream(result.speech_stream, language=utterance.language)
+        else:
+            # Вариант выбирает персона, а не скилл: она помнит, что уже говорила,
+            # и у каждой команды своя память — «пауза» не вытесняет «включаю».
+            options = result.speech_options(utterance.language)
+            reply = self._persona.choose(
+                result.tool or "tool", options, utterance.language
+            ) or self._describe(result, utterance.language)
+            if reply:
+                await self._say(reply, language=utterance.language)
         if reply:
             # В разговор идёт только ответ на команду. Речь без вопроса —
             # реакции на набранное, напоминания, приветствие — сюда не пишется:
             # ироничных реплик за вечер десятки, и они вытеснили бы из короткой
             # памяти то единственное, ради чего она заведена.
             self._conversation.replied(reply)
-            await self._say(reply, language=utterance.language)
 
         if result.confirm is not None:
             self._await_answer()
@@ -440,8 +456,76 @@ class VoicePipeline:
         async with self._voice:
             await self._speak(text, language=language)
 
+    async def _say_stream(self, pieces: AsyncIterator[str], *, language: str | None) -> str:
+        """Произнести ответ, который модель ещё пишет, — по предложению.
+
+        Первое предложение звучит, пока пишутся остальные: ответ в секунду
+        длиной начинает звучать с первым законченным предложением, а не когда
+        дописан весь (просьба владельца 14.09.2026 «отвечать моментально»).
+        Следующие предложения синтезируются заранее, пока звучит текущее, —
+        иначе между ними была бы пауза на синтез.
+
+        Голос занят на весь ответ целиком: напоминание, влезшее между
+        предложениями, разорвало бы фразу пополам. «Ответил» сообщается один
+        раз, в конце, — с полным текстом.
+
+        :return: весь произнесённый ответ; оборвался до первого предложения —
+            реплика о неудаче.
+        """
+        splitter = SentenceSplitter()
+        ready: asyncio.Queue[tuple[str, asyncio.Task[None] | None] | None] = asyncio.Queue()
+
+        def queue(sentence: str, first: bool) -> None:
+            # Первое не готовим: оно звучит сразу, потоком синтеза.
+            warm = None if first or self.silent else asyncio.create_task(
+                self._tts.prewarm(sentence, language=language)
+            )
+            ready.put_nowait((sentence, warm))
+
+        async def write() -> None:
+            first = True
+            try:
+                async for piece in pieces:
+                    for sentence in splitter.push(piece):
+                        queue(sentence, first)
+                        first = False
+                tail = splitter.flush()
+                if tail:
+                    queue(tail, first)
+            except Exception as exc:  # noqa: BLE001 — произнесённое уже не вернуть
+                logger.error("Ответ модели оборвался (%s): %s", type(exc).__name__, exc)
+            finally:
+                ready.put_nowait(None)
+
+        said: list[str] = []
+        writer = asyncio.create_task(write())
+        async with self._voice:
+            while (item := await ready.get()) is not None:
+                sentence, warm = item
+                if warm is not None:
+                    await warm
+                await self._speak(sentence, language=language, replied=False)
+                said.append(sentence)
+        await writer
+
+        if not said:
+            reply = self._persona.line(FAILED, language)
+            await self._say(reply, language=language)
+            return reply
+        reply = " ".join(said)
+        self.last_reply = reply
+        self._events.emit(
+            AssistantReplied(source="voice", text=reply, spoken=not self.silent and self._tts.ready)
+        )
+        return reply
+
     async def _speak(
-        self, text: str, *, language: str | None = None, remember: bool = True
+        self,
+        text: str,
+        *,
+        language: str | None = None,
+        remember: bool = True,
+        replied: bool = True,
     ) -> None:
         """Собственно озвучка — вызывается только из `_say`, под замком.
 
@@ -449,6 +533,9 @@ class VoicePipeline:
             «секунду» произносится вслух, но ответом не является: `--say`
             печатает `last_reply`, и напечатать «секунду» вместо результата
             значило бы соврать о том, чем всё кончилось.
+        :param replied: сообщать ли, что ответ отзвучал. Предложение из
+            середины ответа — ещё не конец: по «ответил» скилл windows
+            возвращает громкость, и музыка поднималась бы между предложениями.
         """
         # Что именно сказал ассистент, по логу иначе не восстановить: в нём
         # видно команду и её результат, а произнесённой фразы — нет. А разбирать
@@ -462,9 +549,10 @@ class VoicePipeline:
         if self.silent:
             # Голос выключен целиком: реплика уже в логе, а трогать синтез
             # нельзя — он загрузит модель при первом же обращении.
-            self._events.emit(
-                AssistantReplied(source="voice" if remember else FILLER_SOURCE, text=text, spoken=False)
-            )
+            if replied:
+                self._events.emit(
+                    AssistantReplied(source="voice" if remember else FILLER_SOURCE, text=text, spoken=False)
+                )
             return
         self._speaking = True
         spoken = True
@@ -486,6 +574,8 @@ class VoicePipeline:
         # Заполнитель («Один момент») — не ответ: по «ответил» скилл windows
         # возвращает громкость, и она поднималась поверх настоящего ответа,
         # звучавшего следом (живой запуск 14.09.2026, 15:34).
+        if not replied:
+            return
         self._events.emit(
             AssistantReplied(
                 source="voice" if remember else FILLER_SOURCE, text=text, spoken=spoken and self._tts.ready
@@ -648,6 +738,24 @@ class VoicePipeline:
             )
         )
 
+    def _acknowledge_early(self, spoken_at: float) -> None:
+        """Отозваться звуком сразу, как фраза кончилась, — не дожидаясь расшифровки.
+
+        Раньше отклик играл после распознавания, то есть через полторы секунды
+        после того, как человек замолчал (просьба владельца 14.09.2026: «отвечать
+        моментально»). Звучит он только когда имя прозвучало **в начале** этой
+        фразы: запоздалое имя — примета песни или чужого разговора
+        (`LATE_NAME_S`), и пищать на них незачем. Цена: на ложном имени в первую
+        секунду («Алесса, люблю тебя») отклик прозвучит — ответа при этом не будет.
+        """
+        if self._activation is None:
+            return
+        late = self._name_heard_at - spoken_at
+        if not 0 <= late < LATE_NAME_S:
+            return
+        self._early_ack.add(spoken_at)
+        self._sound_task = asyncio.create_task(self._play_activation())
+
     def _stream_utterance(
         self, buffer: bytearray, stream: STTStream | None, chunk: bytes
     ) -> STTStream | None:
@@ -699,6 +807,7 @@ class VoicePipeline:
             stream.end()
         try:
             self._pending.put_nowait((audio, spoken_at, stream))
+            self._acknowledge_early(spoken_at)
         except asyncio.QueueFull:
             if stream is not None:
                 stream.cancel()
@@ -814,8 +923,12 @@ class VoicePipeline:
         self._follow_up_until = 0.0
         # Отклик играет параллельно с выполнением, а не до него: он говорит
         # «услышал», и задерживать ради него саму команду незачем. Ответ всё
-        # равно прозвучит после — динамик занят по очереди.
-        self._sound_task = asyncio.create_task(self._play_activation())
+        # равно прозвучит после — динамик занят по очереди. Если отклик уже
+        # прозвучал при конце фразы (`_acknowledge_early`), второй раз не нужен.
+        if spoken_at in self._early_ack:
+            self._early_ack.discard(spoken_at)
+        else:
+            self._sound_task = asyncio.create_task(self._play_activation())
         self._events.emit(
             VoiceCommandRecognized(
                 source="voice",

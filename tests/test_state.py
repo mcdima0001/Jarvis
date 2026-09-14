@@ -610,3 +610,33 @@ async def test_common_durations_never_reach_the_model(registry) -> None:
         if minutes is not None:
             result = await registry.invoke(intent.tool, intent.arguments)
             assert result.value["minutes"] == minutes, phrase
+
+
+async def test_dialog_streams_only_to_a_caller_that_speaks_as_it_goes(registry, tmp_path) -> None:
+    """Поток ответа — только голосовому конвейеру; плану и фону — готовый текст."""
+    from jarvis.core.contracts import LIVE_SPEECH
+    from jarvis.core.tools import collect_tools
+
+    class Talker:
+        available = True
+
+        async def ask(self, prompt, *, task=None, system=None, context=None, history=()):
+            return "Целиком."
+
+        async def ask_stream(self, prompt, *, task=None, system=None, context=None, history=()):
+            yield "По кускам."
+
+    core = _core(llm=Talker(), memory=_memory(tmp_path), registry=registry)
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+
+    plain = await registry.invoke("core.chat", {"text": "как дела"})
+    assert plain.speech == "Целиком." and plain.speech_stream is None
+
+    token = LIVE_SPEECH.set(True)
+    try:
+        live = await registry.invoke("core.chat", {"text": "как дела"})
+    finally:
+        LIVE_SPEECH.reset(token)
+    assert live.speech_stream is not None
+    assert [piece async for piece in live.speech_stream] == ["По кускам."]
