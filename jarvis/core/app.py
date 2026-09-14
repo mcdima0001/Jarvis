@@ -181,7 +181,7 @@ class JarvisApp:
 
         audio = build_audio(config.audio, meter=meter)
         stt = build_stt(config.stt, worker)
-        tts = build_tts(config.tts, worker, sink=audio.sink)
+        tts = build_tts(config.tts, worker, sink=audio.sink, meter=meter)
 
         # Просьба «выключись» приходит инструментом, а ждёт её `run`. Событие
         # заводится здесь, до обоих: иначе инструменту нечего было бы дёргать,

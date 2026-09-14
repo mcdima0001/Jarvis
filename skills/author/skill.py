@@ -478,20 +478,26 @@ class AuthorSkill(Skill):
                     "en": "I can't improve skills: the panel isn't configured.",
                 },
             )
-        installed = await asyncio.to_thread(installed_skills, self._root)
-        folder = pick_installed(skill, installed)
-        if not folder or not safe_name(folder):
-            listed = ", ".join(installed)
-            return ToolResult.failure(
-                f"скилл {skill!r} не найден; есть: {listed}",
-                speech={"ru": f"Не нашёл скилл {skill}.", "en": f"No skill named {skill}."},
-            )
+        if revise:
+            # Поправить можно любой лежащий черновик — и доработку, и новый
+            # модуль, которого среди установленных ещё нет.
+            waiting = await asyncio.to_thread(draft_names, self._root)
+            folder = pick_draft(skill, waiting)
+            if not folder:
+                return ToolResult.failure(
+                    f"черновика {skill!r} нет — поправлять нечего; есть: {', '.join(waiting)}",
+                    speech={"ru": f"Черновика {skill} нет.", "en": f"There is no {skill} draft."},
+                )
+        else:
+            installed = await asyncio.to_thread(installed_skills, self._root)
+            folder = pick_installed(skill, installed)
+            if not folder or not safe_name(folder):
+                listed = ", ".join(installed)
+                return ToolResult.failure(
+                    f"скилл {skill!r} не найден; есть: {listed}",
+                    speech={"ru": f"Не нашёл скилл {skill}.", "en": f"No skill named {skill}."},
+                )
         draft = draft_path(self._root, folder)
-        if revise and not draft.is_file():
-            return ToolResult.failure(
-                f"черновика {folder} нет — поправлять нечего",
-                speech={"ru": f"Черновика {folder} нет.", "en": f"There is no {folder} draft."},
-            )
         remarks = draft.with_name("review.md")
         has_remarks = revise and remarks.is_file() and bool(remarks.read_text(encoding="utf-8").strip())
         if not request.strip() and not has_remarks:
@@ -679,6 +685,11 @@ class AuthorSkill(Skill):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
         source.unlink()
+        # Замечания разбора уходят вместе с принятым черновиком: оставленные, они
+        # держали папку в `drafts/` — черновика нет, а замечания висят (peace, 14.09.2026).
+        remarks = source.with_name("review.md")
+        if remarks.is_file():
+            remarks.unlink()
         # Пустой каталог черновика убираем, чтобы список не врал.
         try:
             source.parent.rmdir()
@@ -745,15 +756,18 @@ class AuthorSkill(Skill):
         замечания разбора: владелец прочёл их в панели и дописал свои правки.
         """
         source = self._root / "skills" / folder / "skill.py"
-        current = await asyncio.to_thread(source.read_text, encoding="utf-8")
-        name = skill_name(current)
+        installed = source.is_file()
         if revise:
             base = draft_path(self._root, folder)
             draft = await asyncio.to_thread(base.read_text, encoding="utf-8")
             review = base.with_name("review.md")
             remarks = await asyncio.to_thread(review.read_text, encoding="utf-8") if review.is_file() else ""
+            # У нового модуля рабочего файла нет — имя в паспорте берётся из черновика.
+            name = skill_name(await asyncio.to_thread(source.read_text, encoding="utf-8") if installed else draft)
             prompt = revise_prompt(draft, remarks, request)
         else:
+            current = await asyncio.to_thread(source.read_text, encoding="utf-8")
+            name = skill_name(current)
             prompt = improve_prompt(current, request)
         code = await self._draft(prompt)
         if skill_name(code) != name:
@@ -780,7 +794,7 @@ class AuthorSkill(Skill):
         await asyncio.to_thread(self._save, path.with_name("review.md"), remarks + "\n" if remarks else "")
 
         self.log.info("Доработка скилла %s сохранена: %s", folder, path)
-        return report(folder, path, code.count("@tool"), findings, remarks, improved=True)
+        return report(folder, path, code.count("@tool"), findings, remarks, improved=installed)
 
     async def _look_over(self, code: str) -> str:
         """Показать написанное свежему агенту. Пусто — замечаний нет.

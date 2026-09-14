@@ -16,10 +16,11 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from typing import AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Callable, Sequence, TypeVar
 
 from jarvis.core.audio import AudioSink, StreamingAudioSink
 from jarvis.core.config import TTSConfig
+from jarvis.core.meter import Meter
 from jarvis.core.runtime import BlockingWorker
 
 from .backends import SpeechBackend, StreamingBackend, build_backend, parse_voice
@@ -28,6 +29,8 @@ from .normalize import normalize_for_speech
 from .protocol import Speech
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 #: Сколько не трогать основной голос после отказа. Реплики звучат десятки раз
 #: за вечер, и ждать таймаут облака на каждой значит превратить обрыв связи в
@@ -43,6 +46,13 @@ ENOUGH_LETTERS = 8
 #: («Открываю AyuGram») обязаны остаться на голосе разговора: латиницу внутри
 #: русской фразы читает `normalize_for_speech`, и делает это правильно.
 CLEAR_MAJORITY = 2
+
+#: Движки, которые считают на этой машине. Их синтез и загрузка идут в звено
+#: «синтез» счётчика нагрузки. Облачные (fish, edge) туда не попадают: их время —
+#: ожидание сети, ноутбук оно не греет.
+LOCAL_ENGINES = frozenset({"piper", "kokoro", "silero", "vosk", "xtts"})
+#: Как звено называется в сводке нагрузки (см. `meter.ORDER`).
+SYNTHESIS_STAGE = "синтез"
 
 
 def voice_language(text: str, hint: str | None, available: Sequence[str]) -> str | None:
@@ -87,10 +97,12 @@ class CompositeTTS:
         worker: BlockingWorker,
         *,
         sink: AudioSink,
+        meter: Meter | None = None,
     ) -> None:
         self._config = config
         self._worker = worker
         self._sink = sink
+        self._meter = meter
         self._backends: dict[str, SpeechBackend] = {}
         self._loaded: set[tuple[str, str]] = set()
         #: До какого момента не трогать основной голос после отказа.
@@ -268,7 +280,7 @@ class CompositeTTS:
             if key in self._loaded:
                 return
             logger.info("Загружаю голос %s:%s для языка %s", engine, voice, language)
-            await self._worker.run(self._backend(engine).prepare, voice, language)
+            await self._worker.run(self._counted, engine, self._backend(engine).prepare, voice, language)
             self._loaded.add(key)
             logger.info("Голос %s:%s готов", engine, voice)
 
@@ -330,13 +342,23 @@ class CompositeTTS:
 
         await self._ensure(code, engine, voice)
         audio, rate = await self._worker.run(
-            self._backend(engine).synthesize, spoken, voice, code
+            self._counted, engine, self._backend(engine).synthesize, spoken, voice, code
         )
         if self._cache is not None and worth_caching(spoken):
             await asyncio.to_thread(
                 self._cache.put, spoken, engine, voice, code, speed, audio, rate
             )
         return Speech(audio=audio, sample_rate=rate, text=text, language=code)
+
+    def _counted(self, engine: str, work: Callable[..., T], *args: Any) -> T:
+        """Выполнить работу движка в потоке, засчитав её в звено «синтез».
+
+        Только у местных движков: облачный ждёт сеть, и это не нагрузка.
+        """
+        if self._meter is None or engine not in LOCAL_ENGINES:
+            return work(*args)
+        with self._meter.cpu_stage(SYNTHESIS_STAGE):
+            return work(*args)
 
     def _spare(self, engine: str, voice: str) -> tuple[str, str, str] | None:
         """Запасной голос, если он задан и не совпадает с основным.

@@ -11,6 +11,7 @@ import logging
 
 from jarvis.core.audio import AudioSink
 from jarvis.core.config import TTSConfig
+from jarvis.core.meter import Meter
 from jarvis.core.runtime import BlockingWorker
 
 from .backends import (
@@ -55,8 +56,13 @@ def _engine_available(engine: str) -> bool:
     return True
 
 
-def build_tts(config: TTSConfig, worker: BlockingWorker, *, sink: AudioSink) -> TTS:
-    """Создать синтезатор по конфигу с откатом на заглушку."""
+def build_tts(
+    config: TTSConfig, worker: BlockingWorker, *, sink: AudioSink, meter: Meter | None = None,
+) -> TTS:
+    """Создать синтезатор по конфигу с откатом на заглушку.
+
+    :param meter: счётчик нагрузки; местный синтез засчитывается в звено «синтез».
+    """
     if config.engine in (None, "", "null") and not config.voices:
         return NullTTS(sample_rate=config.sample_rate)
 
@@ -70,7 +76,7 @@ def build_tts(config: TTSConfig, worker: BlockingWorker, *, sink: AudioSink) -> 
     if not _engine_available(engine):
         return NullTTS(sample_rate=config.sample_rate)
 
-    return CompositeTTS(config, worker, sink=sink)
+    return CompositeTTS(config, worker, sink=sink, meter=meter)
 
 
 __all__ = [

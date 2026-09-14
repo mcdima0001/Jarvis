@@ -178,3 +178,39 @@ async def test_revision_starts_from_the_draft_and_clears_old_remarks(root: Path,
     assert (draft / "skill.py").read_text(encoding="utf-8") == second
     # Разбор выключен — замечания к прошлой версии висеть не должны.
     assert (draft / "review.md").read_text(encoding="utf-8") == ""
+
+
+async def test_new_module_draft_can_be_revised_too(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Живой случай: у нового модуля mouse кнопки правок не было — править умели только доработки."""
+    skill, _ = _skill(root, "")
+    await skill.on_setup()
+    draft = root / "drafts" / "mouse"
+    draft.mkdir(parents=True)
+    first = _CLIPBOARD.replace('name="clipboard"', 'name="mouse"')
+    (draft / "skill.py").write_text(first, encoding="utf-8")
+    second = first.replace("Пусто.", "Мышь.")
+
+    async def ask(prompt: str) -> str:
+        return second
+
+    async def check(path: Path) -> str:
+        return ""
+
+    monkeypatch.setattr(skill, "_ask", ask)
+    monkeypatch.setattr(skill, "_check", check)
+    said = await skill._improve("mouse", "двигай плавнее", revise=True)
+
+    assert (draft / "skill.py").read_text(encoding="utf-8") == second
+    assert not (root / "skills" / "mouse").exists()
+    assert "доработка" not in said
+
+
+def test_accepted_draft_takes_its_remarks_along(root: Path) -> None:
+    """Живой случай: принятый peace оставил в drafts/ папку с одним review.md."""
+    draft = root / "drafts" / "powershell"
+    draft.mkdir(parents=True)
+    (draft / "skill.py").write_text(_CLIPBOARD, encoding="utf-8")
+    (draft / "review.md").write_text("1. замечание\n", encoding="utf-8")
+    author.AuthorSkill._move(draft / "skill.py", root / "skills" / "powershell" / "skill.py")
+    assert not draft.exists()
+    assert (root / "skills" / "powershell" / "skill.py").read_text(encoding="utf-8") == _CLIPBOARD

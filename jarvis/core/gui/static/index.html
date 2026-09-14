@@ -753,7 +753,7 @@ async function loadDrafts() {
       el("div", {},
         draft.review ? el("h3", { class: "caption" }, "Замечания разбора") : "",
         draft.review ? reviewView(draft.review) : "",
-        draft.improvement ? reviseBox(draft) : "",
+        reviseBox(draft),
         el("h3", { class: "caption" }, "Что изменилось"),
         diffView(draft.diff),
         el("div", { class: "toolbar" },
