@@ -25,6 +25,7 @@ from jarvis.core.tray.session import (
     StderrTail,
     TraySession,
     current_log_file,
+    live_log_command,
     restart_command,
     run_in_tray,
 )
@@ -164,6 +165,25 @@ async def test_icon_turns_ready_when_system_started(tmp_path: Path) -> None:
     session.attach(app)
     await app.events.publish(SystemStarted(source="app"))
     assert session.icon.states[-1] == menu.READY  # type: ignore[attr-defined]
+
+
+def test_log_opens_live_window_on_current_file(tmp_path: Path) -> None:
+    watched: list[Path] = []
+    log = tmp_path / "jarvis-2026-09-14.log"
+    session = TraySession(
+        FakeIcon, opener=lambda path: None, live_log=watched.append, log_file=lambda: log
+    )
+    session.on_action("log")
+    assert watched == [log]
+
+
+def test_live_log_command_follows_the_file_and_survives_quotes() -> None:
+    command = live_log_command(Path("D:/Джарвис's/logs/jarvis.log"))
+    script = command[-1]
+    assert command[0] == "powershell.exe"
+    assert "-Wait" in script and "-Encoding UTF8" in script
+    # Одинарная кавычка в пути удвоена, иначе строка PowerShell оборвётся.
+    assert "Джарвис''s" in script
 
 
 async def test_folder_opens_project_root(tmp_path: Path) -> None:

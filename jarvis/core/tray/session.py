@@ -113,7 +113,8 @@ def current_log_file(root: logging.Logger | None = None) -> Path | None:
     """Файл, в который прямо сейчас пишется лог: у дневного он меняется в полночь."""
     for handler in (root or logging.getLogger()).handlers:
         name = getattr(handler, "baseFilename", None)
-        if name:
+        # Обработчик в пустое устройство — тоже файловый: такой вешает pytest.
+        if name and Path(name).name.lower() not in ("nul", "null"):
             return Path(name)
     return None
 
@@ -131,6 +132,30 @@ def open_path(path: Path) -> None:
         logger.info("Открыть %s: вне Windows нечем", path)
 
 
+def live_log_command(path: Path, *, tail: int = 200) -> list[str]:
+    """Команда окна, где лог дописывается на глазах: `Get-Content -Wait`.
+
+    Блокнот показывает снимок файла, а смотреть в лог нужно как раз по ходу
+    дела — сказал команду и видишь, что с ней стало. Кодировка консоли ставится
+    явно: иначе кириллица в Windows PowerShell приходит мусором.
+    """
+    literal = str(path).replace("'", "''")
+    script = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        "$Host.UI.RawUI.WindowTitle = 'Jarvis — лог'; "
+        f"Get-Content -LiteralPath '{literal}' -Encoding UTF8 -Tail {tail} -Wait"
+    )
+    return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", script]
+
+
+def open_live_log(path: Path) -> None:
+    """Открыть отдельное окно с логом в реальном времени."""
+    if sys.platform == "win32":
+        subprocess.Popen(live_log_command(path), creationflags=subprocess.CREATE_NEW_CONSOLE)
+    else:
+        logger.info("Лог в реальном времени: tail -f %s", path)
+
+
 class TraySession:
     """Связка значка с живым приложением.
 
@@ -146,12 +171,16 @@ class TraySession:
         name: str = "Jarvis",
         root: Path | None = None,
         opener: Callable[[Path], None] = open_path,
+        live_log: Callable[[Path], None] = open_live_log,
+        log_file: Callable[[], Path | None] = current_log_file,
     ) -> None:
+        self._log_file = log_file
         self.name = name
         self.root = root or Path.cwd()
         #: Выбран ли перезапуск: решает, что делать после остановки.
         self.restart = False
         self._opener = opener
+        self._live_log = live_log
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stopping: asyncio.Event | None = None
         self._quit_early = False
@@ -181,7 +210,11 @@ class TraySession:
     def on_action(self, action: str) -> None:
         """Пункт меню выбран. Зовётся из потока значка."""
         if action == "log":
-            self._opener(current_log_file() or self.root / "logs")
+            path = self._log_file()
+            if path is None:
+                self._opener(self.root / "logs")
+            else:
+                self._live_log(path)
         elif action == "folder":
             self._opener(self.root)
         elif action in ("restart", "quit"):
