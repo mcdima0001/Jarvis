@@ -141,3 +141,40 @@ async def test_discard_removes_only_the_draft(root: Path) -> None:
 
     assert result.ok and not draft.exists()
     assert (root / "skills" / "powershell" / "skill.py").is_file()
+
+
+def test_revise_prompt_carries_the_draft_remarks_and_wishes() -> None:
+    prompt = author.revise_prompt("# черновик", "1. **run** блокирует цикл", "говори короче")
+    assert "# черновик" in prompt and "run** блокирует цикл" in prompt and "говори короче" in prompt
+    assert "Имя в meta не меняй" in prompt
+    # Без замечаний строки про них нет вовсе.
+    assert "Замечания разбора" not in author.revise_prompt("# черновик", "  ", "говори короче")
+
+
+async def test_revision_starts_from_the_draft_and_clears_old_remarks(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Живой случай: владелец прочёл замечания в панели и отправил черновик повторно."""
+    skill, _ = _skill(root, "")
+    await skill.on_setup()
+    draft = root / "drafts" / "powershell"
+    draft.mkdir(parents=True)
+    first = _CLIPBOARD.replace("Пусто.", "Картинка.")
+    (draft / "skill.py").write_text(first, encoding="utf-8")
+    (draft / "review.md").write_text("1. **speech** читает путь вслух\n", encoding="utf-8")
+    prompts: list[str] = []
+    second = _CLIPBOARD.replace("Пусто.", "Картинка из буфера.")
+
+    async def ask(prompt: str) -> str:
+        prompts.append(prompt)
+        return second
+
+    async def check(path: Path) -> str:
+        return ""
+
+    monkeypatch.setattr(skill, "_ask", ask)
+    monkeypatch.setattr(skill, "_check", check)
+    await skill._improve("powershell", "и не зачитывай путь", revise=True)
+
+    assert first in prompts[0] and "читает путь вслух" in prompts[0] and "не зачитывай путь" in prompts[0]
+    assert (draft / "skill.py").read_text(encoding="utf-8") == second
+    # Разбор выключен — замечания к прошлой версии висеть не должны.
+    assert (draft / "review.md").read_text(encoding="utf-8") == ""

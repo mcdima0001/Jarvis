@@ -531,3 +531,12 @@ async def test_log_is_followed_by_offset(tmp_path: Path, monkeypatch: pytest.Mon
 def test_panel_module_does_not_log_the_token() -> None:
     source = Path(panel_module.__file__).read_text(encoding="utf-8")
     assert "self.url" not in source.split("def start", 1)[1].split("def stop", 1)[0]
+
+
+async def test_draft_is_sent_back_with_revise(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    response = await _call(panel, "POST", "/api/drafts/revise", body={"name": "keys", "request": "короче"})
+    assert response.status == 200
+    assert panel._registry.calls[-1] == (  # type: ignore[attr-defined]
+        "author.improve", {"skill": "keys", "request": "короче", "revise": True}
+    )

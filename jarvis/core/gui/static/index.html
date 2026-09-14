@@ -118,6 +118,16 @@
   button.act:disabled { opacity: 0.4; cursor: default; }
   button.act.danger { color: var(--amber); }
   input:focus, select:focus, button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 1px; }
+  /* Замечания разбора и правки к черновику. */
+  .review { color: var(--text); line-height: 1.55; margin: 0 0 14px; }
+  .review p { margin: 0 0 8px; }
+  .review ol { margin: 0; padding-left: 22px; display: grid; gap: 10px; }
+  .review li::marker { color: var(--cyan); font-weight: 600; }
+  .review b { color: var(--cyan-soft); font-weight: 600; }
+  .review code { font-family: var(--mono); font-size: 0.9em; color: var(--amber); background: rgba(79, 216, 255, 0.07); border: 1px solid var(--line); padding: 0 4px; white-space: pre-wrap; word-break: break-word; }
+  details.box h3.caption { font-size: 12px; margin: 16px 0 8px; }
+  .revise { margin: 6px 0 14px; padding: 12px 14px; border: 1px solid var(--line); background: rgba(79, 216, 255, 0.04); }
+  .revise .note { margin-top: 0; }
   .switch { position: relative; width: 42px; height: 22px; display: inline-block; }
   .switch input { opacity: 0; width: 0; height: 0; }
   .switch span { position: absolute; inset: 0; border: 1px solid var(--line); background: rgba(3, 16, 26, 0.85); cursor: pointer; transition: 0.2s; }
@@ -686,16 +696,65 @@ function diffView(text) {
   }
   return pre;
 }
+// Замечания разбора приходят маленьким markdown: нумерованный список,
+// **жирное** и `код`. Разметка собирается узлами, а не innerHTML: текст пишет
+// агент, и вставлять его как HTML нельзя.
+function inlineMarkdown(text) {
+  const nodes = [];
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`/g;
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    nodes.push(match[1] !== undefined ? el("b", {}, ...inlineMarkdown(match[1])) : el("code", {}, match[2]));
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+function reviewView(text) {
+  // Пункты бывают и с новой строки, и подряд в одной строке: «… 2. **…**».
+  const items = text.replace(/\s+(\d+)\.\s+(?=\*\*|`)/g, "\n$1. ").split(/\n(?=\d+\.\s)/).map((part) => part.trim()).filter(Boolean);
+  const numbered = items.filter((part) => /^\d+\.\s/.test(part));
+  if (numbered.length < 2) return el("div", { class: "review" }, ...text.split(/\n{2,}/).map((part) => el("p", {}, ...inlineMarkdown(part))));
+  const intro = items.filter((part) => !/^\d+\.\s/.test(part));
+  return el("div", { class: "review" },
+    ...intro.map((part) => el("p", {}, ...inlineMarkdown(part))),
+    el("ol", {}, ...numbered.map((part) => el("li", {}, ...inlineMarkdown(part.replace(/^\d+\.\s+/, ""))))));
+}
+function reviseBox(draft) {
+  const box = el("textarea", { class: "prompt", placeholder: draft.review
+    ? "Что ещё поправить (можно пусто — тогда Claude исправит только замечания разбора)"
+    : "Что поправить в черновике" });
+  const send = el("button", { class: "act", onclick: async () => {
+    if (!draft.review && !box.value.trim()) { toast("Напиши, что поправить", true); return; }
+    send.disabled = true;
+    try {
+      const answer = await api("/api/drafts/revise", { name: draft.name, request: box.value });
+      toast(answer.message);
+      box.value = "";
+    } catch (error) { toast(error.message, true); } finally { send.disabled = false; }
+  } }, "Отправить Claude повторно");
+  return el("div", { class: "revise" },
+    el("h3", { class: "caption" }, "Правки к черновику"),
+    el("p", { class: "note" }, "Claude получит этот черновик, замечания разбора и твои правки; новая версия заменит черновик здесь же."),
+    box, el("div", { class: "toolbar", style: "margin-top:10px" }, send));
+}
 async function loadDrafts() {
   const { drafts } = await api("/api/drafts");
+  // Открытый черновик и набранные правки не должны пропадать при обновлении списка.
+  const open = new Set([...document.querySelectorAll("#drafts details[open]")].map((node) => node.dataset.name));
+  if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#drafts .revise")) return;
   $("drafts").replaceChildren(...(drafts.length ? [el("h2", { class: "caption" }, "Черновики Claude — ждут решения")] : []),
-    ...drafts.map((draft) => el("details", { class: "box" },
+    ...drafts.map((draft) => el("details", { class: "box", "data-name": draft.name, ...(open.has(draft.name) ? { open: "" } : {}) },
       el("summary", {},
         el("span", {}, draft.name),
         el("span", { class: "small" }, draft.improvement ? "доработка" : "новый модуль"),
         draft.review ? el("span", { class: "warn small" }, "есть замечания разбора") : ""),
       el("div", {},
-        draft.review ? el("p", { class: "note" }, draft.review) : "",
+        draft.review ? el("h3", { class: "caption" }, "Замечания разбора") : "",
+        draft.review ? reviewView(draft.review) : "",
+        draft.improvement ? reviseBox(draft) : "",
+        el("h3", { class: "caption" }, "Что изменилось"),
         diffView(draft.diff),
         el("div", { class: "toolbar" },
           el("button", { class: "act", onclick: async () => {

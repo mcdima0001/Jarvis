@@ -251,6 +251,24 @@ def improve_prompt(code: str, request: str) -> str:
     )
 
 
+def revise_prompt(draft: str, remarks: str, request: str) -> str:
+    """Попросить поправить уже написанный черновик: по замечаниям разбора и правкам владельца.
+
+    Основа — черновик, а не рабочий скилл: владелец правит то, что прочёл в
+    панели, и начинать заново значило бы потерять уже сделанное.
+    """
+    parts = [f"{CONVENTIONS}\n\n", f"Вот черновик доработки скилла, его надо поправить:\n\n{draft}\n\n"]
+    if remarks.strip():
+        parts.append(f"Замечания разбора, их надо устранить:\n{remarks.strip()}\n\n")
+    if request.strip():
+        parts.append(f"Правки владельца: {request.strip()}\n\n")
+    parts.append(
+        "Пришли файл целиком. Имя в meta не меняй. Существующие инструменты и их "
+        "фразы не удаляй и не переименовывай, если об этом прямо не просят."
+    )
+    return "".join(parts)
+
+
 #: Как скилл называют вслух, из его паспорта: `spoken=("буфер обмена", "clipboard")`.
 _SPOKEN = re.compile(r"spoken\s*=\s*\(([^)]*)\)")
 
@@ -441,7 +459,7 @@ class AuthorSkill(Skill):
         )
 
     @tool(reversible=False)
-    async def improve(self, skill: str, request: str, language: str = "ru") -> ToolResult:
+    async def improve(self, skill: str, request: str, language: str = "ru", revise: bool = False) -> ToolResult:
         """Доработать установленный скилл по просьбе: агент перепишет файл, результат ляжет в черновики.
 
         Рабочий скилл не трогается, пока доработку не примут. Уходит в фон, как
@@ -450,6 +468,7 @@ class AuthorSkill(Skill):
         :param skill: какой скилл дорабатывать — имя модуля или как его зовут вслух.
         :param request: что изменить, своими словами.
         :param language: язык доклада.
+        :param revise: поправить уже лежащий черновик — по замечаниям разбора и этой просьбе.
         """
         if not self._key or not self._url:
             return ToolResult.failure(
@@ -467,13 +486,24 @@ class AuthorSkill(Skill):
                 f"скилл {skill!r} не найден; есть: {listed}",
                 speech={"ru": f"Не нашёл скилл {skill}.", "en": f"No skill named {skill}."},
             )
-        if not request.strip():
+        draft = draft_path(self._root, folder)
+        if revise and not draft.is_file():
+            return ToolResult.failure(
+                f"черновика {folder} нет — поправлять нечего",
+                speech={"ru": f"Черновика {folder} нет.", "en": f"There is no {folder} draft."},
+            )
+        remarks = draft.with_name("review.md")
+        has_remarks = revise and remarks.is_file() and bool(remarks.read_text(encoding="utf-8").strip())
+        if not request.strip() and not has_remarks:
             return ToolResult.failure(
                 "не сказано, что доработать",
                 speech={"ru": f"Что доработать в {folder}?", "en": f"What should change in {folder}?"},
             )
+        title = f"поправить черновик {folder}" if revise else f"доработать скилл {folder}"
         job = self.context.jobs.submit(
-            f"доработать скилл {folder}: {request}", self._improve(folder, request), language=language
+            f"{title}: {request or 'по замечаниям разбора'}",
+            self._improve(folder, request, revise=revise),
+            language=language,
         )
         if job is None:
             return ToolResult.failure(
@@ -708,12 +738,24 @@ class AuthorSkill(Skill):
         self.log.info("Черновик скилла %s сохранён: %s", name, path)
         return report(name, path, code.count("@tool"), findings, remarks)
 
-    async def _improve(self, folder: str, request: str) -> str:
-        """Доработать скилл руками агента и положить черновик рядом. Возвращает доклад."""
+    async def _improve(self, folder: str, request: str, *, revise: bool = False) -> str:
+        """Доработать скилл руками агента и положить черновик рядом. Возвращает доклад.
+
+        С ``revise`` основой служит лежащий черновик, а в запрос уходят его
+        замечания разбора: владелец прочёл их в панели и дописал свои правки.
+        """
         source = self._root / "skills" / folder / "skill.py"
         current = await asyncio.to_thread(source.read_text, encoding="utf-8")
         name = skill_name(current)
-        code = await self._draft(improve_prompt(current, request))
+        if revise:
+            base = draft_path(self._root, folder)
+            draft = await asyncio.to_thread(base.read_text, encoding="utf-8")
+            review = base.with_name("review.md")
+            remarks = await asyncio.to_thread(review.read_text, encoding="utf-8") if review.is_file() else ""
+            prompt = revise_prompt(draft, remarks, request)
+        else:
+            prompt = improve_prompt(current, request)
+        code = await self._draft(prompt)
         if skill_name(code) != name:
             # Сменённое имя — это уже другой скилл: выученное в памяти и
             # настройки на него не сошлются. Такую доработку не принимаем.
@@ -733,8 +775,9 @@ class AuthorSkill(Skill):
         remarks = ""
         if not findings and self._review:
             remarks = await self._look_over(code)
-            if remarks:
-                await asyncio.to_thread(self._save, path.with_name("review.md"), remarks + "\n")
+        # Файл замечаний переписывается всегда: иначе у поправленного черновика
+        # висели бы замечания к прошлой версии, которых в коде уже нет.
+        await asyncio.to_thread(self._save, path.with_name("review.md"), remarks + "\n" if remarks else "")
 
         self.log.info("Доработка скилла %s сохранена: %s", folder, path)
         return report(folder, path, code.count("@tool"), findings, remarks, improved=True)

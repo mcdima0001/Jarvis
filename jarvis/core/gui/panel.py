@@ -226,6 +226,7 @@ class ControlPanel:
             ("GET", "/api/drafts"): self._drafts,
             ("POST", "/api/drafts/accept"): self._accept_draft,
             ("POST", "/api/drafts/discard"): self._discard_draft,
+            ("POST", "/api/drafts/revise"): self._revise_draft,
             ("GET", "/api/memory"): self._memory_view,
             ("POST", "/api/memory/forget"): self._forget,
             ("GET", "/api/settings"): self._settings,
@@ -524,6 +525,20 @@ class ControlPanel:
         return json_response({
             "message": "Отправил Claude на доработку. Это займёт пару минут: черновик появится "
             "вверху вкладки «Модули», а я доложу голосом."
+        })
+
+    async def _revise_draft(self, request: Request) -> Response:
+        """Отправить черновик Claude повторно: с замечаниями разбора и правками владельца."""
+        data = request.json()
+        name, wish = str(data.get("name", "")), str(data.get("request", "")).strip()
+        if not self._registry.has("author.improve"):
+            raise ValueError("модуль author не загружен — дорабатывать некому")
+        result = await self._registry.invoke("author.improve", {"skill": name, "request": wish, "revise": True})
+        if not result.ok:
+            raise ValueError(result.speech_for("ru") or str(result.error))
+        return json_response({
+            "message": "Отправил черновик Claude повторно. Новая версия заменит его здесь же, "
+            "а я доложу голосом."
         })
 
     def _collect_drafts(self) -> list[dict[str, Any]]:
