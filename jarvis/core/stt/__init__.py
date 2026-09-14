@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from jarvis.core.config import STTConfig
 from jarvis.core.runtime import BlockingWorker
@@ -61,7 +62,12 @@ def build_stt(config: STTConfig, worker: BlockingWorker) -> STT:
     всегда.
     """
     primary = _one(config, worker, config.engine)
-    backup = _one(config, worker, config.fallback) if config.fallback else None
+    backup = None
+    if config.fallback:
+        # У запасного своя модель: имя облачной (`nova-3`) Whisper не знает, и
+        # при обрыве сети запасной путь падал на загрузке (14.09.2026, 18:10).
+        spare = config if config.fallback == config.engine else replace(config, model=config.fallback_model)
+        backup = _one(spare, worker, config.fallback)
 
     if primary is None:
         if backup is None:

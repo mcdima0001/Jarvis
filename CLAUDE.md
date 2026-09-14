@@ -32,7 +32,7 @@
 
 ```bash
 cd /root/Jarvis
-.venv/bin/python -m pytest -q            # 1530 тестов, около сорока секунд
+.venv/bin/python -m pytest -q            # 1531 тест, около сорока секунд
 .venv/bin/python -m ruff check .         # линтер: осиротевшие импорты и прочий мусор
 .venv/bin/python -m mypy                 # типы: py.typed обещан, значит проверяется
 .venv/bin/python -m jarvis --check       # отчёт о сборке, ~6 с, без моделей
@@ -446,7 +446,7 @@ skills/             плагины (см. skills/README.md); browser/page — п
                     peace/ — эквалайзер Peace Nexus голосом
 extension/          расширение браузера (см. extension/README.md)
 config/config.yaml  настройки ядра; настройки скилла — в skills/<имя>/config.yaml
-tests/              1530 тестов на швы архитектуры
+tests/              1531 тест на швы архитектуры
 tools/photo_bench/  замер «где снято»: набор с известными координатами и промах
 launcher/           Jarvis.exe: запускатель без консоли, собирается build.py
 docs/lessons.md     журнал граблей: читать перед правкой подсистемы
@@ -502,7 +502,10 @@ python -m jarvis --devices                 # номера микрофонов �
   (имя или окно ответа), и первым куском досылается начало фразы. «Конец» шлётся
   сразу при сабмите, а не когда до фразы дойдёт очередь разбора. Сорвался поток
   или облако в блокировке после отказа — фраза уходит обычным путём с запасным
-  Whisper. Нужен пакет `websockets`.
+  Whisper. Нужен пакет `websockets`. **Выключен 14.09.2026** (`streaming:
+  false`): замер на фразах «Джарвис, …» — поток терял имя и хвост фразы, а
+  обычный запрос 5 из 5. Разбор и стенд — `docs/lessons.md`.
+  У запасного Whisper своя модель — `stt.fallback_model` (с `nova-3` он не поднимался).
 - **Ответ модели — вслух по предложению, пока пишется** (14.09.2026, 0.19.0).
   Провайдер умеет `stream` (необязательный `StreamingProvider`),
   `LLMService.ask_stream`, `core.chat` отдаёт `ToolResult.speech_stream` —
