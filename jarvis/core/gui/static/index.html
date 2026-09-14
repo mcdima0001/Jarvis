@@ -387,7 +387,17 @@
 // Токен приходит в адресе окна, которое открыл трей. Дальше он идёт заголовком:
 // чужая страница не может отправить такой заголовок на наш порт без разрешения
 // CORS, а разрешения мы не даём.
-const TOKEN = new URLSearchParams(location.search).get("token") || "";
+// Токен приходит в адресе и сразу оттуда убирается, а чтобы обновление страницы
+// не выбивало из панели, он живёт в памяти вкладки.
+const TOKEN = (() => {
+  const given = new URLSearchParams(location.search).get("token");
+  try {
+    if (given) sessionStorage.setItem("jarvis-token", given);
+    return given || sessionStorage.getItem("jarvis-token") || "";
+  } catch (error) {
+    return given || "";
+  }
+})();
 history.replaceState(null, "", location.pathname);
 
 const $ = (id) => document.getElementById(id);
@@ -400,7 +410,11 @@ async function api(path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || response.statusText);
+  if (!response.ok) {
+    const error = new Error(data.error || response.statusText);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -459,7 +473,9 @@ async function loadStatus() {
     status = await api("/api/status");
   } catch (error) {
     document.body.dataset.state = "offline";
-    $("state").textContent = STATES.offline;
+    // Отказ в доступе и обрыв — разные вещи: на первый помогает открыть панель
+    // из трея, на второй — дождаться, пока Jarvis поднимется.
+    $("state").textContent = error.status === 403 ? "нет доступа — открой панель из трея" : STATES.offline;
     return;
   }
   document.body.dataset.state = status.state;

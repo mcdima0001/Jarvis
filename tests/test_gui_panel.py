@@ -564,3 +564,27 @@ async def test_usage_tab_shows_today_with_price(tmp_path: Path) -> None:
     assert len(data["history"]) == 7
     status = _json(await _call(panel, "GET", "/api/status"))
     assert status["today"]["tokens"] == 1560
+
+
+def test_token_survives_restart_and_broken_file_is_replaced(tmp_path: Path) -> None:
+    """Живой случай 14.09.2026: после перезапуска открытое окно писало «нет связи».
+
+    Токен был новым на каждый запуск, и окно, открытое прошлым, получало отказ.
+    """
+    from jarvis.core.gui.panel import load_token
+
+    first, _, _ = _panel(tmp_path)
+    again, _, _ = _panel_again(tmp_path)
+    assert first.token == again.token and len(first.token) >= 24
+    token_file = tmp_path / "memory" / "panel_token"
+    token_file.write_text("  ", encoding="utf-8")
+    fresh = load_token(token_file)
+    assert fresh != first.token and token_file.read_text(encoding="utf-8").strip() == fresh
+
+
+def _panel_again(tmp_path: Path) -> tuple[ControlPanel, FakeSkills, LocalEventBus]:
+    """Вторая панель на той же папке — как после перезапуска Jarvis."""
+    import shutil
+
+    shutil.rmtree(tmp_path / "skills", ignore_errors=True)
+    return _panel(tmp_path)

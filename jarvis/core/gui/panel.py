@@ -109,7 +109,12 @@ class ControlPanel:
         self._llm = llm
         self._memory = memory
         self._sink = sink
-        self._token = secrets.token_urlsafe(24)
+        # Токен один на все запуски, а не новый на каждый (14.09.2026): окно панели,
+        # открытое до перезапуска Jarvis, иначе навсегда получало отказ и писало
+        # «нет связи», хотя ассистент уже работал.
+        memory = getattr(config, "memory", None)
+        base = getattr(memory, "dir", None) or config.root / "memory"
+        self._token = load_token(Path(base) / "panel_token")
         self._server = HttpServer(self._handle, port=config.gui.port if port is None else port)
         self._started = time.time()
         self._state = STARTING
@@ -936,6 +941,31 @@ def _coerce(kind: str, value: Any) -> Any:
 def _preview(value: Any) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     return text if len(text) <= PREVIEW else text[:PREVIEW] + "…"
+
+
+def load_token(path: Path) -> str:
+    """Токен панели: прочитать сохранённый или завести новый.
+
+    Хранится в `memory/` — там же, где сессия Telegram, и так же не уходит в git.
+    Прочитать файл может только тот, у кого и так есть доступ к учётке владельца,
+    поэтому постоянство токена защиту не ослабляет: от чужих страниц в браузере
+    она по-прежнему держится на заголовке, который они отправить не могут.
+    Файл битый или пустой — токен заводится заново; не записался — работаем с
+    новым до конца запуска.
+    """
+    try:
+        saved = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        saved = ""
+    if len(saved) >= 24 and all(char.isalnum() or char in "-_" for char in saved):
+        return saved
+    token = secrets.token_urlsafe(24)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(path, token)
+    except OSError as exc:
+        logger.warning("Токен панели не сохранился (%s): после перезапуска окно придётся открыть заново", exc)
+    return token
 
 
 def _read_or_empty(path: Path) -> str:
