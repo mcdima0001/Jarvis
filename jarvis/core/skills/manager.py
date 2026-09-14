@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Iterable
@@ -141,6 +141,21 @@ class SkillManager:
     def versions(self) -> dict[str, str]:
         """Имя скилла -> его версия. Для одной строки в логе о том, что запущено."""
         return {name: record.instance.meta.version for name, record in self._records.items()}
+
+    @property
+    def disabled(self) -> frozenset[str]:
+        """Выключенные скиллы: из конфига плюс выключенные на ходу."""
+        return self._config.disabled
+
+    def set_disabled(self, names: Iterable[str]) -> None:
+        """Сменить список выключенных. Панель пишет его и в config.yaml —
+        здесь только чтобы `adopt` не отказывал включённому на ходу."""
+        self._config = replace(self._config, disabled=frozenset(names))
+
+    def tools_of(self, name: str) -> tuple[str, ...]:
+        """Инструменты загруженного скилла; пусто, если он не загружен."""
+        record = self._records.get(name)
+        return tuple(record.scope.tool_names) if record else ()
 
     @property
     def tree(self) -> tuple[str, ...]:

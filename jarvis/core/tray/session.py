@@ -148,6 +148,33 @@ def live_log_command(path: Path, *, tail: int = 200) -> list[str]:
     return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", script]
 
 
+#: Где обычно стоит Edge. Окно `--app` — без адресной строки и вкладок, как
+#: отдельная программа; Edge есть в любой Windows 10 и 11.
+EDGE_PATHS = (
+    Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+)
+
+
+def panel_command(url: str, edge: Path | None) -> list[str] | None:
+    """Команда окна панели; ``None`` — Edge нет, откроется обычный браузер."""
+    if edge is None:
+        return None
+    return [str(edge), f"--app={url}", "--window-size=1180,760"]
+
+
+def open_panel(url: str) -> None:
+    """Открыть панель отдельным окном."""
+    edge = next((path for path in EDGE_PATHS if path.exists()), None)
+    command = panel_command(url, edge)
+    if command is not None:
+        subprocess.Popen(command)
+    elif sys.platform == "win32":
+        os.startfile(url)  # noqa: S606 — адрес наш, локальный
+    else:
+        logger.info("Панель: %s", url)
+
+
 def open_live_log(path: Path) -> None:
     """Открыть отдельное окно с логом в реальном времени."""
     if sys.platform == "win32":
@@ -173,8 +200,12 @@ class TraySession:
         opener: Callable[[Path], None] = open_path,
         live_log: Callable[[Path], None] = open_live_log,
         log_file: Callable[[], Path | None] = current_log_file,
+        panel: Callable[[str], None] = open_panel,
     ) -> None:
         self._log_file = log_file
+        self._open_panel = panel
+        #: Адрес панели с токеном. Появляется, когда приложение подключено.
+        self.panel_url: str | None = None
         self.name = name
         self.root = root or Path.cwd()
         #: Выбран ли перезапуск: решает, что делать после остановки.
@@ -201,6 +232,7 @@ class TraySession:
         self._stopping = app.stopping
         self.name = app.config.app.name
         self.root = app.config.root
+        self.panel_url = app.panel.url if app.panel is not None else None
         app.events.subscribe(SystemStarted.NAME, self._on_started)
         app.events.subscribe(SystemStopping.NAME, self._on_stopping)
         self._set(STARTING)
@@ -209,7 +241,13 @@ class TraySession:
 
     def on_action(self, action: str) -> None:
         """Пункт меню выбран. Зовётся из потока значка."""
-        if action == "log":
+        if action == "panel":
+            if self.panel_url:
+                self._open_panel(self.panel_url)
+            else:
+                # Панели нет (выключена или ещё не поднялась) — хотя бы лог.
+                self.on_action("log")
+        elif action == "log":
             path = self._log_file()
             if path is None:
                 self._opener(self.root / "logs")

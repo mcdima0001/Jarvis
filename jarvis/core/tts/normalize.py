@@ -209,6 +209,9 @@ _UNITS: dict[str, tuple[str, str, str]] = {
 }
 
 _NUMBER = re.compile(r"-?\d+(?:[.,]\d+)?")
+#: Номер версии: три числа и больше через точку. Дробью его читать нельзя —
+#: «0.2.0» звучало как «ноль запятая два.ноль» (живой запуск 14.09.2026).
+_VERSION = re.compile(r"(?<![\d.])\d+(?:\.\d+){2,}(?![\d.]*\d)")
 #: Разряды, разделённые пробелом: «1 299» — одно число, а не два.
 _GROUPED_DIGITS = re.compile(r"(\d)[\s  ](\d{3})\b")
 
@@ -471,5 +474,10 @@ def normalize_for_speech(
     # Порядковые разбираем раньше количественных: иначе «47-й» успевает стать
     # «сорок семь-й».
     result = _ORDINAL.sub(_spell_ordinal, result)
+    # Версии раньше чисел: иначе первые две части станут дробью.
+    result = _VERSION.sub(
+        lambda m: " точка ".join(number_to_words(int(part)) for part in m.group(0).split(".")),
+        result,
+    )
     result = _NUMBER.sub(_spell_number, result)
     return _sanitize(result)

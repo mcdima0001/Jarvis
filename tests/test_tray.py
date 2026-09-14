@@ -26,6 +26,7 @@ from jarvis.core.tray.session import (
     TraySession,
     current_log_file,
     live_log_command,
+    panel_command,
     restart_command,
     run_in_tray,
 )
@@ -68,6 +69,7 @@ def _app(root: Path) -> Any:
         stopping=asyncio.Event(),
         events=LocalEventBus(),
         config=SimpleNamespace(app=SimpleNamespace(name="Jarvis"), root=root),
+        panel=SimpleNamespace(url="http://127.0.0.1:8766/?token=t"),
     )
 
 
@@ -184,6 +186,31 @@ def test_live_log_command_follows_the_file_and_survives_quotes() -> None:
     assert "-Wait" in script and "-Encoding UTF8" in script
     # Одинарная кавычка в пути удвоена, иначе строка PowerShell оборвётся.
     assert "Джарвис''s" in script
+
+
+async def test_panel_opens_with_token_from_the_app(tmp_path: Path) -> None:
+    opened: list[str] = []
+    session = TraySession(FakeIcon, opener=lambda path: None, panel=opened.append)
+    session.attach(_app(tmp_path))
+    session.on_action("panel")
+    assert opened == ["http://127.0.0.1:8766/?token=t"]
+
+
+def test_panel_without_app_falls_back_to_log(tmp_path: Path) -> None:
+    watched: list[Path] = []
+    log = tmp_path / "jarvis.log"
+    session = TraySession(
+        FakeIcon, opener=lambda path: None, live_log=watched.append,
+        log_file=lambda: log, panel=lambda url: None,
+    )
+    session.on_action("panel")
+    assert watched == [log]
+
+
+def test_panel_window_is_edge_app_mode() -> None:
+    command = panel_command("http://127.0.0.1:8766/?token=t", Path("C:/Edge/msedge.exe"))
+    assert command is not None and command[1] == "--app=http://127.0.0.1:8766/?token=t"
+    assert panel_command("http://x", None) is None
 
 
 async def test_folder_opens_project_root(tmp_path: Path) -> None:

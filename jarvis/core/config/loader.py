@@ -21,6 +21,7 @@ from .schema import (
     AppConfig,
     AttentionConfig,
     AudioConfig,
+    GuiConfig,
     JarvisConfig,
     LLMConfig,
     LoggingConfig,
@@ -346,6 +347,10 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             quiet_to=str(attention.get("quiet_to") or ""),
             min_gap_s=float(attention.get("min_gap_s", 60.0)),
             repeat_after_s=float(attention.get("repeat_after_s", 600.0)),
+        ),
+        gui=GuiConfig(
+            enabled=bool(_section(data, "gui").get("enabled", True)),
+            port=int(_section(data, "gui").get("port", 8766)),
         ),
         llm=_build_llm(_section(data, "llm")),
         stt=STTConfig(

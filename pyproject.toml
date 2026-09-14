@@ -1,6 +1,7 @@
 [project]
 name = "jarvis-core"
-version = "0.2.0"
+# Версия живёт в jarvis/__init__.py, отсюда она только читается.
+dynamic = ["version"]
 description = "Ядро голосового ассистента Jarvis для домашней студии"
 requires-python = ">=3.13"
 dependencies = [
@@ -95,11 +96,14 @@ jarvis = "jarvis.__main__:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.dynamic]
+version = { attr = "jarvis.__version__" }
+
 [tool.setuptools.packages.find]
 include = ["jarvis*"]
 
 [tool.setuptools.package-data]
-jarvis = ["py.typed", "core/tray/*.ico"]
+jarvis = ["py.typed", "core/tray/*.ico", "core/gui/static/*"]
 
 # Линтер. Набор правил выбран не по вкусу, а по тому, что он реально ловит в
 # этом проекте: девять из первых двенадцати находок оказались **осиротевшими

@@ -471,6 +471,16 @@ class AttentionConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class GuiConfig:
+    """Панель управления: страница на локальном порту, окно открывает трей."""
+
+    enabled: bool = True
+    #: Порт на 127.0.0.1. Соседний с расширением браузера (8765), но другой:
+    #: там WebSocket с проверкой origin, здесь страница с токеном.
+    port: int = 8766
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class JarvisConfig:
     """Корень конфигурации."""
 
@@ -488,3 +498,4 @@ class JarvisConfig:
     persona: PersonaConfig
     memory: MemoryConfig
     attention: AttentionConfig = field(default_factory=AttentionConfig)
+    gui: GuiConfig = field(default_factory=GuiConfig)

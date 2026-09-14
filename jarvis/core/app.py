@@ -28,6 +28,7 @@ from jarvis.core.contracts import (
     detect_language,
 )
 from jarvis.core.dialogue import Conversation
+from jarvis.core.gui import ControlPanel
 from jarvis.core.jobs import Jobs
 from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
 from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
@@ -116,6 +117,8 @@ class JarvisApp:
     models_loaded: bool = False
     #: Встроенные инструменты: при старте они возвращают выбранный голосом выход.
     core: CoreTools | None = None
+    #: Панель управления; ``None``, если выключена в конфиге.
+    panel: ControlPanel | None = None
 
     # --- сборка ------------------------------------------------------------
 
@@ -312,6 +315,18 @@ class JarvisApp:
         ):
             runner.add(service, needs=needs)
 
+        panel = (
+            ControlPanel(
+                config=config, events=events, registry=registry, skills=skills, llm=llm, sink=audio.sink
+            )
+            if config.gui.enabled
+            else None
+        )
+        if panel is not None:
+            # Панель нужна живому сеансу. Отчёту о сборке и одиночной команде
+            # порт ни к чему, а занять его у работающего рядом Jarvis они могли бы.
+            runner.add(panel, needs=EARS)
+
         return cls(
             config=config,
             events=events,
@@ -328,6 +343,7 @@ class JarvisApp:
             runner=runner,
             stopping=stopping,
             core=core_tools,
+            panel=panel,
         )
 
     # --- жизненный цикл ----------------------------------------------------

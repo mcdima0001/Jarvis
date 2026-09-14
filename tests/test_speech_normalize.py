@@ -202,3 +202,13 @@ def test_masculine_nouns_are_left_alone() -> None:
 
     assert "двадцать один градус" in normalize_for_speech("21 градус на улице")
     assert "двадцать два процента" in normalize_for_speech("22 процента")
+
+
+def test_version_is_read_with_dots_not_as_a_fraction() -> None:
+    """«Версия 0.2.0» звучала как «ноль запятая два.ноль» (живой запуск 14.09.2026)."""
+    from jarvis.core.tts.normalize import normalize_for_speech
+
+    assert normalize_for_speech("Версия 0.2.0.") == "Версия ноль точка два точка ноль."
+    assert normalize_for_speech("Версия 1.12.3") == "Версия один точка двенадцать точка три"
+    # Обычная дробь и дата дробью и остаются.
+    assert normalize_for_speech("22.5 градуса") == "двадцать два запятая пять градуса"

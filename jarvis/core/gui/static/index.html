@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J.A.R.V.I.S.</title>
+<style>
+  :root {
+    --bg: #030b12;
+    --panel: rgba(10, 32, 48, 0.55);
+    --line: rgba(79, 216, 255, 0.22);
+    --cyan: #4fd8ff;
+    --cyan-soft: #8fe9ff;
+    --cyan-dim: rgba(79, 216, 255, 0.5);
+    --amber: #ffa928;
+    --red: #ff5a5a;
+    --text: #d6f4ff;
+    --muted: #6f97a8;
+    --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(circle at 28% 50%, rgba(79, 216, 255, 0.10), transparent 45%),
+      linear-gradient(rgba(79, 216, 255, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
+      linear-gradient(90deg, rgba(79, 216, 255, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
+      var(--bg);
+    color: var(--text);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+    display: grid;
+    grid-template-columns: minmax(300px, 400px) 1fr;
+    overflow: hidden;
+  }
+  /* --- реактор ------------------------------------------------------------ */
+  .reactor-side {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; padding: 24px; border-right: 1px solid var(--line);
+  }
+  .reactor { width: min(340px, 90%); aspect-ratio: 1; position: relative; }
+  .reactor svg { width: 100%; height: 100%; overflow: visible; }
+  .spin { transform-origin: 200px 200px; animation: spin 40s linear infinite; }
+  .spin.rev { animation-direction: reverse; animation-duration: 26s; }
+  .spin.fast { animation-duration: 9s; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .glow { filter: drop-shadow(0 0 6px var(--cyan)) drop-shadow(0 0 14px rgba(79, 216, 255, 0.5)); }
+  .core { transition: r 0.25s, fill 0.4s; }
+  body[data-state="speaking"] .core { animation: pulse 0.5s ease-in-out infinite alternate; }
+  body[data-state="listening"] .arc-live { stroke: var(--amber); }
+  body[data-state="starting"] .arc-live, body[data-state="offline"] .arc-live { stroke: var(--muted); }
+  @keyframes pulse { from { opacity: 0.65; } to { opacity: 1; } }
+  .title {
+    font-family: "Segoe UI", sans-serif; font-weight: 600; letter-spacing: 0.35em;
+    font-size: 22px; color: var(--cyan-soft); text-shadow: 0 0 12px var(--cyan);
+  }
+  .state-line { color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase; font-size: 12px; }
+  .state-line b { color: var(--cyan); font-weight: 600; }
+  body[data-state="listening"] .state-line b { color: var(--amber); }
+  .said { width: 100%; max-width: 340px; font-size: 13px; color: var(--muted); min-height: 3.5em; }
+  .said div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .said span { color: var(--text); }
+  /* --- правая часть ------------------------------------------------------- */
+  main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+  nav { display: flex; gap: 2px; padding: 14px 20px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  nav button {
+    background: none; border: 0; color: var(--muted); padding: 10px 16px; cursor: pointer;
+    font: inherit; letter-spacing: 0.1em; text-transform: uppercase; font-size: 12px;
+    border-bottom: 2px solid transparent;
+  }
+  nav button:hover { color: var(--cyan-soft); }
+  nav button[aria-selected="true"] { color: var(--cyan); border-bottom-color: var(--cyan); text-shadow: 0 0 8px var(--cyan-dim); }
+  section { display: none; padding: 20px; overflow: auto; flex: 1; }
+  section.on { display: block; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; position: relative;
+    clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  }
+  .card h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .big { font-size: 22px; color: var(--cyan-soft); font-weight: 600; }
+  .small { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 8px; border-bottom: 1px solid rgba(79, 216, 255, 0.08); vertical-align: middle; }
+  tr.child td:first-child { padding-left: 28px; }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+  .ok { color: var(--cyan); } .warn { color: var(--amber); } .bad { color: var(--red); }
+  button.act, input[type=password], input[type=text] {
+    font: inherit; color: var(--text); background: rgba(3, 16, 26, 0.85);
+    border: 1px solid var(--line); padding: 6px 10px;
+  }
+  button.act { cursor: pointer; color: var(--cyan); letter-spacing: 0.06em; }
+  button.act:hover { border-color: var(--cyan); box-shadow: 0 0 10px rgba(79, 216, 255, 0.25); }
+  button.act:disabled { opacity: 0.4; cursor: default; }
+  button.act.danger { color: var(--amber); }
+  input:focus, button:focus-visible { outline: 1px solid var(--cyan); outline-offset: 1px; }
+  .switch { position: relative; width: 42px; height: 22px; display: inline-block; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; border: 1px solid var(--line); background: rgba(3, 16, 26, 0.85); cursor: pointer; transition: 0.2s; }
+  .switch span::after { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: var(--muted); transition: 0.2s; }
+  .switch input:checked + span { border-color: var(--cyan); }
+  .switch input:checked + span::after { left: 23px; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .keyrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  .keyrow input { flex: 1; min-width: 160px; }
+  #log {
+    margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    color: #9fc7d6; background: rgba(2, 10, 16, 0.7); border: 1px solid var(--line); padding: 12px; min-height: 100%;
+  }
+  #log .w { color: var(--amber); } #log .e { color: var(--red); } #log .i { color: var(--text); }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .toast {
+    position: fixed; right: 20px; bottom: 20px; max-width: 420px; background: rgba(8, 28, 42, 0.95);
+    border: 1px solid var(--cyan); padding: 12px 16px; box-shadow: 0 0 20px rgba(79, 216, 255, 0.25);
+    opacity: 0; transform: translateY(8px); transition: 0.25s; pointer-events: none;
+  }
+  .toast.on { opacity: 1; transform: none; }
+  .toast.error { border-color: var(--red); }
+  .note { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; max-width: 70ch; }
+  @media (max-width: 760px) {
+    body { grid-template-columns: 1fr; overflow: auto; }
+    .reactor-side { border-right: 0; border-bottom: 1px solid var(--line); }
+    main { height: auto; }
+  }
+</style>
+</head>
+<body data-state="starting">
+
+<aside class="reactor-side">
+  <div class="reactor" aria-hidden="true">
+    <svg viewBox="0 0 400 400">
+      <g class="spin glow" fill="none" stroke="var(--cyan)">
+        <circle cx="200" cy="200" r="186" stroke-opacity="0.35" stroke-width="1.5"/>
+        <circle cx="200" cy="200" r="176" stroke-width="3" stroke-dasharray="6 10" stroke-opacity="0.8"/>
+      </g>
+      <g class="spin rev" fill="none" stroke="var(--cyan)">
+        <circle cx="200" cy="200" r="158" stroke-width="22" stroke-opacity="0.18"/>
+        <path class="arc-live glow" d="M 58 200 A 142 142 0 0 1 342 200" stroke-width="16" stroke-linecap="butt" stroke-opacity="0.85"/>
+      </g>
+      <g class="spin fast" fill="none" stroke="var(--cyan)">
+        <circle cx="200" cy="200" r="118" stroke-width="2" stroke-dasharray="2 7" stroke-opacity="0.7"/>
+        <path d="M 200 90 A 110 110 0 0 1 305 170" stroke="var(--amber)" stroke-width="4"/>
+      </g>
+      <circle cx="200" cy="200" r="96" fill="none" stroke="var(--cyan)" stroke-width="2" stroke-opacity="0.6" class="glow"/>
+      <circle cx="200" cy="200" r="62" fill="rgba(79,216,255,0.06)" stroke="var(--cyan)" stroke-opacity="0.4"/>
+      <circle class="core glow" cx="200" cy="200" r="30" fill="var(--cyan-soft)"/>
+    </svg>
+  </div>
+  <div class="title">J.A.R.V.I.S.</div>
+  <div class="state-line">состояние: <b id="state">загрузка</b> · <span id="version">—</span></div>
+  <div class="said">
+    <div>Вы: <span id="heard">—</span></div>
+    <div>Jarvis: <span id="reply">—</span></div>
+  </div>
+</aside>
+
+<main>
+  <nav role="tablist">
+    <button role="tab" data-tab="status" aria-selected="true">Статус</button>
+    <button role="tab" data-tab="modules">Модули</button>
+    <button role="tab" data-tab="keys">Ключи</button>
+    <button role="tab" data-tab="admin">Права</button>
+    <button role="tab" data-tab="log">Лог</button>
+  </nav>
+
+  <section id="tab-status" class="on">
+    <div class="grid" id="status-cards"></div>
+    <h3 class="small" style="margin:22px 0 8px;letter-spacing:.14em;text-transform:uppercase">Модели по задачам</h3>
+    <table><thead><tr><th>Задача</th><th>Модель</th><th>Токенов за сеанс</th></tr></thead><tbody id="profiles"></tbody></table>
+  </section>
+
+  <section id="tab-modules">
+    <p class="note">Выключенный модуль выгружается сразу и не загрузится после перезапуска (строка <span class="mono">skills.disabled</span> в config.yaml). Подмодуль работает только вместе с главным.</p>
+    <table><thead><tr><th>Модуль</th><th>Версия</th><th>Команд</th><th>Состояние</th><th>Включён</th><th></th></tr></thead><tbody id="modules"></tbody></table>
+  </section>
+
+  <section id="tab-keys">
+    <p class="note">Ключи хранятся в <span class="mono">.env</span>. Значения здесь не показываются — только задан ли ключ и какой он длины. Новый ключ начнёт работать после перезапуска Jarvis.</p>
+    <table><thead><tr><th>Переменная</th><th>Состояние</th><th>Где используется</th><th style="width:40%">Заменить</th></tr></thead><tbody id="keys"></tbody></table>
+  </section>
+
+  <section id="tab-admin">
+    <div class="grid" id="admin-cards"></div>
+    <p class="note" style="margin-top:16px">Права задаёт <span class="mono">Jarvis.exe</span>: с правами он просит подтверждение UAC при каждом запуске, зато Jarvis может управлять программами, запущенными от администратора. Изменение пересобирает exe и действует со следующего запуска.</p>
+    <div class="toolbar">
+      <button class="act" id="build-admin">Собрать с правами администратора</button>
+      <button class="act danger" id="build-user">Собрать без прав</button>
+    </div>
+  </section>
+
+  <section id="tab-log">
+    <div class="toolbar">
+      <label class="small"><input type="checkbox" id="follow" checked> прокручивать за новыми строками</label>
+      <button class="act" id="log-clear">Очистить окно</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+// Токен приходит в адресе окна, которое открыл трей. Дальше он идёт заголовком:
+// чужая страница не может отправить такой заголовок на наш порт без разрешения
+// CORS, а разрешения мы не даём.
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+history.replaceState(null, "", location.pathname);
+
+const $ = (id) => document.getElementById(id);
+const STATES = { starting: "загрузка", ready: "ожидание", listening: "слушаю", speaking: "говорю", stopping: "выключаюсь", offline: "нет связи" };
+
+async function api(path, body) {
+  const response = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Jarvis-Token": TOKEN, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+function toast(text, error = false) {
+  const box = $("toast");
+  box.textContent = text;
+  box.classList.toggle("error", error);
+  box.classList.add("on");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => box.classList.remove("on"), 4200);
+}
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children) node.append(child instanceof Node ? child : String(child ?? ""));
+  return node;
+}
+
+function card(title, value, note = "") {
+  return el("div", { class: "card" }, el("h3", {}, title), el("div", { class: "big" }, value), el("div", { class: "small" }, note));
+}
+
+function duration(seconds) {
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60);
+  return h ? `${h} ч ${m} мин` : `${m} мин`;
+}
+
+// --- вкладки --------------------------------------------------------------
+let tab = "status";
+document.querySelectorAll("nav button").forEach((button) => button.addEventListener("click", () => {
+  tab = button.dataset.tab;
+  document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-selected", b === button));
+  document.querySelectorAll("section").forEach((s) => s.classList.toggle("on", s.id === `tab-${tab}`));
+  refresh();
+}));
+
+// --- статус ---------------------------------------------------------------
+async function loadStatus() {
+  let status;
+  try {
+    status = await api("/api/status");
+  } catch (error) {
+    document.body.dataset.state = "offline";
+    $("state").textContent = STATES.offline;
+    return;
+  }
+  document.body.dataset.state = status.state;
+  $("state").textContent = STATES[status.state] || status.state;
+  $("version").textContent = `v${status.version}`;
+  $("heard").textContent = status.last_heard || "—";
+  $("reply").textContent = status.last_reply || "—";
+  if (tab !== "status") return;
+
+  const spending = status.spending;
+  $("status-cards").replaceChildren(
+    card("Версия", status.version, status.commit || ""),
+    card("Работает", duration(status.uptime_s), `запущен ${status.started}`),
+    card("Модули", status.skills, `команд: ${status.tools}`),
+    card("Токены за сеанс", spending.tokens.toLocaleString("ru"), `запросов: ${spending.calls}`),
+    card("Голос", status.output || "выход по умолчанию", "«говори через …» меняет выход"),
+    card("Права", status.admin ? "администратор" : "пользователь", status.admin ? "" : "часть команд может не сработать"),
+  );
+  $("profiles").replaceChildren(...status.profiles.map((row) => el("tr", {},
+    el("td", {}, row.task), el("td", { class: "mono" }, row.model), el("td", {}, (spending.by_task[row.task] || 0).toLocaleString("ru")),
+  )));
+}
+
+// --- модули ---------------------------------------------------------------
+async function loadModules() {
+  const { modules } = await api("/api/modules");
+  $("modules").replaceChildren(...modules.map((item) => {
+    const toggle = el("input", { type: "checkbox" });
+    toggle.checked = !item.disabled;
+    toggle.addEventListener("change", async () => {
+      toggle.disabled = true;
+      try {
+        const answer = await api("/api/modules", { name: item.name, enabled: toggle.checked });
+        toast(answer.message);
+      } catch (error) {
+        toast(error.message, true);
+      }
+      loadModules();
+    });
+    const reload = el("button", { class: "act", onclick: async () => {
+      reload.disabled = true;
+      try { toast((await api("/api/modules/reload", { name: item.name })).message); }
+      catch (error) { toast(error.message, true); }
+      loadModules();
+    } }, "Перезагрузить");
+    reload.disabled = !item.loaded;
+    const health = item.loaded
+      ? el("span", { class: item.healthy ? "ok" : "warn", title: item.detail || "" }, item.healthy ? "работает" : (item.detail || "с ограничениями"))
+      : el("span", { class: "small" }, item.disabled ? "выключен" : "не загружен");
+    return el("tr", { class: item.parent ? "child" : "" },
+      el("td", {}, el("div", {}, item.name), el("div", { class: "small" }, item.description || "")),
+      el("td", { class: "mono" }, item.version || "—"),
+      el("td", {}, item.tools),
+      el("td", {}, health),
+      el("td", {}, el("label", { class: "switch" }, toggle, el("span"))),
+      el("td", {}, reload),
+    );
+  }));
+}
+
+// --- ключи ----------------------------------------------------------------
+async function loadKeys() {
+  const { keys } = await api("/api/keys");
+  $("keys").replaceChildren(...keys.map((key) => {
+    const input = el("input", { type: "password", placeholder: key.present ? "новое значение" : "вставь ключ", autocomplete: "off", spellcheck: "false" });
+    const save = el("button", { class: "act", onclick: async () => {
+      try {
+        toast((await api("/api/keys", { name: key.name, value: input.value })).message);
+        input.value = "";
+        loadKeys();
+      } catch (error) { toast(error.message, true); }
+    } }, input.value ? "Сохранить" : "Сохранить");
+    const remove = el("button", { class: "act danger", onclick: async () => {
+      if (!confirm(`Удалить ${key.name} из .env?`)) return;
+      try { toast((await api("/api/keys", { name: key.name, value: "" })).message); loadKeys(); }
+      catch (error) { toast(error.message, true); }
+    } }, "Убрать");
+    remove.disabled = !key.present;
+    return el("tr", {},
+      el("td", { class: "mono" }, key.name),
+      el("td", {}, key.present ? el("span", { class: "ok" }, `задан · ${key.length} знаков`) : el("span", { class: "warn" }, "не задан")),
+      el("td", { class: "small" }, key.used_by.join(", ") || "нигде в конфиге"),
+      el("td", {}, el("div", { class: "keyrow" }, input, save, remove)),
+    );
+  }));
+}
+
+// --- права ----------------------------------------------------------------
+async function loadAdmin() {
+  const info = await api("/api/admin");
+  const launcher = { requireAdministrator: "просит права", asInvoker: "без прав", highestAvailable: "по возможности" }[info.launcher] || "не собран";
+  $("admin-cards").replaceChildren(
+    card("Сейчас Jarvis", info.admin ? "администратор" : "пользователь"),
+    card("Jarvis.exe", launcher, info.launcher_path),
+  );
+}
+async function build(admin) {
+  const buttons = [$("build-admin"), $("build-user")];
+  buttons.forEach((b) => b.disabled = true);
+  try { toast((await api("/api/admin", { admin })).message); }
+  catch (error) { toast(error.message, true); }
+  buttons.forEach((b) => b.disabled = false);
+  loadAdmin();
+}
+$("build-admin").addEventListener("click", () => build(true));
+$("build-user").addEventListener("click", () => build(false));
+
+// --- лог ------------------------------------------------------------------
+let logOffset = -1;
+async function loadLog() {
+  const { text, offset } = await api(`/api/log?offset=${logOffset}`);
+  logOffset = offset;
+  if (!text) return;
+  const box = $("log");
+  const fragment = document.createDocumentFragment();
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    const kind = / (WARNING|ERROR|CRITICAL) /.exec(line)?.[1];
+    fragment.append(el("span", { class: kind === "WARNING" ? "w" : kind ? "e" : / INFO /.test(line) ? "i" : "" }, line), "\n");
+  }
+  box.append(fragment);
+  while (box.childNodes.length > 6000) box.removeChild(box.firstChild);
+  if ($("follow").checked) box.parentElement.scrollTop = box.parentElement.scrollHeight;
+}
+$("log-clear").addEventListener("click", () => $("log").replaceChildren());
+
+// --- опрос ----------------------------------------------------------------
+async function refresh() {
+  try {
+    if (tab === "modules") await loadModules();
+    if (tab === "keys") await loadKeys();
+    if (tab === "admin") await loadAdmin();
+  } catch (error) { toast(error.message, true); }
+}
+loadStatus();
+setInterval(loadStatus, 1000);
+setInterval(() => { if (tab === "log") loadLog().catch(() => {}); }, 1000);
+refresh();
+</script>
+</body>
+</html>
