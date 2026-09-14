@@ -177,6 +177,20 @@ def test_config_becomes_form_fields_with_comment_hints() -> None:
     assert fields["api_key"].env and not fields["url"].env
 
 
+def test_commented_example_is_not_the_hint_of_the_next_key() -> None:
+    """Живой случай: подсказка к `extension` начиналась с «рутрекер: https://…»."""
+    text = (
+        "# Свои поисковики: слева — как называешь.\n"
+        "engines: {}\n"
+        '#   рутрекер: "https://rutracker.org/forum/tracker.php?nm={query}"\n'
+        "# Расширение браузера: работает вкладками.\n"
+        "extension:\n  enabled: true\n"
+    )
+    fields = {item.key: item for item in describe_config(text)}
+    assert fields["extension"].help == "Расширение браузера: работает вкладками."
+    assert fields["engines"].help == "Свои поисковики: слева — как называешь."
+
+
 def test_simple_value_changes_in_place_and_keeps_the_comment() -> None:
     updated = set_top_value(SKILL_CONFIG, "enabled", True)
     assert "enabled: true   # true — следить" in updated

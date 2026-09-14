@@ -13,9 +13,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Mapping
 
 from jarvis.core.bus import EventBus
@@ -26,6 +28,45 @@ from jarvis.core.tools.tool import Tool, ToolCatalog, ToolSpec
 from jarvis.core.tts.normalize import plural_form
 
 logger = logging.getLogger(__name__)
+
+#: Флаги, которые владелец правит из панели поверх объявленного в скилле.
+_FLAGS = ("routable", "reversible")
+
+
+def _load_overrides(path: Path | None) -> dict[str, dict[str, Any]]:
+    """Прочитать поправки; битый или чужой файл — не повод не запуститься."""
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        logger.warning("Поправки флагов инструментов не прочитаны (%s): %s", path, exc)
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for name, flags in (data.items() if isinstance(data, dict) else ()):
+        if not isinstance(flags, dict):
+            continue
+        clean = {
+            flag: value for flag, value in flags.items()
+            if (flag == "routable" and isinstance(value, bool))
+            or (flag == "reversible" and (value is None or isinstance(value, bool)))
+        }
+        if clean:
+            result[str(name)] = clean
+    return result
+
+
+def _save_overrides(path: Path | None, overrides: Mapping[str, Mapping[str, Any]]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    temporary.replace(path)
 
 
 class Registration:
@@ -58,10 +99,16 @@ class ToolRegistry:
         *,
         events: EventBus | None = None,
         default_timeout: float = 30.0,
+        overrides_path: Path | None = None,
     ) -> None:
         self._tools: dict[str, Tool] = {}
+        # Что объявил автор скилла — до поправок владельца. Нужно, чтобы поправку
+        # можно было снять и чтобы панель показывала, что было «по умолчанию».
+        self._declared: dict[str, ToolSpec] = {}
         self._events = events
         self._default_timeout = default_timeout
+        self._overrides_path = overrides_path
+        self._overrides = _load_overrides(overrides_path)
 
     # --- регистрация -------------------------------------------------------
 
@@ -72,14 +119,63 @@ class ToolRegistry:
                 f"Инструмент {tool.name!r} уже зарегистрирован "
                 f"(скилл {self._tools[tool.name].spec.skill!r})"
             )
-        self._tools[tool.name] = tool
+        self._declared[tool.name] = tool.spec
+        self._tools[tool.name] = self._with_override(tool)
         logger.debug("Инструмент зарегистрирован: %s", tool.name)
         return Registration(self, tool.name)
 
     def unregister(self, name: str) -> None:
         """Убрать инструмент из реестра."""
+        self._declared.pop(name, None)
         if self._tools.pop(name, None) is not None:
             logger.debug("Инструмент снят: %s", name)
+
+    # --- поправки владельца --------------------------------------------------
+
+    def declared(self, name: str) -> ToolSpec | None:
+        """Описание инструмента в том виде, как его объявил скилл."""
+        return self._declared.get(name)
+
+    def overrides(self, name: str) -> dict[str, Any]:
+        """Какие флаги у инструмента поправлены владельцем."""
+        return dict(self._overrides.get(name, {}))
+
+    def set_override(self, name: str, flag: str, value: bool | None) -> ToolSpec:
+        """Поправить «видит ли модель» или «обратим ли» у инструмента.
+
+        Поправка переживает перезапуск и перезагрузку скилла: хранится файлом
+        и накладывается при каждой регистрации. Значение, совпавшее с
+        объявленным автором, поправкой не считается и из файла убирается.
+
+        :param name: полное имя инструмента.
+        :param flag: ``routable`` или ``reversible``.
+        :param value: новое значение; ``None`` у ``reversible`` — «не объявлено».
+        """
+        if flag not in _FLAGS:
+            raise ValueError(f"Флаг {flag!r} не правится: только {', '.join(_FLAGS)}")
+        if flag == "routable" and not isinstance(value, bool):
+            raise ValueError("«Видит модель» бывает только да или нет")
+        declared = self._declared.get(name)
+        if declared is None:
+            raise ValueError(f"Инструмент {name!r} не загружен")
+        own = self._overrides.setdefault(name, {})
+        if getattr(declared, flag) == value:
+            own.pop(flag, None)
+        else:
+            own[flag] = value
+        if not own:
+            self._overrides.pop(name, None)
+        _save_overrides(self._overrides_path, self._overrides)
+        tool = replace(self._tools[name], spec=declared)
+        self._tools[name] = self._with_override(tool)
+        logger.info("Флаг %s у %s: %s (поправка владельца)", flag, name, value)
+        return self._tools[name].spec
+
+    def _with_override(self, tool: Tool) -> Tool:
+        own = self._overrides.get(tool.name)
+        if not own:
+            return tool
+        return replace(tool, spec=replace(tool.spec, **own))
 
     # --- чтение ------------------------------------------------------------
 

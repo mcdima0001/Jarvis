@@ -12,6 +12,7 @@ import asyncio
 import logging
 import signal
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Sequence
 
 from jarvis.core.attention import NORMAL, Announcer
@@ -127,7 +128,12 @@ class JarvisApp:
         """Создать все компоненты и связать их между собой."""
         worker = BlockingWorker(config.runtime.worker_threads)
         events = LocalEventBus()
-        registry = ToolRegistry(events=events, default_timeout=config.runtime.tool_timeout)
+        registry = ToolRegistry(
+            events=events,
+            default_timeout=config.runtime.tool_timeout,
+            # Поправки владельца из панели: «видит модель» и «обратимо».
+            overrides_path=Path(config.memory.dir) / "tool_overrides.json",
+        )
 
         memory = build_memory(config.memory)
 

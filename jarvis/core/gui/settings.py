@@ -252,6 +252,10 @@ def describe_config(text: str) -> list[ConfigField]:
         notes: list[str] = []
         above = index - 1
         while above >= 0 and lines[above].startswith("#"):
+            if _commented_code(lines[above]):
+                # Закомментированный пример к ключу выше («#   рутрекер: "https://…"»)
+                # подсказкой к этому ключу не является — и всё, что над ним, тоже.
+                break
             notes.insert(0, lines[above].lstrip("#").strip())
             above -= 1
         block = [match.group(2)] + [item for item in lines[index + 1 : _block_end(lines, index)]]
@@ -263,6 +267,16 @@ def describe_config(text: str) -> list[ConfigField]:
             env="${" in "\n".join(block),
         ))
     return fields
+
+
+def _commented_code(line: str) -> bool:
+    """Закомментированная строка конфига, а не пояснение.
+
+    Пояснение пишут «# Текст», пример — с отступом, как вложенный ключ:
+    «#   рутрекер: "https://…"». В форме это давало подсказку «рутрекер: …» к
+    ключу `extension` (живой запуск 14.09.2026).
+    """
+    return bool(re.match(r"^#\s{2,}\S", line)) or bool(re.match(r"^#\s*-\s", line))
 
 
 def _block_end(lines: list[str], start: int) -> int:

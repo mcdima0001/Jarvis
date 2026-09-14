@@ -49,7 +49,32 @@ _SM_CXSMICON, _SM_CYSMICON = 49, 50
 _IDI_APPLICATION = 32512
 
 _MF_STRING, _MF_GRAYED, _MF_SEPARATOR = 0x0, 0x1, 0x800
-_TPM_RIGHTBUTTON, _TPM_NONOTIFY, _TPM_RETURNCMD = 0x2, 0x80, 0x100
+_TPM_RIGHTBUTTON, _TPM_BOTTOMALIGN, _TPM_NONOTIFY, _TPM_RETURNCMD = 0x2, 0x20, 0x80, 0x100
+#: Поток осведомлён о масштабе каждого монитора: курсор и меню в одних пикселях.
+_PER_MONITOR_AWARE_V2 = -4
+#: `SetPreferredAppMode(AllowDark)` в uxtheme: меню следует тёмной теме Windows.
+_APP_MODE_ALLOW_DARK = 1
+
+
+def _allow_dark_menus() -> None:
+    """Разрешить тёмные меню процесса, если в Windows включена тёмная тема.
+
+    Официального API у Windows для этого нет, есть неименованные функции
+    uxtheme по номерам (135 — выбрать режим, 136 — перечитать темы меню); ими
+    пользуются Проводник и сторонние программы трея. Нет их (старая Windows) —
+    меню просто остаётся светлым.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        # Any: обращение по номеру у WinDLL есть, но в стабах описано только по имени.
+        uxtheme: Any = ctypes.WinDLL("uxtheme")
+        set_mode = uxtheme[135]
+        set_mode.argtypes = [ctypes.c_int]
+        set_mode(_APP_MODE_ALLOW_DARK)
+        uxtheme[136]()
+    except (OSError, AttributeError):
+        pass
 
 _MB_ICONERROR, _MB_ICONINFORMATION, _MB_SETFOREGROUND = 0x10, 0x40, 0x10000
 
@@ -210,6 +235,15 @@ class TrayIcon:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         _configure(user32, shell32, kernel32)
         self._user32, self._shell32 = user32, shell32
+        # Весь поток значка — в пикселях конкретного монитора. Иначе на экране
+        # 125% курсор приходил в «логических» координатах, меню ставилось ниже,
+        # чем нужно, и уходило под панель задач (живой запуск 14.09.2026).
+        setter = getattr(user32, "SetThreadDpiAwarenessContext", None)
+        if setter is not None:
+            setter.restype = ctypes.c_void_p
+            setter.argtypes = [ctypes.c_void_p]
+            setter(ctypes.c_void_p(_PER_MONITOR_AWARE_V2))
+        _allow_dark_menus()
 
         instance = kernel32.GetModuleHandleW(None)
         # Имя класса своё у каждого значка: класс с тем же именем мог остаться
@@ -327,8 +361,10 @@ class TrayIcon:
         # Без переднего плана меню не закрывается щелчком мимо — известная
         # причуда меню у значков, и лечится она ровно так, вместе с WM_NULL.
         user32.SetForegroundWindow(self._hwnd)
+        # Меню растёт вверх от курсора: значок живёт на панели задач внизу
+        # экрана, и меню, растущее вниз, панель задач обрезала.
         chosen = user32.TrackPopupMenu(
-            menu, _TPM_RIGHTBUTTON | _TPM_RETURNCMD | _TPM_NONOTIFY,
+            menu, _TPM_RIGHTBUTTON | _TPM_BOTTOMALIGN | _TPM_RETURNCMD | _TPM_NONOTIFY,
             point.x, point.y, 0, self._hwnd, None,
         )
         user32.PostMessageW(self._hwnd, _WM_NULL, 0, 0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -373,3 +374,77 @@ async def test_slow_tool_says_seconds_aloud(registry: ToolRegistry) -> None:
     assert result.error is not None
     assert " с" not in result.error.replace("секунд", "")
     assert "секунд" in result.error
+
+
+# --- поправки владельца -------------------------------------------------------
+
+
+class Flags:
+    """Носитель с объявленными флагами."""
+
+    @tool(reversible=False)
+    async def send(self) -> str:
+        """Отправить сообщение."""
+        return "ушло"
+
+    @tool(routable=False, reversible=True)
+    async def pause(self) -> str:
+        """Пауза."""
+        return "пауза"
+
+
+def _flags_registry(path: Path) -> ToolRegistry:
+    registry = ToolRegistry(overrides_path=path)
+    for item in collect_tools(Flags(), namespace="demo"):
+        registry.register(item)
+    return registry
+
+
+def test_override_changes_the_catalog_at_once(tmp_path: Path) -> None:
+    registry = _flags_registry(tmp_path / "overrides.json")
+    registry.set_override("demo.pause", "routable", True)
+    registry.set_override("demo.send", "reversible", True)
+
+    names = {schema["function"]["name"] for schema in registry.catalog().function_schemas()}
+    assert "demo__pause" in names
+    assert registry.get("demo.send").spec.unattended  # type: ignore[union-attr]
+    assert registry.declared("demo.send").reversible is False  # type: ignore[union-attr]
+    assert registry.overrides("demo.send") == {"reversible": True}
+
+
+def test_override_survives_restart_and_reload(tmp_path: Path) -> None:
+    path = tmp_path / "overrides.json"
+    _flags_registry(path).set_override("demo.send", "reversible", None)
+
+    again = _flags_registry(path)
+    assert again.get("demo.send").spec.reversible is None  # type: ignore[union-attr]
+    # Перезагрузка скилла: снять и зарегистрировать заново — поправка на месте.
+    again.unregister("demo.send")
+    for item in collect_tools(Flags(), namespace="demo"):
+        if item.name == "demo.send":
+            again.register(item)
+    assert again.get("demo.send").spec.reversible is None  # type: ignore[union-attr]
+
+
+def test_setting_the_declared_value_removes_the_override(tmp_path: Path) -> None:
+    path = tmp_path / "overrides.json"
+    registry = _flags_registry(path)
+    registry.set_override("demo.send", "reversible", True)
+    registry.set_override("demo.send", "reversible", False)
+    assert registry.overrides("demo.send") == {}
+    assert path.read_text(encoding="utf-8").strip() == "{}"
+
+
+@pytest.mark.parametrize(
+    ("name", "flag", "value"),
+    [("demo.send", "timeout", True), ("demo.send", "routable", None), ("demo.nope", "routable", True)],
+)
+def test_bad_override_is_refused(tmp_path: Path, name: str, flag: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        _flags_registry(tmp_path / "o.json").set_override(name, flag, value)  # type: ignore[arg-type]
+
+
+def test_broken_override_file_does_not_stop_the_start(tmp_path: Path) -> None:
+    path = tmp_path / "overrides.json"
+    path.write_text('{"demo.send": {"reversible": "да"}, "x": 1', encoding="utf-8")
+    assert _flags_registry(path).get("demo.send").spec.reversible is False  # type: ignore[union-attr]

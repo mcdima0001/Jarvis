@@ -103,6 +103,18 @@ class FakeRegistry:
         )
         return SimpleNamespace(specs=(spec,))
 
+    def declared(self, name: str) -> Any:
+        return SimpleNamespace(routable=False, reversible=None)
+
+    def overrides(self, name: str) -> dict[str, Any]:
+        return {"reversible": True}
+
+    def set_override(self, name: str, flag: str, value: bool | None) -> Any:
+        if flag not in ("routable", "reversible"):
+            raise ValueError("не правится")
+        self.calls.append(("flag", {"tool": name, flag: value}))
+        return SimpleNamespace(routable=False, reversible=value)
+
     async def invoke(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         self.calls.append((name, arguments))
         if name == "author.accept":
@@ -273,6 +285,7 @@ async def test_module_detail_shows_tools_and_config(tmp_path: Path) -> None:
     assert info["tools"] == [{
         "name": "keys.watch", "description": "Следить за клавиатурой.",
         "phrases": ["следи за клавиатурой"], "routable": False, "reversible": True,
+        "declared": {"routable": False, "reversible": None}, "overridden": ["reversible"],
     }]
     config = info["config"]
     assert {key: config[key] for key in ("editable", "exists", "path", "text")} == {
@@ -280,6 +293,20 @@ async def test_module_detail_shows_tools_and_config(tmp_path: Path) -> None:
     }
     assert config["fields"][0]["key"] == "enabled" and config["fields"][0]["kind"] == "bool"
     assert info["improvable"] is True
+
+
+async def test_tool_flag_is_changed_from_the_card(tmp_path: Path) -> None:
+    panel, _, _ = _panel(tmp_path)
+    registry = panel._registry
+    response = await _call(panel, "POST", "/api/modules/flag", body={"tool": "keys.watch", "flag": "reversible", "value": None})
+    assert response.status == 200
+    assert _json(response)["reversible"] is None
+    assert ("flag", {"tool": "keys.watch", "reversible": None}) in registry.calls
+    # Не булево и не null — отказ, а не «истина по Python».
+    bad = await _call(panel, "POST", "/api/modules/flag", body={"tool": "keys.watch", "flag": "reversible", "value": "да"})
+    assert bad.status == 400
+    wrong = await _call(panel, "POST", "/api/modules/flag", body={"tool": "keys.watch", "flag": "timeout", "value": True})
+    assert wrong.status == 400
 
 
 async def test_broken_yaml_is_refused_and_file_kept(tmp_path: Path) -> None:

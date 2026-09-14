@@ -222,6 +222,7 @@ class ControlPanel:
             ("GET", "/api/modules/detail"): self._module_detail,
             ("POST", "/api/modules/config"): self._save_module_config,
             ("POST", "/api/modules/improve"): self._improve_module,
+            ("POST", "/api/modules/flag"): self._set_tool_flag,
             ("GET", "/api/drafts"): self._drafts,
             ("POST", "/api/drafts/accept"): self._accept_draft,
             ("POST", "/api/drafts/discard"): self._discard_draft,
@@ -429,8 +430,15 @@ class ControlPanel:
                     "phrases": list(spec.phrases),
                     "routable": spec.routable,
                     "reversible": spec.reversible,
+                    # Что объявил автор и что поправил владелец: панель помечает правку.
+                    "declared": {
+                        "routable": declared.routable if declared else spec.routable,
+                        "reversible": declared.reversible if declared else spec.reversible,
+                    },
+                    "overridden": sorted(self._registry.overrides(spec.name)),
                 }
                 for spec in specs
+                for declared in (self._registry.declared(spec.name),)
             ],
             "config": {
                 "editable": config is not None,
@@ -487,6 +495,20 @@ class ControlPanel:
             return json_response({"message": f"Настройки {name} сохранены. Модуль не загружен — применятся при включении."})
         await self._skills.adopt(name)
         return json_response({"message": f"Настройки {name} сохранены, модуль перезагружен."})
+
+    async def _set_tool_flag(self, request: Request) -> Response:
+        """Поправить «видит модель» или «обратимо» у одной команды."""
+        body = request.json()
+        name, flag, value = str(body.get("tool", "")), str(body.get("flag", "")), body.get("value")
+        if value is not None and not isinstance(value, bool):
+            raise ValueError("значение — да, нет или «не объявлено»")
+        # Не в потоке: реестр читают из цикла событий, а файл поправок — пара байт.
+        spec = self._registry.set_override(name, flag, value)
+        return json_response({
+            "routable": spec.routable,
+            "reversible": spec.reversible,
+            "overridden": sorted(self._registry.overrides(name)),
+        })
 
     async def _improve_module(self, request: Request) -> Response:
         data = request.json()

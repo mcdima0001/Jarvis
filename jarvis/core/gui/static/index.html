@@ -506,12 +506,15 @@ async function openModule(name) {
     ].filter(Boolean).join(" · ");
     $("module-description").textContent = info.description || "";
     $("module-reload").disabled = !info.loaded;
-    $("module-tools").replaceChildren(...(info.tools.length ? info.tools.map((t) => el("tr", {},
-      el("td", { class: "mono" }, t.name),
-      el("td", {}, t.description, t.phrases.length ? el("div", { class: "small" }, t.phrases.map((p) => `«${p}»`).join(", ")) : ""),
-      el("td", {}, t.routable ? "да" : el("span", { class: "small" }, "нет, только фразы")),
-      el("td", {}, t.reversible === true ? "да" : t.reversible === false ? el("span", { class: "warn" }, "нет") : "не объявлено"),
-    )) : [el("tr", {}, el("td", { colspan: "4", class: "small" }, "Команд не видно: модуль не загружен."))]));
+    $("module-tools").replaceChildren(...(info.tools.length ? info.tools.map((t) => {
+      const flags = flagControls(t);
+      return el("tr", {},
+        el("td", { class: "mono" }, t.name),
+        el("td", {}, t.description, t.phrases.length ? el("div", { class: "small" }, t.phrases.map((p) => `«${p}»`).join(", ")) : ""),
+        el("td", {}, flags.routable),
+        el("td", {}, flags.reversible),
+      );
+    }) : [el("tr", {}, el("td", { colspan: "4", class: "small" }, "Команд не видно: модуль не загружен."))]));
     const config = info.config;
     $("module-config").value = config.text;
     $("module-config").disabled = !config.editable;
@@ -524,6 +527,55 @@ async function openModule(name) {
     $("module-improve-box").hidden = !info.improvable;
   } catch (error) { toast(error.message, true); }
 }
+// «Видит модель» и «Обратимо» правятся прямо в таблице. Поправка хранится в
+// memory/tool_overrides.json и переживает перезапуск; вернуть как объявил
+// автор — выбрать то же значение, пометка «изменено» пропадёт.
+const REVERSIBLE = [["true", "да"], ["false", "нет"], ["", "не объявлено"]];
+function flagControls(t) {
+  const mark = (flag) => {
+    const note = el("div", { class: "small" },
+      `изменено; у автора: ${flag === "routable" ? (t.declared.routable ? "да" : "нет")
+        : (REVERSIBLE.find(([v]) => v === String(t.declared.reversible ?? "")) || [, "не объявлено"])[1]}`);
+    // Свойством, а не атрибутом: el() ставит атрибут, и hidden="false" всё равно прячет.
+    note.hidden = !t.overridden.includes(flag);
+    return note;
+  };
+  const send = async (flag, value, control, note) => {
+    control.disabled = true;
+    try {
+      const answer = await api("/api/modules/flag", { tool: t.name, flag, value });
+      Object.assign(t, answer);
+      note.hidden = !answer.overridden.includes(flag);
+      toast(`${t.name}: ${flag === "routable" ? "видит модель" : "обратимо"} — сохранено`);
+    } catch (error) {
+      toast(error.message, true);
+      if (flag === "routable") control.checked = t.routable;
+      else control.value = String(t.reversible ?? "");
+    } finally { control.disabled = false; }
+  };
+  const routableInput = el("input", { type: "checkbox" });
+  routableInput.checked = t.routable;
+  const routableNote = mark("routable");
+  routableInput.addEventListener("change", () => send("routable", routableInput.checked, routableInput, routableNote));
+  const reversibleSelect = el("select", { title: "«Да» разрешает плану выполнять команду без вопроса" },
+    ...REVERSIBLE.map(([value, label]) => el("option", { value }, label)));
+  reversibleSelect.value = String(t.reversible ?? "");
+  const reversibleNote = mark("reversible");
+  reversibleSelect.addEventListener("change", () => {
+    const value = reversibleSelect.value === "" ? null : reversibleSelect.value === "true";
+    if (value === true && t.reversible !== true
+      && !confirm(`Пометить «${t.name}» обратимой? План сможет выполнять её сам, не спрашивая.`)) {
+      reversibleSelect.value = String(t.reversible ?? "");
+      return;
+    }
+    send("reversible", value, reversibleSelect, reversibleNote);
+  });
+  return {
+    routable: el("div", {}, el("label", { class: "switch", title: "Выключено — только по фразам, модель команду не видит" }, routableInput, el("span")), routableNote),
+    reversible: el("div", {}, reversibleSelect, reversibleNote),
+  };
+}
+
 // Форма настроек: переключатели, числа, строки; списки — по строке на пункт;
 // словари — маленький YAML. Подсказка — комментарий над ключом в config.yaml.
 let settingControls = [];

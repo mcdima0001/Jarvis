@@ -84,5 +84,15 @@ cooldown_seconds: 4
 # Окна, где не следим вовсе (подстрока в заголовке): банки, менеджеры
 # паролей. Список грубый и честно таковой остаётся — твёрдую гарантию
 # даёт закрытый список триггеров, а не этот фильтр.
-skip_windows: [bitwarden, keepass, 1password, lastpass, парол, password,
-               банк, bank, сбербанк, тинькофф, tinkoff]
+skip_windows:
+- bitwarden
+- keepass
+- 1password
+- lastpass
+- парол
+- password
+- банк
+- bank
+- сбербанк
+- тинькофф
+- tinkoff
