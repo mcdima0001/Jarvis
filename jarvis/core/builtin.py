@@ -10,14 +10,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jarvis.core.agent import Outcome, Planner, Step
+from jarvis.core.audio.outputs import Output, find_output, is_default, query_outputs
+from jarvis.core.audio.protocol import SelectableSink
 from jarvis.core.contracts import Intent, ToolResult
 from jarvis.core.dialogue import Conversation
+from jarvis.core.errors import AudioError
 from jarvis.core.jobs import Jobs, busy_line, shorten
 from jarvis.core.jobs import describe as describe_jobs
 from jarvis.core.llm import LLMService
@@ -44,6 +48,12 @@ FORGET_TOOL = "forget_last"
 logger = logging.getLogger(__name__)
 
 NAMESPACE = "core"
+
+#: Где помнится аудиовыход, выбранный голосом: это факт о студии, и он обязан
+#: пережить перезапуск — иначе «говори через колонку» пришлось бы повторять
+#: каждое утро. Запоминается имя, а не номер: номера PortAudio после перезапуска
+#: другие.
+OUTPUT_MEMORY = ("studio", "audio_output")
 
 #: Системные подсказки под каждый язык: модель должна отвечать так же, как её
 #: спросили, и коротко — реплику будут произносить вслух. Манера речи сюда не
@@ -197,8 +207,16 @@ class CoreTools:
         shutdown: Callable[[], None] | None = None,
         meter: Meter | None = None,
         conversation: Conversation | None = None,
+        sink: Any = None,
+        output_device: str | int | None = None,
+        output_names: Mapping[str, str] | None = None,
     ) -> None:
         self._llm = llm
+        #: Вывод звука — чтобы переключать его голосом. Выход из настроек
+        #: помнится отдельно: «по умолчанию» возвращает к нему, а не к системному.
+        self._sink = sink
+        self._configured_output = output_device
+        self._output_names = dict(output_names or {})
         #: Распознавание — только чтобы показать его расход. Облачное считает
         #: секунды звука, и они должны быть видны там же, где токены: лимит
         #: иначе кончится незаметно, посреди вечера.
@@ -565,6 +583,144 @@ class CoreTools:
             return None
         found = best_match(spoken, names, similarity=0.7)
         return names.get(found) if found else None
+
+    @tool(
+        name="outputs",
+        routable=False,
+        phrases=[
+            "какие есть аудиовыходы", "какие аудиовыходы", "список аудиовыходов",
+            "какие есть выходы звука", "куда ты можешь говорить",
+            "через что ты говоришь", "какой сейчас аудиовыход",
+            "list audio outputs", "which audio outputs",
+        ],
+        reversible=True,
+    )
+    async def outputs(self) -> ToolResult:
+        """Перечислить аудиовыходы, через которые можно говорить, и назвать текущий."""
+        if not isinstance(self._sink, SelectableSink):
+            return self._no_sound()
+        outputs = await self._list_outputs()
+        known = ", ".join(output.spoken for output in outputs) or "ни одного"
+        current = self._current_output(outputs)
+        return ToolResult.success(
+            {"outputs": [output.name for output in outputs], "current": current},
+            speech={
+                "ru": f"Могу говорить через: {known}. Сейчас — {current}.",
+                "en": f"I can speak through: {known}. Now — {current}.",
+            },
+        )
+
+    @tool(
+        name="set_output",
+        phrases=[
+            "говори через {device}", "говори в {device}",
+            "переключи звук на {device}", "переключи голос на {device}",
+            "переключи аудиовыход на {device}", "выведи звук на {device}",
+            "выведи голос на {device}", "аудиовыход {device}",
+            "speak through {device}", "switch audio output to {device}",
+        ],
+        reversible=True,
+    )
+    async def set_output(self, device: str) -> ToolResult:
+        """Говорить через другой аудиовыход: колонку, наушники, динамики ноутбука.
+
+        Меняется только голос ассистента — системный выход и звук других
+        программ остаются как были. Выбор помнится после перезапуска.
+
+        :param device: название выхода, как его назвали; «по умолчанию» —
+            вернуть выход из настроек.
+        """
+        sink = self._sink
+        if not isinstance(sink, SelectableSink):
+            return self._no_sound()
+        if is_default(device):
+            sink.select(self._configured_output)
+            await self._remember_output(None)
+            return ToolResult.success(
+                {"device": self._configured_output},
+                speech={
+                    "ru": "Говорю через выход по умолчанию.",
+                    "en": "Speaking through the default output.",
+                },
+            )
+        outputs = await self._list_outputs()
+        found = find_output(device, outputs)
+        if found is None:
+            known = ", ".join(output.spoken for output in outputs) or "ни одного"
+            return ToolResult.failure(
+                f"Аудиовыход {device!r} не найден. Есть: {known}",
+                speech={
+                    "ru": f"Не нашёл выход {device}. Есть: {known}.",
+                    "en": f"No output called {device}. Available: {known}.",
+                },
+            )
+        sink.select(found.index)
+        await self._remember_output(found.name)
+        # Ответ уже звучит через новый выход — он же и подтверждение.
+        return ToolResult.success(
+            {"device": found.index, "name": found.name},
+            speech={
+                "ru": f"Теперь говорю через {found.spoken}.",
+                "en": f"Now speaking through {found.spoken}.",
+            },
+        )
+
+    async def restore_output(self) -> None:
+        """Вернуть выход, выбранный голосом в прошлый раз. Зовётся при старте.
+
+        Выключенная колонка — не ошибка: голос остаётся на выходе из настроек,
+        а в логе остаётся строка, почему.
+        """
+        if not isinstance(self._sink, SelectableSink) or self._memory is None:
+            return
+        namespace, key = OUTPUT_MEMORY
+        try:
+            name = await self._memory.documents.get(namespace, key)
+        except Exception as exc:  # noqa: BLE001 — память не повод не стартовать
+            logger.warning("Не прочитал выбранный аудиовыход: %s", exc)
+            return
+        if not name:
+            return
+        found = next((item for item in await self._list_outputs() if item.name == name), None)
+        if found is None:
+            logger.warning("Аудиовыход %r, выбранный голосом, сейчас не найден — говорю как в настройках", name)
+            return
+        self._sink.select(found.index)
+
+    async def _list_outputs(self) -> list[Output]:
+        try:
+            return await asyncio.to_thread(query_outputs, self._output_names)
+        except AudioError as exc:
+            logger.warning("Список аудиовыходов недоступен: %s", exc)
+            return []
+
+    def _current_output(self, outputs: list[Output]) -> str:
+        device = self._sink.device if self._sink is not None else None
+        if device is None:
+            return "выход по умолчанию"
+        for output in outputs:
+            if device in (output.index, output.name):
+                return output.spoken
+        return str(device)
+
+    async def _remember_output(self, name: str | None) -> None:
+        if self._memory is None:
+            return
+        namespace, key = OUTPUT_MEMORY
+        try:
+            await self._memory.documents.set(namespace, key, name)
+        except Exception as exc:  # noqa: BLE001 — выход уже сменён, не помнить — не беда
+            logger.warning("Не запомнил аудиовыход: %s", exc)
+
+    @staticmethod
+    def _no_sound() -> ToolResult:
+        return ToolResult.failure(
+            "Вывод звука не поддерживает выбор устройства",
+            speech={
+                "ru": "Звук сейчас выключен, переключать нечего.",
+                "en": "Sound is off, there's nothing to switch.",
+            },
+        )
 
     @tool(
         name="shutdown",

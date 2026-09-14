@@ -390,6 +390,10 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             engine=str(audio.get("engine", "sounddevice")),
             input_device=audio.get("input_device"),
             output_device=audio.get("output_device"),
+            output_names={
+                str(part): str(spoken)
+                for part, spoken in (audio.get("output_names") or {}).items()
+            },
             sample_rate=int(audio.get("sample_rate", 16000)),
             frame_ms=int(audio.get("frame_ms", 30)),
             silence_ms=int(audio.get("silence_ms", 800)),

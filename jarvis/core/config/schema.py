@@ -375,6 +375,9 @@ class AudioConfig:
     engine: str = "sounddevice"
     input_device: str | int | None = None
     output_device: str | int | None = None
+    #: Как называть аудиовыходы вслух: часть имени устройства -> название.
+    #: По названию выход выбирается голосом («говори через колонку»).
+    output_names: dict[str, str] = field(default_factory=dict)
     sample_rate: int = 16000
     frame_ms: int = 30
     #: Сколько тишины считать концом фразы.

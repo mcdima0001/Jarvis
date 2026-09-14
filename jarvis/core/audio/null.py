@@ -40,10 +40,22 @@ class NullAudioSource:
 class NullAudioSink:
     """Вывод, который молча проглатывает звук."""
 
+    def __init__(self) -> None:
+        self._device: str | int | None = None
+
     @property
     def service_name(self) -> str:
         """Имя сервиса для логов."""
         return "audio-out(null)"
+
+    @property
+    def device(self) -> str | int | None:
+        """Куда звучал бы звук. Выбор помнится, чтобы `--say` вёл себя как живой запуск."""
+        return self._device
+
+    def select(self, device: str | int | None) -> None:
+        """Запомнить выбранное устройство — играть на нём всё равно нечего."""
+        self._device = device
 
     async def start(self) -> None:
         """Открывать нечего."""

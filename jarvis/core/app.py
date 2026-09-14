@@ -114,6 +114,8 @@ class JarvisApp:
     stopping: asyncio.Event = field(default_factory=asyncio.Event)
     #: Поднимались ли звук и модели. Отчёт о сборке обходится без них.
     models_loaded: bool = False
+    #: Встроенные инструменты: при старте они возвращают выбранный голосом выход.
+    core: CoreTools | None = None
 
     # --- сборка ------------------------------------------------------------
 
@@ -263,6 +265,9 @@ class JarvisApp:
             shutdown=stopping.set,
             meter=meter,
             conversation=conversation,
+            sink=audio.sink,
+            output_device=config.audio.output_device,
+            output_names=config.audio.output_names,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
@@ -322,6 +327,7 @@ class JarvisApp:
             worker=worker,
             runner=runner,
             stopping=stopping,
+            core=core_tools,
         )
 
     # --- жизненный цикл ----------------------------------------------------
@@ -352,6 +358,9 @@ class JarvisApp:
         # Уборка выученного — только теперь, когда все скиллы загружены и
         # реестр полон. Раньше она снесла бы живые записи.
         await self.dispatcher.forget_unknown()
+        # До приветствия: оно должно прозвучать там, куда просили говорить.
+        if self.core is not None:
+            await self.core.restore_output()
 
         gaps = self.skills.missing_requirements()
         for skill, missing in gaps.items():

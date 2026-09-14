@@ -175,16 +175,32 @@ class SoundDeviceSink:
     def __init__(self, config: AudioConfig) -> None:
         self._config = config
         self._lock = asyncio.Lock()
+        #: Куда звучать. Начинается с конфига, меняется голосом (`select`).
+        self._device: str | int | None = config.output_device
 
     @property
     def service_name(self) -> str:
         """Имя сервиса для логов."""
         return "audio-out"
 
+    @property
+    def device(self) -> str | int | None:
+        """Куда сейчас идёт звук; ``None`` — системный выход."""
+        return self._device
+
+    def select(self, device: str | int | None) -> None:
+        """Со следующей реплики звучать через другое устройство.
+
+        Звучащую реплику не трогает: поток открывается на каждую реплику, и
+        новое устройство достанется следующему открытию.
+        """
+        self._device = device
+        logger.info("Аудиовыход: %s", device if device is not None else "по умолчанию")
+
     async def start(self) -> None:
         """Проверить, что звуковая подсистема доступна."""
         _import_sounddevice()
-        device = self._config.output_device if self._config.output_device is not None else "по умолчанию"
+        device = self._device if self._device is not None else "по умолчанию"
         logger.info("Аудиовыход готов: устройство=%s", device)
 
     async def stop(self) -> None:
@@ -276,7 +292,7 @@ class SoundDeviceSink:
         try:
             with sd.RawOutputStream(
                 samplerate=sample_rate,
-                device=self._config.output_device,
+                device=self._device,
                 channels=1,
                 dtype="int16",
             ) as stream:
@@ -298,7 +314,7 @@ class SoundDeviceSink:
         try:
             with sd.RawOutputStream(
                 samplerate=sample_rate,
-                device=self._config.output_device,
+                device=self._device,
                 channels=1,
                 dtype="int16",
             ) as stream:
