@@ -660,8 +660,10 @@ class CoreTools:
         return ToolResult.success(
             {"device": found.index, "name": found.name},
             speech={
-                "ru": f"Теперь говорю через {found.spoken}.",
-                "en": f"Now speaking through {found.spoken}.",
+                # Название после двоеточия: склонять его нечем, а «через
+                # колонка» звучит безграмотно.
+                "ru": f"Голос переключён: {found.spoken}.",
+                "en": f"Voice switched to: {found.spoken}.",
             },
         )
 

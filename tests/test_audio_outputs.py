@@ -32,6 +32,8 @@ DEVICES = [
     _device("Переназначение звуковых устр. - Input", 0, outputs=0),
     _device("Переназначение звуковых устр. - Output", 0),
     _device("Динамики (JBL Flip 6)", 0),
+    _device("5.1 (VB-Audio Voicemeeter VAIO)", 0),
+    # MME обрезает имя до 31 знака — ровно так оно и приходит.
     _device("Динамики (VB-Audio Voicemeeter ", 0),
     _device("Onboard Speaker (Audio Device)", 0),
     _device("Первичный звуковой драйвер", 1),
@@ -44,6 +46,7 @@ DEVICES = [
     _device("Динамики (JBL Flip 6)", 2),
 ]
 NAMES = {"JBL Flip 6": "колонка", "Onboard Speaker": "динамики ноутбука"}
+JBL, ONBOARD = 2, 5
 
 
 def _outputs() -> list[Output]:
@@ -53,7 +56,9 @@ def _outputs() -> list[Output]:
 # --- список -----------------------------------------------------------------
 
 
-def test_one_interface_without_service_devices_and_repeats() -> None:
+def test_plays_through_mme_with_full_names() -> None:
+    """MME — путь голоса по умолчанию. DirectSound на ноутбуке владельца молчал:
+    петлевой захват динамиков дал ноль, а MME на том же сигнале — 0.076."""
     outputs = _outputs()
     assert [output.name for output in outputs] == [
         "Динамики (JBL Flip 6)",
@@ -61,8 +66,16 @@ def test_one_interface_without_service_devices_and_repeats() -> None:
         "Динамики (VB-Audio Voicemeeter VAIO)",
         "Onboard Speaker (Audio Device)",
     ]
-    # DirectSound: номера его, а не обрезанного MME.
-    assert outputs[0].index == 6
+    assert [output.index for output in outputs] == [JBL, 3, 4, ONBOARD]
+
+
+def test_short_mme_name_is_not_stretched_to_a_longer_one() -> None:
+    devices = [
+        _device("Динамики", 0),
+        _device("Динамики", 1),
+        _device("Динамики (VB-Audio Voicemeeter VAIO)", 1),
+    ]
+    assert [output.name for output in usable_outputs(devices, HOSTAPIS)] == ["Динамики"]
 
 
 def test_spoken_names_come_from_config_or_the_name_itself() -> None:
@@ -83,19 +96,28 @@ def test_without_known_interfaces_everything_is_offered() -> None:
 @pytest.mark.parametrize(
     ("said", "expected"),
     [
-        ("колонку", "Динамики (JBL Flip 6)"),
-        ("колонка", "Динамики (JBL Flip 6)"),
-        ("JBL", "Динамики (JBL Flip 6)"),
-        ("динамики ноутбука", "Onboard Speaker (Audio Device)"),
+        ("колонку", JBL),
+        ("колонка", JBL),
+        ("JBL", JBL),
+        ("динамики ноутбука", ONBOARD),
+        # Живой запуск 14.09.2026: строкой целиком это совпадало с «колонка».
+        ("колонки ноутбука", ONBOARD),
+        ("ноутбук", ONBOARD),
+        ("onboard speaker", ONBOARD),
     ],
 )
-def test_named_output_is_found(said: str, expected: str) -> None:
+def test_named_output_is_found(said: str, expected: int) -> None:
     found = find_output(said, _outputs())
-    assert found is not None and found.name == expected
+    assert found is not None and found.index == expected
 
 
 def test_unknown_output_is_not_guessed() -> None:
     assert find_output("наушники", _outputs()) is None
+
+
+def test_ambiguous_name_is_not_guessed() -> None:
+    # «Динамики» — и JBL, и Voicemeeter: лучше перечислить, чем угадать.
+    assert find_output("динамики", _outputs()) is None
 
 
 def test_default_request_is_recognised() -> None:
@@ -150,10 +172,11 @@ async def test_switch_by_voice_and_remember_by_name(monkeypatch: Any) -> None:
     result = await core.set_output("колонку")
 
     assert result.ok
-    assert sink.device == 6
+    assert sink.device == JBL
     # Номер после перезапуска другой, поэтому помнится имя.
     assert documents.data[OUTPUT_MEMORY] == "Динамики (JBL Flip 6)"
-    assert "колонка" in result.speech_for("ru")
+    # Название стоит после двоеточия: «через колонка» звучит безграмотно.
+    assert result.speech_for("ru") == "Голос переключён: колонка."
 
 
 async def test_unknown_output_lists_what_exists(monkeypatch: Any) -> None:
@@ -169,7 +192,7 @@ async def test_default_returns_to_configured_output(monkeypatch: Any) -> None:
     sink = NullAudioSink()
     documents = FakeDocuments({OUTPUT_MEMORY: "Динамики (JBL Flip 6)"})
     core = _core(sink, documents, monkeypatch, configured="Onboard")
-    sink.select(6)
+    sink.select(JBL)
 
     result = await core.set_output("по умолчанию")
 
@@ -182,7 +205,7 @@ async def test_restore_picks_remembered_output_at_start(monkeypatch: Any) -> Non
     sink = NullAudioSink()
     core = _core(sink, FakeDocuments({OUTPUT_MEMORY: "Onboard Speaker (Audio Device)"}), monkeypatch)
     await core.restore_output()
-    assert sink.device == 10
+    assert sink.device == ONBOARD
 
 
 async def test_restore_keeps_config_when_remembered_output_is_gone(monkeypatch: Any) -> None:
@@ -195,7 +218,7 @@ async def test_restore_keeps_config_when_remembered_output_is_gone(monkeypatch: 
 async def test_list_names_current_output(monkeypatch: Any) -> None:
     sink = NullAudioSink()
     core = _core(sink, FakeDocuments(), monkeypatch)
-    sink.select(6)
+    sink.select(JBL)
     said = (await core.outputs()).speech_for("ru")
     assert "Сейчас — колонка" in said
 
