@@ -56,7 +56,13 @@ SECTION = "commands"
 #: связка выучилась — дальше «не сохраняй» выключало бы её без модели вовсе.
 #: ``core.help`` — то, куда модель сваливает непонятое («откроете» →
 #: справка), закреплять это незачем.
-NEVER_LEARN = frozenset({"core.chat", "core.forget_last", "core.plan", "core.later", "core.help"})
+#: ``author.learn`` и ``author.improve`` — то же, что план: цель в пересказе
+#: модели. «Создай пресет эквалайзера…» однажды ушло писать скилл (15.09.2026,
+#: 09:49) и выучилось — дальше та же фраза писала бы скилл без модели.
+NEVER_LEARN = frozenset({
+    "core.chat", "core.forget_last", "core.plan", "core.later", "core.help",
+    "author.learn", "author.improve",
+})
 
 #: Сколько своих слов и букв обязан сохранить выведенный шаблон.
 MIN_TEMPLATE_WORDS = 2

@@ -20,10 +20,12 @@ Peace Nexus у владельца — своя сборка Peace с API (`nexus
 сохранение — нет: несохранённая кривая пропадает, а сохранение перезаписывает
 пресет с тем же именем. В плане такие шаги спросят.
 
-**В каталог модели идут четыре инструмента из десятка** — состояние, вкл/выкл,
-пресет и сдвиг басов, середины или верхов. Остальное голосом говорят одинаково,
-и шаблоны разбирают это бесплатно; платить за каждый инструмент токенами в
-каждом запросе незачем.
+**В каталог модели идут шесть инструментов** — состояние, вкл/выкл, пресет,
+сохранение пресета, кривая целиком и сдвиг басов, середины или верхов.
+Остальное голосом говорят одинаково, и шаблоны разбирают это бесплатно; платить
+за каждый инструмент токенами в каждом запросе незачем. Кривая и сохранение
+видны с 15.09.2026: без них «сделай пресет под колонку и сохрани» модели было
+нечем выполнить, и просьба ушла писать новый скилл.
 """
 
 from __future__ import annotations
@@ -189,6 +191,52 @@ def shifted_gains(
     return changes
 
 
+def parse_curve(text: str) -> list[tuple[float, float]]:
+    """Кривая строкой «частота:усиление» через запятую → пары (Гц, дБ).
+
+    Строка, а не словарь в схеме: модель пишет её надёжнее, а разбор здесь
+    прощает «Гц», «дБ», пробелы и плюсы. Непонятный кусок — ошибка, а не молча
+    пропущенная полоса.
+    """
+    points: list[tuple[float, float]] = []
+    for chunk in text.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        left, sep, right = chunk.partition(":")
+        if not sep:
+            raise ValueError(f"не понял точку кривой {chunk!r}: нужно «частота:усиление»")
+        hz = left.lower().replace("гц", "").replace("hz", "").strip()
+        db = right.lower().replace("дб", "").replace("db", "").strip()
+        multiplier = 1000.0 if hz.endswith("k") or hz.endswith("к") else 1.0
+        hz = hz.rstrip("kк").strip()
+        try:
+            points.append((float(hz.replace(",", ".")) * multiplier, float(db.replace(",", "."))))
+        except ValueError as exc:
+            raise ValueError(f"не понял точку кривой {chunk!r}") from exc
+    if not points:
+        raise ValueError("кривая пустая")
+    return points
+
+
+def assign_to_bands(
+    points: Sequence[tuple[float, float]],
+    bands: Sequence[dict[str, Any]],
+    limit: float,
+) -> list[tuple[int, float]]:
+    """Каждой точке кривой — ближайшая по частоте полоса, усиление не выше предела.
+
+    Две точки на одну полосу — берётся последняя: модель уточняла.
+    """
+    if not bands:
+        return []
+    chosen: dict[int, float] = {}
+    for hz, db in points:
+        nearest = min(bands, key=lambda band: abs(float(band.get("frequency_hz", 0)) - hz))
+        chosen[int(nearest["band"])] = round(max(-limit, min(limit, db)), 1)
+    return sorted(chosen.items())
+
+
 def describe_status(status: dict[str, Any]) -> str:
     """Состояние эквалайзера одной фразой — так, как его произносят."""
     if not status.get("equalizer_on"):
@@ -218,7 +266,7 @@ class PeaceSkill(Skill):
     meta = SkillMeta(
         name="peace",
         description="Эквалайзер Peace Nexus: пресеты, басы, середина, верха, баланс",
-        version="0.1.2",
+        version="0.1.3",
         platforms=("windows",),
         spoken=("пис", "peace", "эквалайзер"),
     )
@@ -372,8 +420,10 @@ class PeaceSkill(Skill):
             speech={"ru": f"Пресет {found}.", "en": f"Preset {found}."},
         )
 
-    @tool(routable=False, phrases=["сохрани пресет {name}", "сохрани пресет как {name}",
-                                   "сохрани эквалайзер как {name}"],
+    # Видим модели: без него план не мог выполнить «…и сохрани пресет»
+    # (15.09.2026, 09:49 — просьба ушла писать скилл).
+    @tool(phrases=["сохрани пресет {name}", "сохрани пресет как {name}",
+                   "сохрани эквалайзер как {name}"],
           reversible=False)
     async def save_preset(self, name: str) -> ToolResult:
         """Сохранить текущий звук как пресет. Пресет с тем же именем перезаписывается.
@@ -395,6 +445,43 @@ class PeaceSkill(Skill):
         if refusal:
             return refusal
         return ToolResult.success(None, speech={"ru": "Эквалайзер выровнен.", "en": "Equalizer is flat."})
+
+    @tool(reversible=False)
+    async def set_curve(self, gains: str, preamp: float = 0.0) -> ToolResult:
+        """Выставить кривую эквалайзера целиком: усиление по частотам и предусиление.
+
+        Для просьб вида «сделай пресет под колонку, побольше басов». Частоты полос
+        сначала узнай через peace.status, после — сохрани через peace.save_preset.
+        Несохранённая кривая перезаписывается.
+
+        :param gains: точки «частота_Гц:усиление_дБ» через запятую, например
+            «60:5, 150:4, 400:-1, 1000:0, 4000:2, 10000:3». Точка ложится на
+            ближайшую по частоте полосу.
+        :param preamp: предусиление в дБ, обычно отрицательное при подъёме басов,
+            чтобы не было перегруза; 0 — не трогать.
+        """
+        points = parse_curve(gains)
+
+        def work(api: Any) -> list[tuple[int, float]]:
+            changes = assign_to_bands(points, api.bands(), self._limit)
+            for number, gain in changes:
+                api.set_band_gain(number, gain)
+            if preamp:
+                api.set_preamp(float(preamp))
+            return changes
+
+        changes, refusal = await self._safely(work)
+        if refusal:
+            return refusal
+        if not changes:
+            return ToolResult.failure("полос нет — кривую ставить некуда", speech={"ru": "У эквалайзера нет полос.", "en": "No bands."})
+        self.log.info("Peace: кривая %s, предусиление %s", changes, preamp)
+        bands_word = plural_form(len(changes), ("полосу", "полосы", "полос"))
+        tail = f", предусиление {decibels(preamp)}" if preamp else ""
+        return ToolResult.success(
+            {"bands": changes, "preamp_db": preamp},
+            speech={"ru": f"Выставил кривую: {len(changes)} {bands_word}{tail}.", "en": "Curve set."},
+        )
 
     # --- басы, середина и верха --------------------------------------------
 

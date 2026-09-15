@@ -193,11 +193,14 @@ async def test_equalizer_switches_and_status_reads() -> None:
     assert (await skill.status()).speech_for("ru") == "Эквалайзер выключен."
 
 
-def test_only_four_tools_go_to_the_model_catalog() -> None:
+def test_only_six_tools_go_to_the_model_catalog() -> None:
+    """Кривая и сохранение — видны: без них «сделай и сохрани пресет» ушло писать скилл (15.09.2026)."""
     from jarvis.core.tools import collect_tools
 
     routable = sorted(item.spec.name for item in collect_tools(peace.PeaceSkill(), namespace="peace") if item.spec.routable)
-    assert routable == ["peace.equalizer", "peace.load_preset", "peace.shift", "peace.status"]
+    assert routable == [
+        "peace.equalizer", "peace.load_preset", "peace.save_preset", "peace.set_curve", "peace.shift", "peace.status",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -235,3 +238,33 @@ async def test_missing_module_is_spoken_without_the_path(tmp_path: Path) -> None
     assert not result.ok
     assert result.speech_for("ru") == "Не нашёл модуль эквалайзера."
     assert "peace_api.py" in (result.error or "")
+
+
+def test_curve_is_read_forgivingly() -> None:
+    # Дробь — через точку: запятая разделяет точки кривой.
+    assert peace.parse_curve("60:+5, 150 Гц: 4 дБ; 1k:-1.5") == [(60.0, 5.0), (150.0, 4.0), (1000.0, -1.5)]
+
+
+def test_curve_without_colon_is_an_error_not_a_skipped_band() -> None:
+    with pytest.raises(ValueError):
+        peace.parse_curve("60 5")
+    with pytest.raises(ValueError):
+        peace.parse_curve("  ")
+
+
+def test_curve_points_land_on_nearest_bands_within_the_limit() -> None:
+    bands = FakeApi().bands()
+    points = [(90.0, 20.0), (4100.0, -3.0)]
+    changes = peace.assign_to_bands(points, bands, 12.0)
+    nearest_low = min(bands, key=lambda band: abs(band["frequency_hz"] - 90))["band"]
+    nearest_high = min(bands, key=lambda band: abs(band["frequency_hz"] - 4100))["band"]
+    assert dict(changes) == {nearest_low: 12.0, nearest_high: -3.0}
+
+
+async def test_curve_is_set_on_the_equalizer() -> None:
+    skill, api = await _skill()
+    set_preamp: list[float] = []
+    api.set_preamp = set_preamp.append  # type: ignore[attr-defined]
+    result = await skill.set_curve("60:5, 8000:2", preamp=-3)
+    assert result.ok and set_preamp == [-3.0]
+    assert result.speech_for("ru").startswith("Выставил кривую")
