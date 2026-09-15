@@ -561,6 +561,35 @@ async function loadActivity() {
   drawLoad(data);
 }
 const LOAD_WINDOW_S = 30 * 60;
+// Монотонная кубическая кривая через точки [[x, y], …] — путь SVG.
+function smooth(pts) {
+  const f = (n) => n.toFixed(1);
+  if (pts.length < 3) return pts.map(([px, py], i) => `${i ? "L" : "M"}${f(px)},${f(py)}`).join(" ");
+  const n = pts.length;
+  const slope = [];
+  for (let i = 0; i < n - 1; i++) {
+    const dx = pts[i + 1][0] - pts[i][0];
+    slope.push(dx ? (pts[i + 1][1] - pts[i][1]) / dx : 0);
+  }
+  const tangent = [slope[0]];
+  for (let i = 1; i < n - 1; i++) {
+    // На перегибе (пик или впадина) касательная горизонтальна — отсюда нет выбросов.
+    tangent.push(slope[i - 1] * slope[i] <= 0 ? 0 : (slope[i - 1] + slope[i]) / 2);
+  }
+  tangent.push(slope[n - 2]);
+  for (let i = 0; i < n - 1; i++) {
+    if (slope[i] === 0) { tangent[i] = 0; tangent[i + 1] = 0; continue; }
+    const a = tangent[i] / slope[i], b = tangent[i + 1] / slope[i];
+    const h = a * a + b * b;
+    if (h > 9) { const t = 3 / Math.sqrt(h); tangent[i] = t * a * slope[i]; tangent[i + 1] = t * b * slope[i]; }
+  }
+  let d = `M${f(pts[0][0])},${f(pts[0][1])}`;
+  for (let i = 0; i < n - 1; i++) {
+    const dx = (pts[i + 1][0] - pts[i][0]) / 3;
+    d += ` C${f(pts[i][0] + dx)},${f(pts[i][1] + tangent[i] * dx)} ${f(pts[i + 1][0] - dx)},${f(pts[i + 1][1] - tangent[i + 1] * dx)} ${f(pts[i + 1][0])},${f(pts[i + 1][1])}`;
+  }
+  return d;
+}
 function drawLoad(data) {
   const box = $("load-chart"), note = $("load-note");
   const points = data.load;
@@ -597,15 +626,19 @@ function drawLoad(data) {
   const x = (at) => left + ((Math.max(at, from) - from) / span) * (width - left - 4);
   const y = (value) => top + (1 - Math.min(value, ceiling) / ceiling) * (height - top - bottom);
   // Пропуск (Afterburner закрыли и открыли) рвёт линию, а не рисует ноль.
+  // Каждый кусок — сглаженная кривая (просьба владельца 15.09.2026: без острых
+  // углов на пиках). Монотонная, по Фришу — Карлсону: проходит через каждую
+  // точку и не вылетает выше пика и ниже нуля, в отличие от обычного сплайна.
   const pathOf = (s) => {
-    let d = "", pen = false;
+    const runs = [];
+    let run = [];
     for (const p of points) {
       const v = s.value(p);
-      if (v == null) { pen = false; continue; }
-      d += `${pen ? "L" : "M"}${x(p.at).toFixed(1)},${y(v).toFixed(1)} `;
-      pen = true;
+      if (v == null) { if (run.length) runs.push(run); run = []; continue; }
+      run.push([x(p.at), y(v)]);
     }
-    return d.trim();
+    if (run.length) runs.push(run);
+    return runs.map(smooth).join(" ");
   };
   const grid = [0, 0.5, 1].map((share) => {
     const value = ceiling * share;
