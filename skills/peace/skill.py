@@ -1,4 +1,4 @@
-"""Эквалайзер Peace Nexus: пресеты, басы и верха, баланс — голосом.
+"""Эквалайзер Peace Nexus: пресеты, басы, середина и верха, баланс — голосом.
 
 Peace Nexus у владельца — своя сборка Peace с API (`nexus-api`, README там же).
 Скилл зовёт его модуль `peace_api.py` напрямую, а не MCP-сервер и не
@@ -10,15 +10,20 @@ Peace Nexus у владельца — своя сборка Peace с API (`nexus
 сами вызовы — в отдельном потоке: `SendMessageTimeout` ждёт ответа окна до пяти
 секунд, и голосовой круг это время висел бы.
 
+**Три части спектра.** Басы — полосы до `bass_below_hz` включительно, верха —
+от `treble_above_hz` включительно, середина — всё строго между ними. Края
+включены в басы и верха потому, что у владельца полосы стоят ровно на 250 Гц и
+4 кГц, и это края, а не середина; середине остаётся то, что внутри.
+
 **Что обратимо, а что нет.** Полосы, предусиление, баланс и вкл/выкл
 возвращаются той же командой обратно. Загрузка пресета, «выровнять» и
 сохранение — нет: несохранённая кривая пропадает, а сохранение перезаписывает
 пресет с тем же именем. В плане такие шаги спросят.
 
 **В каталог модели идут четыре инструмента из десятка** — состояние, вкл/выкл,
-пресет и сдвиг басов или верхов. Остальное голосом говорят одинаково, и шаблоны
-разбирают это бесплатно; платить за каждый инструмент токенами в каждом
-запросе незачем.
+пресет и сдвиг басов, середины или верхов. Остальное голосом говорят одинаково,
+и шаблоны разбирают это бесплатно; платить за каждый инструмент токенами в
+каждом запросе незачем.
 """
 
 from __future__ import annotations
@@ -45,6 +50,36 @@ DECIBEL = ("децибел", "децибела", "децибел")
 #: но «поставь пресет вечер» не должно загрузить «Вечеринку».
 PRESET_SIMILARITY = 0.75
 
+#: Как называют часть спектра вслух. Неизвестное слово — верха, как и раньше.
+BASS_WORDS = frozenset({"bass", "low", "lows", "басы", "бас", "баса", "низы", "низ"})
+MID_WORDS = frozenset(
+    {
+        "mid",
+        "mids",
+        "middle",
+        "midrange",
+        "середина",
+        "середину",
+        "середины",
+        "средние",
+        "средних",
+        "средние частоты",
+        "серединка",
+        "вокал",
+        "голос",
+    }
+)
+
+#: Часть спектра → как её произносят: винительный падеж и родительный.
+#: «Сильнее середину не сдвинуть», «добавил середины».
+PART_SPEECH = {
+    "bass": ("басы", "басов"),
+    "mid": ("середину", "середины"),
+    "treble": ("верха", "верхов"),
+}
+
+PART_SPEECH_EN = {"bass": "bass", "mid": "mids", "treble": "treble"}
+
 
 class PeaceUnavailable(RuntimeError):
     """Модуль peace_api не нашёлся или не загрузился."""
@@ -63,6 +98,65 @@ def decibels(value: float) -> str:
         return f"{sign}{whole} {plural_form(whole, DECIBEL)}"
     # Дробь читается с родительным падежом: «два запятая пять децибела».
     return f"{sign}{magnitude} {DECIBEL[1]}"
+
+
+#: Сколько названий пресетов зачитывать вслух; полный список — в данных.
+SPOKEN_NAMES = 3
+
+
+def few_names(names: Sequence[str], limit: int = SPOKEN_NAMES) -> str:
+    """Список для речи: первые несколько названий и сколько осталось.
+
+    Десяток имён латиницей подряд вслух не дослушать (замечание разбора
+    14.09.2026) — поэтому «BassBoost, ULTRA BASS, Вечер и ещё четыре».
+    """
+    if not names:
+        return "ни одного"
+    shown = ", ".join(names[:limit])
+    rest = len(names) - limit
+    if rest <= 0:
+        return shown
+    return f"{shown} и ещё {rest}"
+
+
+def normalize_part(part: str) -> str:
+    """Услышанное название части спектра → «bass», «mid» или «treble».
+
+    :param part: как назвали — «басы», «середина», «treble».
+    """
+    word = " ".join(part.strip().lower().split())
+    if word in BASS_WORDS:
+        return "bass"
+    if word in MID_WORDS:
+        return "mid"
+    return "treble"
+
+
+def band_chooser(part: str, bass_below: float, treble_above: float) -> Callable[[float], bool]:
+    """Отбор полос для части спектра по частоте.
+
+    :param part: «bass», «mid» или «treble».
+    :param bass_below: верхний край басов включительно.
+    :param treble_above: нижний край верхов включительно.
+    :return: проверка «эта полоса относится к части».
+    """
+    if part == "bass":
+
+        def choose(hz: float) -> bool:
+            return hz <= bass_below
+
+    elif part == "mid":
+
+        def choose(hz: float) -> bool:
+            # Края отданы басам и верхам, середине — то, что строго между.
+            return bass_below < hz < treble_above
+
+    else:
+
+        def choose(hz: float) -> bool:
+            return hz >= treble_above
+
+    return choose
 
 
 def pick_preset(spoken: str, names: Sequence[str]) -> str | None:
@@ -123,8 +217,8 @@ class PeaceSkill(Skill):
 
     meta = SkillMeta(
         name="peace",
-        description="Эквалайзер Peace Nexus: пресеты, басы, верха, баланс",
-        version="0.1.0",
+        description="Эквалайзер Peace Nexus: пресеты, басы, середина, верха, баланс",
+        version="0.1.2",
         platforms=("windows",),
         spoken=("пис", "peace", "эквалайзер"),
     )
@@ -157,13 +251,21 @@ class PeaceSkill(Skill):
     async def _run(self, work: Callable[[Any], Any]) -> Any:
         """Выполнить работу с Peace: по одной, в отдельном потоке."""
         async with self._lock:
-            api = self._module()
-            return await asyncio.to_thread(work, api)
+            # Модуль грузится тоже в потоке: чужой `peace_api` при импорте
+            # поднимает ctypes и ищет окно, и в цикле событий первая же команда
+            # эквалайзеру подвесила бы голос (замечание разбора 14.09.2026).
+            return await asyncio.to_thread(lambda: work(self._module()))
 
     def _failure(self, exc: Exception) -> ToolResult:
         """Отказ Peace вслух: его тексты уже человеческие («закройте настройки»)."""
         text = str(exc) or type(exc).__name__
         self.log.warning("Peace: %s", text)
+        if isinstance(exc, PeaceUnavailable):
+            # Здесь путь к файлу и текст чужой ошибки — вслух это не произнести.
+            return ToolResult.failure(
+                f"Peace: {text}",
+                speech={"ru": "Не нашёл модуль эквалайзера.", "en": "I can't find the equalizer module."},
+            )
         return ToolResult.failure(
             f"Peace: {text}",
             speech={"ru": f"Эквалайзер не ответил: {text}.", "en": f"Peace refused: {text}."},
@@ -209,8 +311,8 @@ class PeaceSkill(Skill):
         names, refusal = await self._safely(lambda api: api.presets())
         if refusal:
             return refusal
-        listed = ", ".join(names) or "ни одного"
-        return ToolResult.success(names, speech={"ru": f"Пресеты: {listed}.", "en": f"Presets: {listed}."})
+        listed = few_names(names)
+        return ToolResult.success(names, speech={"ru": f"Пресеты: {listed}.", "en": f"{len(names)} presets."})
 
     # --- включение ---------------------------------------------------------
 
@@ -257,10 +359,9 @@ class PeaceSkill(Skill):
             return refusal
         found = pick_preset(name, names)
         if found is None:
-            listed = ", ".join(names) or "ни одного"
             return ToolResult.failure(
-                f"пресет {name!r} не найден. Есть: {listed}",
-                speech={"ru": f"Не нашёл пресет {name}. Есть: {listed}.", "en": f"No preset {name}."},
+                f"пресет {name!r} не найден. Есть: {', '.join(names) or 'ни одного'}",
+                speech={"ru": f"Не нашёл пресет {name}. Есть: {few_names(names)}.", "en": f"No preset {name}."},
             )
         selected, refusal = await self._safely(lambda api: api.load_preset(found))
         if refusal:
@@ -295,25 +396,20 @@ class PeaceSkill(Skill):
             return refusal
         return ToolResult.success(None, speech={"ru": "Эквалайзер выровнен.", "en": "Equalizer is flat."})
 
-    # --- басы и верха ------------------------------------------------------
+    # --- басы, середина и верха --------------------------------------------
 
     @tool(reversible=True)
     async def shift(self, part: str, db: float = 0.0) -> ToolResult:
-        """Добавить или убавить басы или верха на эквалайзере.
+        """Добавить или убавить басы, середину или верха на эквалайзере.
 
-        :param part: «bass» — басы, «treble» — верха.
+        :param part: «bass» — басы, «mid» — середина, «treble» — верха.
         :param db: на сколько децибел; положительное — больше, отрицательное —
             меньше. Ноль — шаг из настроек в сторону «больше».
         """
-        bass = part.strip().lower() in ("bass", "басы", "бас", "низы", "low")
+        chosen = normalize_part(part)
         step = float(db) if db else self._step
-        # Границы включительно: у владельца полосы стоят ровно на 250 Гц и 4 кГц,
-        # и это края басов и верхов, а не середина.
-        if bass:
-            choose: Callable[[float], bool] = lambda hz: hz <= self._bass_below  # noqa: E731
-        else:
-            choose = lambda hz: hz >= self._treble_above  # noqa: E731
-        what = "басы" if bass else "верха"
+        choose = band_chooser(chosen, self._bass_below, self._treble_above)
+        accusative, genitive = PART_SPEECH[chosen]
 
         def work(api: Any) -> list[tuple[int, float]]:
             changes = shifted_gains(api.bands(), choose, step, self._limit)
@@ -326,15 +422,15 @@ class PeaceSkill(Skill):
             return refusal
         if not changes:
             return ToolResult.failure(
-                f"{what}: менять нечего — полос нет или они уже на пределе {self._limit} дБ",
-                speech={"ru": f"Сильнее {what} уже не сдвинуть.", "en": "Nothing to change."},
+                f"{accusative}: менять нечего — полос нет или они уже на пределе {self._limit} дБ",
+                speech={"ru": f"Сильнее {accusative} уже не сдвинуть.", "en": "Nothing to change."},
             )
         more = step > 0
         return ToolResult.success(
-            {"part": "bass" if bass else "treble", "bands": changes},
+            {"part": chosen, "bands": changes},
             speech={
-                "ru": f"{'Добавил' if more else 'Убавил'} {'басов' if bass else 'верхов'} на {decibels(abs(step))}.",
-                "en": f"{'More' if more else 'Less'} {'bass' if bass else 'treble'}.",
+                "ru": f"{'Добавил' if more else 'Убавил'} {genitive} на {decibels(abs(step))}.",
+                "en": f"{'More' if more else 'Less'} {PART_SPEECH_EN[chosen]}.",
             },
         )
 
@@ -349,6 +445,20 @@ class PeaceSkill(Skill):
     async def less_bass(self) -> ToolResult:
         """Меньше басов."""
         return await self.shift("bass", -self._step)
+
+    @tool(routable=False, phrases=["больше середины", "добавь середины", "добавь средних",
+                                   "добавь вокала", "сделай середину громче"],
+          reversible=True)
+    async def more_mid(self) -> ToolResult:
+        """Больше середины."""
+        return await self.shift("mid", self._step)
+
+    @tool(routable=False, phrases=["меньше середины", "убавь середину", "убери середину",
+                                   "убавь средние", "сделай середину тише"],
+          reversible=True)
+    async def less_mid(self) -> ToolResult:
+        """Меньше середины."""
+        return await self.shift("mid", -self._step)
 
     @tool(routable=False, phrases=["больше верхов", "добавь верхов", "добавь высоких"],
           reversible=True)

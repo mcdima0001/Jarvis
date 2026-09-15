@@ -198,3 +198,40 @@ def test_only_four_tools_go_to_the_model_catalog() -> None:
 
     routable = sorted(item.spec.name for item in collect_tools(peace.PeaceSkill(), namespace="peace") if item.spec.routable)
     assert routable == ["peace.equalizer", "peace.load_preset", "peace.shift", "peace.status"]
+
+
+@pytest.mark.parametrize(
+    ("spoken", "part"),
+    [("басы", "bass"), ("Низы", "bass"), ("середину", "mid"), ("средние частоты", "mid"), ("вокал", "mid"),
+     ("верха", "treble"), ("высокие", "treble")],
+)
+def test_spoken_part_of_the_spectrum(spoken: str, part: str) -> None:
+    assert peace.normalize_part(spoken) == part
+
+
+def test_middle_takes_only_what_lies_strictly_between_bass_and_treble() -> None:
+    """Края 250 Гц и 4 кГц у владельца — басы и верха, а не середина."""
+    mid = peace.band_chooser("mid", 250, 4000)
+    bass = peace.band_chooser("bass", 250, 4000)
+    treble = peace.band_chooser("treble", 250, 4000)
+    assert [mid(hz) for hz in (100, 250, 1000, 4000, 8000)] == [False, False, True, False, False]
+    assert bass(250) and not bass(251)
+    assert treble(4000) and not treble(3999)
+
+
+def test_long_preset_list_is_shortened_for_speech() -> None:
+    """Десяток названий латиницей подряд вслух не дослушать (разбор 14.09.2026)."""
+    assert peace.few_names(["A", "B", "C", "D", "E"]) == "A, B, C и ещё 2"
+    assert peace.few_names(["A", "B"]) == "A, B"
+    assert peace.few_names([]) == "ни одного"
+
+
+async def test_missing_module_is_spoken_without_the_path(tmp_path: Path) -> None:
+    """Путь к peace_api.py вслух не произнести — он только в тексте ошибки."""
+    skill, _ = await _skill()
+    skill._api = None
+    skill._api_dir = tmp_path / "нет-такой-папки"
+    result = await skill.presets()
+    assert not result.ok
+    assert result.speech_for("ru") == "Не нашёл модуль эквалайзера."
+    assert "peace_api.py" in (result.error or "")
