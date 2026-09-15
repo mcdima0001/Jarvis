@@ -95,6 +95,53 @@ def test_menu_has_quit_and_restart_with_unique_commands() -> None:
     assert all(number == 0 for number, item in commands if item is None)
 
 
+class FakeAutostart:
+    def __init__(self, *, fail: str = "") -> None:
+        self.on, self.fail = False, fail
+
+    def enabled(self) -> bool:
+        return self.on
+
+    def toggle(self) -> bool:
+        from jarvis.core.tray.autostart import AutostartError
+
+        if self.fail:
+            raise AutostartError(self.fail)
+        self.on = not self.on
+        return self.on
+
+
+class CheckableIcon(FakeIcon):
+    def __init__(self, on_action: Any) -> None:
+        super().__init__(on_action)
+        self.checked: Any = frozenset
+
+
+def test_autostart_toggle_marks_the_menu_and_tells_the_result() -> None:
+    said: list[tuple[str, bool]] = []
+    starter = FakeAutostart()
+    session = TraySession(
+        CheckableIcon, autostart=starter,  # type: ignore[arg-type]
+        notify=lambda text, error=False: said.append((text, error)),
+    )
+    icon: Any = session.icon
+    assert icon.checked() == frozenset()
+    session.on_action(menu.AUTOSTART)
+    assert starter.on and icon.checked() == {menu.AUTOSTART}
+    assert said[-1][1] is False and "при входе в Windows" in said[-1][0]
+    assert [item.action for item in menu.MENU if item is not None and item.toggle] == [menu.AUTOSTART]
+
+
+def test_autostart_refusal_is_shown_as_error() -> None:
+    said: list[tuple[str, bool]] = []
+    session = TraySession(
+        FakeIcon, autostart=FakeAutostart(fail="нет прав"),  # type: ignore[arg-type]
+        notify=lambda text, error=False: said.append((text, error)),
+    )
+    session.on_action(menu.AUTOSTART)
+    assert said == [("нет прав", True)]
+
+
 def test_tip_names_state_and_fits_the_os_limit() -> None:
     assert menu.tip("Jarvis", menu.READY) == "Jarvis — слушает"
     assert len(menu.tip("J" * 300, menu.STARTING)) == menu.TIP_LIMIT
@@ -362,7 +409,7 @@ def test_popup_layout_scales_and_skips_separators() -> None:
     layout = menu.popup_layout(menu.MENU, 1.5)
     assert layout.width == 372 and layout.header == 84
     items = [row for row in layout.rows if row.item is not None]
-    assert len(items) == 5 and all(row.height == 51 for row in items)
+    assert len(items) == 6 and all(row.height == 51 for row in items)
     assert layout.height == layout.rows[-1].top + layout.rows[-1].height + 9
     separator = next(index for index, row in enumerate(layout.rows) if row.item is None)
     assert menu.row_at(layout, layout.rows[separator].top + 1) is None
@@ -373,9 +420,9 @@ def test_popup_layout_scales_and_skips_separators() -> None:
 def test_arrows_walk_items_around_the_separator() -> None:
     layout = menu.popup_layout()
     assert menu.step_row(layout, None, 1) == 0
-    assert menu.step_row(layout, None, -1) == 5
+    assert menu.step_row(layout, None, -1) == 7
     assert menu.step_row(layout, 2, 1) == 4  # через разделитель
-    assert menu.step_row(layout, 5, 1) == 0  # по кругу
+    assert menu.step_row(layout, 7, 1) == 0  # по кругу
 
 
 def test_popup_hovers_above_the_taskbar_with_a_gap() -> None:

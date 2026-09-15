@@ -422,6 +422,8 @@ class ControlPanel:
             ("POST", "/api/extension/folder"): self._extension_folder,
             ("GET", "/api/admin"): self._admin,
             ("POST", "/api/admin"): self._build_launcher,
+            ("GET", "/api/autostart"): self._autostart_state,
+            ("POST", "/api/autostart"): self._set_autostart,
             ("GET", "/api/log"): self._log,
         }
         route = routes.get((request.method, request.path))
@@ -1035,6 +1037,30 @@ class ControlPanel:
             raise ValueError(f"сборка не удалась: {(errors or output)[-400:]}")
         logger.info("Панель: Jarvis.exe пересобран, права: %s", "администратор" if admin else "пользователь")
         return json_response({"message": (output.splitlines() or ["Собрано."])[-1] + " Действует со следующего запуска."})
+
+    # --- автозапуск -----------------------------------------------------------
+
+    async def _autostart_state(self, request: Request) -> Response:
+        from jarvis.core.tray.autostart import Autostart
+
+        starter = Autostart(self._config.root)
+        return json_response({
+            "supported": starter.supported,
+            "enabled": await asyncio.to_thread(starter.enabled),
+            "launcher": starter.exe.exists(),
+        })
+
+    async def _set_autostart(self, request: Request) -> Response:
+        from jarvis.core.tray.autostart import Autostart, AutostartError
+
+        enabled = bool(request.json().get("enabled"))
+        try:
+            await asyncio.to_thread(Autostart(self._config.root).set, enabled)
+        except AutostartError as exc:
+            raise ValueError(str(exc)) from exc
+        return json_response({
+            "message": "Jarvis будет запускаться при входе в Windows." if enabled else "Автозапуск выключен."
+        })
 
     # --- окно ----------------------------------------------------------------
 

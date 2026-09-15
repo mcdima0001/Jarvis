@@ -49,7 +49,7 @@ _LR_LOADFROMFILE = 0x10
 _SM_CXSMICON, _SM_CYSMICON = 49, 50
 _IDI_APPLICATION = 32512
 
-_MF_STRING, _MF_GRAYED, _MF_SEPARATOR = 0x0, 0x1, 0x800
+_MF_STRING, _MF_GRAYED, _MF_CHECKED, _MF_SEPARATOR = 0x0, 0x1, 0x8, 0x800
 _TPM_RIGHTBUTTON, _TPM_NONOTIFY, _TPM_RETURNCMD = 0x2, 0x80, 0x100
 TPM_LEFTALIGN, TPM_RIGHTALIGN, TPM_TOPALIGN, TPM_BOTTOMALIGN = 0x0, 0x8, 0x0, 0x20
 TPM_HORIZONTAL, TPM_VERTICAL = 0x0, 0x40
@@ -260,6 +260,9 @@ class TrayIcon:
         self._owned: list[int] = []
         self._taskbar_created = 0
         self._styled: StyledMenu | None = None
+        #: Какие переключатели меню включены — спрашивается при каждом открытии.
+        #: Ставит сессия трея (`TraySession.checked_actions`).
+        self.checked: Callable[[], frozenset[str]] = frozenset
 
     def start(self) -> None:
         """Показать значок. Ждёт, пока окно создано, но не дольше пяти секунд."""
@@ -416,15 +419,20 @@ class TrayIcon:
         if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
             rect, work = info.rcMonitor, info.rcWork
             rects = (rect.left, rect.top, rect.right, rect.bottom), (work.left, work.top, work.right, work.bottom)
+        try:
+            checked = self.checked()
+        except Exception:  # noqa: BLE001 — без галочки меню всё равно нужно
+            logger.exception("Значок в трее: не узнал состояние переключателей")
+            checked = frozenset()
         # Своё меню в цветах панели; не открылось — системное, без меню нельзя.
         if rects is not None:
             if self._styled is None:
                 self._styled = StyledMenu(self._icon_files)
-            if self._styled.show((point.x, point.y), monitor, *rects, self._state, self._menu, self._fire):
+            if self._styled.show((point.x, point.y), monitor, *rects, self._state, self._menu, self._fire, checked):
                 return
-        self._native_popup(point, rects)
+        self._native_popup(point, rects, checked)
 
-    def _native_popup(self, point: Any, rects: tuple[Rect, Rect] | None) -> None:
+    def _native_popup(self, point: Any, rects: tuple[Rect, Rect] | None, checked: frozenset[str] = frozenset()) -> None:
         """Системное меню — запасной путь, если своё окно не создалось."""
         user32 = self._user32
         menu = user32.CreatePopupMenu()
@@ -436,7 +444,8 @@ class TrayIcon:
             if item is None:
                 user32.AppendMenuW(menu, _MF_SEPARATOR, 0, None)
             else:
-                user32.AppendMenuW(menu, _MF_STRING, command, item.label)
+                flags = _MF_STRING | (_MF_CHECKED if item.toggle and item.action in checked else 0)
+                user32.AppendMenuW(menu, flags, command, item.label)
                 actions[command] = item.action
         # Без переднего плана меню не закрывается щелчком мимо — известная
         # причуда меню у значков, и лечится она ровно так, вместе с WM_NULL.

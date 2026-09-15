@@ -32,7 +32,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 from jarvis.core.contracts import Event, SystemStarted, SystemStopping
 from jarvis.core.logging.visible import visible_levels
 
-from .menu import READY, STARTING, STOPPING, tip
+from .autostart import Autostart, AutostartError
+from .menu import AUTOSTART, READY, STARTING, STOPPING, tip
 
 if TYPE_CHECKING:
     from jarvis.core.app import JarvisApp
@@ -316,8 +317,12 @@ class TraySession:
         live_log: Callable[[Path, str], None] = open_live_log,
         log_file: Callable[[], Path | None] = current_log_file,
         panel: Callable[[str, tuple[int, int, int, int] | None], None] = open_panel,
+        autostart: Autostart | None = None,
+        notify: Callable[..., None] | None = None,
     ) -> None:
         self._log_file = log_file
+        self._autostart = autostart
+        self._notify = notify
         self._open_panel = panel
         #: Где окно панели было в прошлый раз — спрашивается у панели в момент открытия.
         self._saved_window: Callable[[], tuple[int, int, int, int] | None] = lambda: None
@@ -335,6 +340,20 @@ class TraySession:
         self._stopping: asyncio.Event | None = None
         self._quit_early = False
         self.icon = icon_factory(self.on_action)
+        # Галочки меню — факт системы, а не значка: значок только спрашивает.
+        if hasattr(self.icon, "checked"):
+            self.icon.checked = self.checked_actions
+
+    @property
+    def autostart(self) -> Autostart:
+        """Автозапуск с Windows для этой папки проекта."""
+        if self._autostart is None:
+            self._autostart = Autostart(self.root)
+        return self._autostart
+
+    def checked_actions(self) -> frozenset[str]:
+        """Какие переключатели меню сейчас включены."""
+        return frozenset({AUTOSTART}) if self.autostart.enabled() else frozenset()
 
     def show(self) -> None:
         """Показать значок в состоянии «загружается»."""
@@ -377,12 +396,33 @@ class TraySession:
                 self._live_log(path, self.log_level)
         elif action == "folder":
             self._opener(self.root)
+        elif action == AUTOSTART:
+            self._toggle_autostart()
         elif action in ("restart", "quit"):
             self.restart = action == "restart"
             self._set(STOPPING)
             self._request_stop()
         else:
             logger.warning("Значок в трее: неизвестное действие %s", action)
+
+    def _toggle_autostart(self) -> None:
+        """Переключить автозапуск и сказать, что вышло: галочку в меню видно не сразу."""
+        notify = self._notify
+        if notify is None:
+            from .win32 import message_box
+
+            notify = message_box
+        try:
+            enabled = self.autostart.toggle()
+        except AutostartError as exc:
+            logger.warning("Автозапуск не переключился: %s", exc)
+            notify(str(exc), error=True)
+            return
+        notify(
+            "Jarvis будет запускаться при входе в Windows, без окна UAC."
+            if enabled
+            else "Автозапуск выключен: с Windows Jarvis больше не стартует."
+        )
 
     def _request_stop(self) -> None:
         if self._loop is None or self._stopping is None:

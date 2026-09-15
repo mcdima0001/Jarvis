@@ -207,7 +207,15 @@ class Painter:
         flags = _DT_SINGLELINE | _DT_VCENTER | _DT_NOPREFIX | _DT_END_ELLIPSIS
         self._user.DrawTextW(hdc, text, -1, ctypes.byref(area), flags)
 
-    def paint(self, hdc: int, layout: PopupLayout, state: str, hover: int | None, icon: int | None) -> None:
+    def paint(
+        self,
+        hdc: int,
+        layout: PopupLayout,
+        state: str,
+        hover: int | None,
+        icon: int | None,
+        checked: frozenset[str] = frozenset(),
+    ) -> None:
         """Нарисовать меню целиком — сначала в память, потом разом: без мерцания."""
         gdi, px = self._gdi, self.px
         width, height = layout.width, layout.height
@@ -249,7 +257,9 @@ class Painter:
                     color = PALETTE["danger_text"] if row.item.danger else PALETTE["text_hover"]
                 else:
                     color = PALETTE["text"]
-                self._text(memory, row.item.label, (px(22), row.top, width - px(14), bottom), "item", color)
+                self._text(memory, row.item.label, (px(22), row.top, width - px(40), bottom), "item", color)
+                if row.item.toggle and row.item.action in checked:
+                    self._text(memory, "✓", (width - px(34), row.top, width - px(14), bottom), "item", PALETTE["accent"])
 
             gdi.BitBlt(hdc, 0, 0, width, height, memory, 0, 0, _SRCCOPY)
         finally:
@@ -288,6 +298,7 @@ class StyledMenu:
         self._tracking = False
         self._was_active = False
         self._on_choose: Callable[[str], None] | None = None
+        self._checked: frozenset[str] = frozenset()
 
     def show(
         self,
@@ -298,8 +309,12 @@ class StyledMenu:
         state: str,
         menu: tuple[MenuItem | None, ...],
         on_choose: Callable[[str], None],
+        checked: frozenset[str] = frozenset(),
     ) -> bool:
-        """Открыть меню у значка. ``False`` — не вышло, пусть покажут системное."""
+        """Открыть меню у значка. ``False`` — не вышло, пусть покажут системное.
+
+        :param checked: действия переключателей, которые сейчас включены.
+        """
         if sys.platform != "win32":
             return False
         try:
@@ -312,7 +327,7 @@ class StyledMenu:
             self._painter = Painter(user32, self._gdi32, scale)
             self._layout, self._state, self._hover = layout, state, None
             self._icon = self._load_icon(state, self._painter.px(24))
-            self._on_choose = on_choose
+            self._on_choose, self._checked = on_choose, checked
             self._tracking = self._was_active = False
             hwnd = user32.CreateWindowExW(
                 _WS_EX_TOPMOST | _WS_EX_TOOLWINDOW, self._class, "Jarvis", _WS_POPUP,
@@ -431,7 +446,7 @@ class StyledMenu:
                     hdc = user32.BeginPaint(hwnd, ctypes.byref(paint))
                     try:
                         if self._painter is not None:
-                            self._painter.paint(hdc, layout, self._state, self._hover, self._icon)
+                            self._painter.paint(hdc, layout, self._state, self._hover, self._icon, self._checked)
                     finally:
                         user32.EndPaint(hwnd, ctypes.byref(paint))
                     return 0

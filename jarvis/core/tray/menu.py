@@ -40,7 +40,12 @@ class MenuItem:
     action: str
     #: Подсветить красным: действие, которое гасит ассистента.
     danger: bool = False
+    #: Переключатель: рядом с подписью галочка, если включён.
+    toggle: bool = False
 
+
+#: Действие переключателя «запускать с Windows».
+AUTOSTART = "autostart"
 
 #: Меню по правому щелчку; ``None`` — разделитель. Выход стоит последним, а
 #: перезапуск отделён от безобидных пунктов: промахнуться по нему дороже всего.
@@ -48,6 +53,8 @@ MENU: tuple[MenuItem | None, ...] = (
     MenuItem("Открыть панель", "panel"),
     MenuItem("Показать лог", "log"),
     MenuItem("Открыть папку Jarvis", "folder"),
+    None,
+    MenuItem("Запускать с Windows", AUTOSTART, toggle=True),
     None,
     MenuItem("Перезапустить", "restart"),
     MenuItem("Выйти", "quit", danger=True),
