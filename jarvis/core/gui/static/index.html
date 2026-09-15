@@ -287,13 +287,13 @@
     <div class="grid" id="status-cards"></div>
     <div class="live">
       <div class="live-block">
-        <h2 class="caption">Последние команды</h2>
-        <ol class="feed" id="feed"></ol>
-      </div>
-      <div class="live-block">
         <h2 class="caption">Нагрузка за 30 минут</h2>
         <div class="chart" id="load-chart"></div>
         <div class="small" id="load-note"></div>
+      </div>
+      <div class="live-block">
+        <h2 class="caption">Последние команды</h2>
+        <ol class="feed" id="feed"></ol>
       </div>
     </div>
   </section>
@@ -573,7 +573,7 @@ function drawLoad(data) {
   }
   if (points.length < 2) {
     box.replaceChildren();
-    note.textContent = "График копится: точка раз в 15 секунд.";
+    note.textContent = "График копится: точка раз в 5 секунд.";
     return;
   }
   const cores = Math.max(1, data.cores);
@@ -584,11 +584,13 @@ function drawLoad(data) {
   // Ширина — настоящая ширина блока: при растянутом viewBox буквы и точка
   // вытягивались по горизонтали (владелец, 15.09.2026).
   const width = Math.max(320, Math.round(box.clientWidth || 600)), height = 170, left = 40, bottom = 20, top = 10;
-  // Окно — 30 минут, а пока данных меньше — от первой точки (но не уже 5 минут):
-  // иначе свежий график жмётся к правому краю.
-  const now = Date.now() / 1000;
-  const span = Math.min(LOAD_WINDOW_S, Math.max(300, now - points[0].at));
-  const from = now - span;
+  // Правый край — последняя точка, а не «сейчас»: страница перерисовывает
+  // график чаще, чем приходят точки, и от «сейчас» линия уползала влево,
+  // оставляя справа пустоту до следующей точки. Левый край — первая точка
+  // (но не дальше 30 минут): свежий график занимает всю ширину, а не угол.
+  const end = points[points.length - 1].at;
+  const span = Math.min(LOAD_WINDOW_S, Math.max(10, end - points[0].at));
+  const from = end - span;
   const values = points.flatMap((p) => series.map((s) => s.value(p))).filter((v) => v != null);
   const peak = Math.max(0, ...values);
   const ceiling = machine ? 100 : Math.max(10, Math.ceil(peak * 1.2 / 5) * 5);
@@ -622,7 +624,7 @@ function drawLoad(data) {
   box.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Нагрузка за 30 минут">
     <defs><linearGradient id="loadFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#4fd8ff" stop-opacity="0.35"/><stop offset="1" stop-color="#4fd8ff" stop-opacity="0"/></linearGradient></defs>
     ${grid}
-    <text class="label" x="${left}" y="${height - 4}">${Math.round(span / 60)} мин назад</text>
+    <text class="label" x="${left}" y="${height - 4}">${span < 90 ? `${Math.round(span)} с` : `${Math.round(span / 60)} мин`} назад</text>
     <text class="label" x="${width - 4}" y="${height - 4}" text-anchor="end">сейчас</text>
     ${fill}
     ${series.map((s) => `<path class="${s.cls}" d="${pathOf(s)}"/>`).join("")}
