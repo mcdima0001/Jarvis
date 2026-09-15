@@ -200,3 +200,28 @@ def test_held_queue_has_a_limit() -> None:
     assert len(off.held) == 5
     # Остаются самые свежие: старые новости тем и плохи, что устарели.
     assert off.held[-1].text == "новость 11"
+
+
+async def test_cause_travels_with_the_announcement_even_when_held() -> None:
+    """Панель показывает повод в строке «Вы» — он не должен теряться в очереди (15.09.2026)."""
+    events = LocalEventBus()
+    got: list[tuple[str, str]] = []
+
+    async def listen(event: AnnouncementRequested) -> None:
+        got.append((event.text, event.cause))
+
+    events.subscribe(AnnouncementRequested.NAME, listen)  # type: ignore[arg-type]
+    modes = Modes()
+    announcer = Announcer(events=events, modes=modes, min_gap_s=0.0)
+
+    announcer.offer("Поздравляю, сэр.", importance=NORMAL, cause="Получилось [ввод с клавиатуры]")
+    modes.on(DEAF, minutes=30)
+    announcer.offer("готово: разобрать логи", importance=NORMAL, cause="поручение")
+    modes.off(DEAF)
+    announcer.flush()
+    await asyncio.sleep(0.05)
+
+    assert got == [
+        ("Поздравляю, сэр.", "Получилось [ввод с клавиатуры]"),
+        ("готово: разобрать логи", "поручение"),
+    ]

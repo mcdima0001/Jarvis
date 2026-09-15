@@ -681,3 +681,29 @@ async def test_typed_command_is_labelled_as_panel_in_the_feed(tmp_path: Path) ->
         ("курс рубля", "клавиатура"),
         ("включи свет", "панель"),
     ]
+
+
+async def test_reaction_shows_its_cause_in_the_you_line(tmp_path: Path) -> None:
+    """«Вы: включи эквалайзер» — «Jarvis: Поздравляю, сэр» выглядело ответом на команду (15.09.2026)."""
+    from jarvis.core.contracts import AnnouncementRequested, AssistantSpeaking, CommandTyped
+
+    panel, _, _ = _panel(tmp_path)
+    await panel._on_heard(CommandTyped(source="panel", text="включи эквалайзер"))
+    await panel._on_announced(AnnouncementRequested(text="Поздравляю, сэр.", cause="Получилось [ввод с клавиатуры]"))
+    await panel._on_speaking(AssistantSpeaking(text="Поздравляю, сэр."))
+
+    status = _json(await _call(panel, "GET", "/api/status"))
+    assert (status["last_heard"], status["last_reply"]) == ("Получилось [ввод с клавиатуры]", "Поздравляю, сэр.")
+    newest = _json(await _call(panel, "GET", "/api/activity"))["commands"][0]
+    assert (newest["heard"], newest["reply"], newest["source"]) == (
+        "Получилось [ввод с клавиатуры]", "Поздравляю, сэр.", "реакция",
+    )
+
+
+async def test_announcement_without_cause_leaves_the_you_line_alone(tmp_path: Path) -> None:
+    from jarvis.core.contracts import AnnouncementRequested, CommandTyped
+
+    panel, _, _ = _panel(tmp_path)
+    await panel._on_heard(CommandTyped(source="panel", text="напомни через час"))
+    await panel._on_announced(AnnouncementRequested(text="Напоминаю, сэр."))
+    assert _json(await _call(panel, "GET", "/api/status"))["last_heard"] == "напомни через час"

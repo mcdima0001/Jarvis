@@ -180,6 +180,7 @@ class ControlPanel:
             ("voice.wake_word.detected", self._on_listening),
             ("voice.command.recognized", self._on_heard),
             ("input.command.typed", self._on_heard),
+            ("assistant.announcement", self._on_announced),
             ("assistant.speaking", self._on_speaking),
             ("assistant.replied", self._on_replied),
             ("tool.completed", self._on_tool),
@@ -268,6 +269,20 @@ class ControlPanel:
             "at": time.time(), "heard": self._heard, "source": source,
             "tools": [], "reply": "",
         })
+
+    async def _on_announced(self, event: Event) -> None:
+        """Ассистент заговорил сам — по поводу, если он есть.
+
+        Шутка на набранное слово раньше выглядела ответом на прошлую голосовую
+        команду: в строке «Вы» оставалась она (15.09.2026, «включи эквалайзер» →
+        «Поздравляю, сэр»). Повод показывается там же и заводит запись в ленте;
+        реплику к ней допишет `_on_speaking`. Без повода — как было: «сказал сам».
+        """
+        cause = str(getattr(event, "cause", "") or "")
+        if not cause:
+            return
+        self._heard = cause
+        self._activity.append({"at": time.time(), "heard": cause, "source": "реакция", "tools": [], "reply": ""})
 
     async def _on_speaking(self, event: Event) -> None:
         self._state = SPEAKING

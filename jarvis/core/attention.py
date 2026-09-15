@@ -90,6 +90,8 @@ class Held:
     language: str = "ru"
     importance: str = NORMAL
     at: float = 0.0
+    #: На что откликнулись — едет вместе с репликой до панели.
+    cause: str = ""
 
 
 class Announcer:
@@ -181,6 +183,7 @@ class Announcer:
         importance: str = NORMAL,
         language: str = "ru",
         hold: bool = True,
+        cause: str = "",
     ) -> str:
         """Предложить реплику. Возвращает принятое решение.
 
@@ -189,6 +192,8 @@ class Announcer:
             бывает речь, уместная **только сейчас**: ироничная реплика на то,
             что человек набирает, через двадцать минут прозвучит невпопад.
             Для неё ``hold=False`` — «сказать или забыть», без очереди.
+        :param cause: на что откликнулись («Получилось [ввод с клавиатуры]») —
+            панель покажет это в строке «Вы». Пусто — повода нет.
         """
         clean = text.strip()
         if not clean:
@@ -201,10 +206,10 @@ class Announcer:
             logger.debug("Не время и держать незачем, отбросил: %s", clean)
             return "drop"
         if decision == "say":
-            self._speak(clean, language, importance, now)
+            self._speak(clean, language, importance, now, cause=cause)
         elif decision == "hold":
             self._held.append(
-                Held(text=clean, language=language, importance=importance, at=now)
+                Held(text=clean, language=language, importance=importance, at=now, cause=cause)
             )
             logger.info("Придержал (%s): %s", importance, clean)
         else:
@@ -226,11 +231,11 @@ class Announcer:
         items = list(self._held)
         self._held.clear()
         for item in items:
-            self._speak(item.text, item.language or language, item.importance, now)
+            self._speak(item.text, item.language or language, item.importance, now, cause=item.cause)
         logger.info("Досказал придержанное: %d реплик(и)", len(items))
         return len(items)
 
-    def _speak(self, text: str, language: str, importance: str, now: float) -> None:
+    def _speak(self, text: str, language: str, importance: str, now: float, *, cause: str = "") -> None:
         """Отправить реплику тому, кто её произнесёт."""
         self._last_spoken = now
         self._said[text] = now
@@ -238,7 +243,7 @@ class Announcer:
         logger.info("Говорю сам (%s): %s", importance, text)
         if self._events is not None:
             self._events.emit(
-                AnnouncementRequested(source="attention", text=text, language=language)
+                AnnouncementRequested(source="attention", text=text, language=language, cause=cause)
             )
 
     def _forget_old(self, now: float) -> None:

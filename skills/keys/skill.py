@@ -1109,7 +1109,10 @@ class KeysSkill(Skill):
         # славно»), и не понять, на какое слово она была (просьба 14.09.2026).
         # Хвост набора короткий: это буфер реакций, а не переписка.
         self.log.info("Реакция на «%s» (набрано: …%s)", reaction.keyword, reaction.context[-40:])
-        self.context.announcer.offer(reaction.quip, importance=LOW, hold=False)
+        # Повод — только сработавшее слово, не весь набор: в строке «Вы» на
+        # панели видно, на что была шутка (просьба владельца 15.09.2026).
+        cause = f"{reaction.keyword[:1].upper()}{reaction.keyword[1:]} [ввод с клавиатуры]"
+        self.context.announcer.offer(reaction.quip, importance=LOW, hold=False, cause=cause)
         if self._react_llm and self.context.llm.available:
             self.context.scope.spawn(
                 self._write_ahead(reaction), name="keys-react"
@@ -1130,7 +1133,8 @@ class KeysSkill(Skill):
         self.log.info(
             "Раскладка не та: %s", "русский латиницей" if direction == "ru" else "английский кириллицей"
         )
-        self.context.announcer.offer(quip, importance=LOW, hold=False)
+        # Повод без текста: набранное в не той раскладке могло быть паролем.
+        self.context.announcer.offer(quip, importance=LOW, hold=False, cause="[набор в не той раскладке]")
 
     async def _write_ahead(self, reaction: Reaction) -> None:
         """Сочинить моделью реплику на это слово и приготовить её к следующему разу.
