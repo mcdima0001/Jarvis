@@ -133,7 +133,10 @@ class VoicePipeline:
         announcer: "Announcer | None" = None,
         meter: "Meter | None" = None,
         conversation: "Conversation | None" = None,
+        hotwords: Any = None,
     ) -> None:
+        #: Детектор слов без имени — только замер: пишет в лог, ничего не делает.
+        self._hotwords = hotwords
         self._source = source
         self._sink = sink
         self._vad = vad
@@ -664,9 +667,16 @@ class VoicePipeline:
                         heard = self._wake_word.detect(frame)
                     if heard:
                         self._on_name_heard()
-
                 with self._meter.stage("речь"):
                     speech = self._vad.is_speech(frame)
+
+                if self._hotwords is not None:
+                    # После детектора речи: по нему спотер решает, прозвучало ли
+                    # слово отдельно — сам декодер на грамматике этого не видит.
+                    with self._meter.stage("горячие слова"):
+                        spotted = self._hotwords.feed(frame, speech=speech)
+                    if spotted is not None:
+                        self._note_hotword(spotted)
                 if speech:
                     if not speaking:
                         logger.debug("Начало речи")
@@ -698,6 +708,28 @@ class VoicePipeline:
             raise
         except Exception:
             logger.exception("Цикл прослушивания остановлен из-за ошибки")
+
+    def _note_hotword(self, spotted: Any) -> None:
+        """Замер слов без имени: записать, что сработало бы. Ничего не выполнять.
+
+        По этим строкам потом считается, сколько было настоящих команд и сколько
+        ложных, и помогает ли правило «одно слово с тишиной вокруг»
+        (15.09.2026, «механизм без замера не ставится»).
+        """
+        speech_ms = getattr(spotted, "speech_ms", None)
+        word_ms = getattr(spotted, "word_ms", None)
+        timing = ""
+        if speech_ms is not None:
+            timing = f", речи {speech_ms / 1000:.1f} с"
+            if word_ms is not None:
+                timing += f", слово {word_ms / 1000:.1f} с"
+        logger.info(
+            "Замер слов без имени: сработало бы «%s» (%s%s; гипотеза: %r)",
+            ", ".join(spotted.words),
+            "одно слово" if spotted.alone else "внутри фразы",
+            timing,
+            spotted.heard,
+        )
 
     def _on_name_heard(self) -> None:
         """Модель активации услышала имя — ещё до всякого распознавания.

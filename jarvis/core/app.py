@@ -289,6 +289,7 @@ class JarvisApp:
             sink=audio.sink,
             vad=audio.vad,
             wake_word=audio.wake_word,
+            hotwords=audio.hotwords,
             stt=stt,
             tts=tts,
             dispatcher=dispatcher,

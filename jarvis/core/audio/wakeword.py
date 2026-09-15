@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -346,3 +347,148 @@ class VoskWakeWord:
         """Взять новый декодер, не трогая состояние срабатывания."""
         self._recognizer = self._new()
         self._age_ms = 0.0
+
+
+#: Сколько речи сверх самого слова ещё считается «сказано отдельно», мс.
+#: Первая прикидка для замера: пауза вдоха и хвост детектора речи. Подбирается
+#: по логу — в нём пишутся и длительность речи, и длительность слова.
+ALONE_SLACK_MS = 500.0
+#: Длительность слова, если декодер не отдал разметку.
+WORD_MS_GUESS = 600.0
+
+
+@dataclass(frozen=True, slots=True)
+class Spotted:
+    """Что услышал детектор слов без имени к концу фразы."""
+
+    #: Какие слова из списка прозвучали.
+    words: tuple[str, ...]
+    #: Самая длинная промежуточная гипотеза фразы: «дальше» или «[unk] [unk] дальше».
+    heard: str
+    #: Прозвучало ли слово само по себе, без чужой речи вокруг.
+    #:
+    #: Считается **по длительности речи**, а не по словам декодера: на
+    #: грамматике Vosk `[unk]` не пишет ни в финальном тексте, ни в
+    #: промежуточных гипотезах, и «ну давай дальше рассказывай» приходит просто
+    #: как «дальше» (проверено на настоящей модели 15.09.2026). Речи во фразе
+    #: не больше, чем длится само слово с запасом, — значит, одно слово.
+    alone: bool
+    #: Уверенность декодера в самом слабом из слов. На грамматике всегда 1.0 —
+    #: как порог не годится, пишется для полноты.
+    confidence: float | None = None
+    #: Сколько речи было во фразе, мс (по детектору речи); ``None`` — не знаем.
+    speech_ms: float | None = None
+    #: Сколько длятся сами слова из списка, мс (по разметке декодера).
+    word_ms: float | None = None
+
+
+class HotwordSpotter:
+    """Слова без имени — «пауза», «дальше», «громче» — пока только для замера.
+
+    Отдельный декодер, а не добавка слов в словарь имени: слова внутри одного
+    декодера конкурируют, и «дальше» рядом с «джарвис» могло бы испортить
+    распознавание самого имени. Модель при этом общая — вторая копия в память не
+    грузится.
+
+    **Решение принимается по концу фразы**, а не по частичной гипотезе, как у
+    имени. Спешить некуда — музыку глушить не нужно, — а конец фразы честнее: по
+    нему видно, прозвучало слово само по себе или посреди разговора.
+    """
+
+    def __init__(self, model: Any, factory: Any, words: Sequence[str], *, sample_rate: int = 16000) -> None:
+        self._words = tuple(dict.fromkeys(known_words(words)))
+        if not self._words:
+            raise AudioError(
+                f"Ни одно слово не годится для русской модели: {', '.join(words) or '(пусто)'}"
+            )
+        self._model = model
+        self._factory = factory
+        self._rate = sample_rate
+        self._grammar = json.dumps([*self._words, UNKNOWN], ensure_ascii=False)
+        self._recognizer = self._new()
+        self._age_ms = 0.0
+        #: Самая длинная промежуточная гипотеза текущей фразы и был ли в ней `[unk]`.
+        self._longest = ""
+        self._unknown = False
+        #: Сколько речи набралось с конца прошлой фразы; ``None`` — речь не сообщают.
+        self._speech_ms: float | None = None
+
+    @classmethod
+    def sharing(cls, detector: VoskWakeWord, words: Sequence[str]) -> "HotwordSpotter":
+        """Собрать на модели, которую уже поднял детектор имени."""
+        return cls(detector._model, detector._factory, words, sample_rate=detector._rate)
+
+    @property
+    def words(self) -> tuple[str, ...]:
+        """Слушаемые слова — те, что годятся модели."""
+        return self._words
+
+    def _new(self) -> Any:
+        recognizer = self._factory(self._model, float(self._rate), self._grammar)
+        # Уверенность по словам — чтобы по итогам замера выбрать порог.
+        set_words = getattr(recognizer, "SetWords", None)
+        if callable(set_words):
+            set_words(True)
+        return recognizer
+
+    def feed(self, frame: AudioFrame, *, speech: bool | None = None) -> Spotted | None:
+        """Подать кадр; к концу фразы, если в ней было слово из списка, — что услышано.
+
+        :param speech: речь ли в кадре по детектору речи. По нему считается,
+            прозвучало ли слово отдельно; не сообщили — признак берётся по `[unk]`.
+        """
+        self._age_ms += frame.duration * 1000
+        if speech is not None:
+            self._speech_ms = (self._speech_ms or 0.0) + (frame.duration * 1000 if speech else 0.0)
+        if not self._recognizer.AcceptWaveform(frame.data):
+            partial = str(json.loads(self._recognizer.PartialResult()).get("partial", "")).strip()
+            if UNKNOWN in partial.split():
+                self._unknown = True
+            if len(partial.split()) > len(self._longest.split()):
+                self._longest = partial
+            if self._age_ms >= REFRESH_MS * 2:
+                # Сплошной звук без конца фразы (музыка): декодер дорожает с
+                # возрастом, и лечит только новый. Слово на стыке может
+                # потеряться — для замера это дешевле растущей нагрузки.
+                self._recognizer = self._new()
+                self._age_ms = 0.0
+                self._longest, self._unknown = "", False
+            return None
+        final = json.loads(self._recognizer.Result())
+        heard = str(final.get("text", "")).strip()
+        longest, unknown, speech_ms = self._longest or heard, self._unknown, self._speech_ms
+        self._longest, self._unknown = "", False
+        self._speech_ms = None if speech is None else 0.0
+        if self._age_ms >= REFRESH_MS:
+            # Конец фразы — безопасный стык, чтобы заменить постаревший декодер.
+            # Возраст считается с создания, а не с последней фразы: сброс по концу
+            # фразы нагрузку не лечит (замер у REFRESH_MS).
+            self._recognizer = self._new()
+            self._age_ms = 0.0
+        found = tuple(word for word in heard.split() if word in self._words)
+        if not found:
+            return None
+        marked = [
+            item for item in final.get("result") or ()
+            if isinstance(item, dict) and item.get("word") in self._words
+        ]
+        confidences = [float(item.get("conf", 0.0)) for item in marked]
+        spans = [
+            (float(item["end"]) - float(item["start"])) * 1000
+            for item in marked
+            if "start" in item and "end" in item
+        ]
+        word_ms = sum(spans) if spans else None
+        if speech_ms is not None:
+            # Речи не больше, чем длятся сами слова с запасом, — значит, отдельно.
+            alone = speech_ms <= (word_ms or WORD_MS_GUESS) + ALONE_SLACK_MS
+        else:
+            alone = not unknown and UNKNOWN not in heard.split()
+        return Spotted(
+            words=found,
+            heard=longest,
+            alone=alone,
+            confidence=min(confidences) if confidences else None,
+            speech_ms=speech_ms,
+            word_ms=word_ms,
+        )

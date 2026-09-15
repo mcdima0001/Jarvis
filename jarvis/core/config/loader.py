@@ -471,6 +471,10 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                 similarity=float(_section(audio, "wake_word").get("similarity", 0.7)),
                 follow_up_s=float(_section(audio, "wake_word").get("follow_up_s", 10.0)),
                 hold_ms=float(_section(audio, "wake_word").get("hold_ms", 300.0)),
+                hotwords=tuple(
+                    str(word).lower() for word in (_section(audio, "wake_word").get("hotwords") or ())
+                ),
+                hotwords_mode=str(_section(audio, "wake_word").get("hotwords_mode") or "off"),
             ),
             aec=AECConfig(
                 enabled=bool(_section(audio, "aec").get("enabled", True)),

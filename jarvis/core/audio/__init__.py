@@ -23,6 +23,7 @@ from .protocol import (
 from .silero import SileroVAD
 from .sound import load_sound, trim_silence
 from .vad import EnergyVAD, frame_rms
+from .wakeword import HotwordSpotter
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class AudioStack:
     sink: AudioSink
     vad: VAD
     wake_word: WakeWord
+    #: Детектор слов без имени — только замер (`audio.wake_word.hotwords_mode`).
+    hotwords: "HotwordSpotter | None" = None
 
     @property
     def live(self) -> bool:
@@ -209,7 +212,32 @@ def build_audio(config: AudioConfig, *, meter: "Meter | None" = None) -> AudioSt
         sink=SoundDeviceSink(config),
         vad=vad,
         wake_word=wake_word,
+        hotwords=_build_hotwords(config, wake_word),
     )
+
+
+def _build_hotwords(config: AudioConfig, wake_word: WakeWord) -> "HotwordSpotter | None":
+    """Детектор слов без имени — только когда включён замер и есть модель Vosk.
+
+    Модель берётся у детектора имени: без него её нет, а грузить вторую ради
+    замера незачем. Не вышло — предупреждение и работа без замера.
+    """
+    if config.wake_word.hotwords_mode != "shadow" or not config.wake_word.hotwords:
+        return None
+    from .wakeword import HotwordSpotter, VoskWakeWord
+
+    if not isinstance(wake_word, VoskWakeWord):
+        logger.warning(
+            "Замер слов без имени требует звукового детектора имени (mode: acoustic, engine: vosk) — выключен"
+        )
+        return None
+    try:
+        spotter = HotwordSpotter.sharing(wake_word, config.wake_word.hotwords)
+    except AudioError as exc:
+        logger.warning("Замер слов без имени не поднялся: %s", exc)
+        return None
+    logger.info("Замер слов без имени (ничего не выполняю, только пишу в лог): %s", ", ".join(spotter.words))
+    return spotter
 
 
 def _with_echo_cancelling(

@@ -215,3 +215,84 @@ def test_missing_model_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(AudioError, match="Нет модели"):
         VoskWakeWord(tmp_path / "нет-такого", phrases=("джарвис",))
+
+
+# --- слова без имени: только замер ------------------------------------------
+
+
+class _FinalRecognizer:
+    """Декодер, который ведёт себя как настоящий Vosk на грамматике.
+
+    Промежуточные гипотезы показывают `[unk]`, а финальный текст — нет: так
+    «ну давай дальше рассказывай» приходит к концу фразы просто «дальше»
+    (проверено на настоящей модели 15.09.2026).
+    """
+
+    def __init__(self, finals: dict[int, str], partials: dict[int, str] | None = None) -> None:
+        self._finals = finals
+        self._partials = partials or {}
+        self._frame = -1
+
+    def AcceptWaveform(self, data: bytes) -> bool:  # noqa: N802 — имя из vosk
+        self._frame += 1
+        return self._frame in self._finals
+
+    def PartialResult(self) -> str:  # noqa: N802 — имя из vosk
+        return json.dumps({"partial": self._partials.get(self._frame, "")}, ensure_ascii=False)
+
+    def Result(self) -> str:  # noqa: N802 — имя из vosk
+        text = self._finals[self._frame]
+        words = [{"word": word, "conf": 0.9} for word in text.split()]
+        return json.dumps({"text": text, "result": words}, ensure_ascii=False)
+
+
+def _spot(
+    finals: dict[int, str],
+    frames: int,
+    partials: dict[int, str] | None = None,
+    words: tuple[str, ...] = ("пауза", "дальше", "play"),
+) -> list[object]:
+    from jarvis.core.audio import AudioFrame
+    from jarvis.core.audio.wakeword import HotwordSpotter
+
+    def factory(model: object, rate: float, grammar: str) -> _FinalRecognizer:
+        return _FinalRecognizer(finals, partials)
+
+    spotter = HotwordSpotter(object(), factory, words, sample_rate=RATE)
+    assert spotter.words == ("пауза", "дальше"), "латиницу русская модель не знает"
+    frame = AudioFrame(data=b"\x00\x00" * 480, sample_rate=RATE)
+    return [got for _ in range(frames) if (got := spotter.feed(frame)) is not None]
+
+
+def test_word_said_alone_is_marked_alone() -> None:
+    spotted = _spot({3: "дальше"}, 5, partials={1: "дальше", 2: "дальше"})
+    assert [(s.words, s.alone, s.confidence) for s in spotted] == [(("дальше",), True, 0.9)]
+
+
+def test_word_inside_a_phrase_is_not_alone_even_if_the_final_text_hides_it() -> None:
+    """Финальный текст «дальше», но в гипотезах были [unk] — значит, внутри разговора."""
+    spotted = _spot({4: "дальше"}, 6, partials={1: "[unk]", 2: "[unk] [unk] дальше", 3: "[unk] [unk] дальше [unk]"})
+    assert [(s.words, s.alone, s.heard) for s in spotted] == [(("дальше",), False, "[unk] [unk] дальше [unk]")]
+
+
+def test_phrase_without_hotwords_is_ignored() -> None:
+    assert _spot({1: "", 3: ""}, 5, partials={0: "[unk]"}) == []
+
+
+def test_long_speech_around_the_word_is_not_alone() -> None:
+    """Главный признак на настоящей модели — длительность речи, а не [unk] (15.09.2026)."""
+    from jarvis.core.audio import AudioFrame
+    from jarvis.core.audio.wakeword import HotwordSpotter
+
+    def factory(model: object, rate: float, grammar: str) -> _FinalRecognizer:
+        return _FinalRecognizer({40: "дальше"})
+
+    frame = AudioFrame(data=b"\x00\x00" * 480, sample_rate=RATE)  # 30 мс
+
+    short = HotwordSpotter(object(), factory, ("дальше",), sample_rate=RATE)
+    got = [s for i in range(41) if (s := short.feed(frame, speech=i < 20))]  # 0.6 с речи
+    assert [(s.alone, s.speech_ms) for s in got] == [(True, 600.0)]
+
+    long = HotwordSpotter(object(), factory, ("дальше",), sample_rate=RATE)
+    got = [s for i in range(41) if (s := long.feed(frame, speech=True))]  # 1.2 с речи
+    assert [s.alone for s in got] == [False]
