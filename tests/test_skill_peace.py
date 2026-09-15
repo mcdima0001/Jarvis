@@ -72,6 +72,16 @@ class FakeApi:
         self.calls.append(("load", name))
         return name
 
+    def delete_preset(self, name: str) -> list[str]:
+        self._check()
+        self.calls.append(("delete", name))
+        return [item for item in self.presets() if item != name]
+
+    def rename_preset(self, name: str, new_name: str) -> list[str]:
+        self._check()
+        self.calls.append(("rename", (name, new_name)))
+        return self.presets()
+
     def set_equalizer(self, on: bool) -> bool:
         self.on = on
         return on
@@ -268,3 +278,56 @@ async def test_curve_is_set_on_the_equalizer() -> None:
     result = await skill.set_curve("60:5, 8000:2", preamp=-3)
     assert result.ok and set_preamp == [-3.0]
     assert result.speech_for("ru").startswith("Выставил кривую")
+
+
+# --- удаление и переименование (API 15.09.2026) ------------------------------
+
+
+async def test_preset_is_deleted_by_spoken_name() -> None:
+    skill, api = await _skill()
+    result = await skill.delete_preset("ультра бас")
+    assert result.ok and api.calls == [("delete", "ULTRA BASS")]
+    assert result.speech_for("ru") == "Удалил пресет ULTRA BASS."
+
+
+async def test_unknown_preset_is_not_deleted() -> None:
+    skill, api = await _skill()
+    result = await skill.delete_preset("джаз")
+    assert not result.ok and api.calls == []
+
+
+async def test_peace_refusal_to_delete_is_spoken() -> None:
+    skill, api = await _skill()
+    real_delete = api.delete_preset
+
+    def refuse(name: str) -> list[str]:
+        raise PeaceError("встроенный пресет Peace удалить нельзя")
+
+    api.delete_preset = refuse  # type: ignore[method-assign]
+    result = await skill.delete_preset("вечер")
+    assert not result.ok and "удалить нельзя" in result.speech_for("ru")
+    api.delete_preset = real_delete  # type: ignore[method-assign]
+
+
+async def test_preset_is_renamed_with_a_capital_letter() -> None:
+    skill, api = await _skill()
+    result = await skill.rename_preset("вечер", "ночь")
+    assert result.ok and api.calls == [("rename", ("Вечер", "Ночь"))]
+    assert result.speech_for("ru") == "Переименовал Вечер в Ночь."
+
+
+def test_delete_and_rename_are_not_shown_to_the_model() -> None:
+    from jarvis.core.tools import collect_tools
+
+    specs = {item.spec.name: item.spec for item in collect_tools(peace.PeaceSkill(), namespace="peace")}
+    assert not specs["peace.delete_preset"].routable and specs["peace.delete_preset"].reversible is False
+    assert not specs["peace.rename_preset"].routable and specs["peace.rename_preset"].reversible is True
+
+
+def test_disabled_bands_are_left_alone() -> None:
+    bands = [
+        {"band": 1, "frequency_hz": 60, "gain_db": 0.0, "enabled": False},
+        {"band": 2, "frequency_hz": 120, "gain_db": 0.0, "enabled": True},
+    ]
+    assert peace.shifted_gains(bands, lambda hz: hz < 250, 2.0, 12.0) == [(2, 2.0)]
+    assert peace.assign_to_bands([(60.0, 5.0)], bands, 12.0) == [(2, 5.0)]

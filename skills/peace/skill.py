@@ -15,10 +15,11 @@ Peace Nexus у владельца — своя сборка Peace с API (`nexus
 включены в басы и верха потому, что у владельца полосы стоят ровно на 250 Гц и
 4 кГц, и это края, а не середина; середине остаётся то, что внутри.
 
-**Что обратимо, а что нет.** Полосы, предусиление, баланс и вкл/выкл
-возвращаются той же командой обратно. Загрузка пресета, «выровнять» и
-сохранение — нет: несохранённая кривая пропадает, а сохранение перезаписывает
-пресет с тем же именем. В плане такие шаги спросят.
+**Что обратимо, а что нет.** Полосы, предусиление, баланс, вкл/выкл и
+переименование пресета возвращаются той же командой обратно. Загрузка пресета,
+«выровнять», сохранение и удаление — нет: несохранённая кривая пропадает,
+сохранение перезаписывает пресет с тем же именем, удалённый не вернуть. В плане
+такие шаги спросят, а удаление модели не видно вовсе — только прямой фразой.
 
 **В каталог модели идут шесть инструментов** — состояние, вкл/выкл, пресет,
 сохранение пресета, кривая целиком и сдвиг басов, середины или верхов.
@@ -182,7 +183,8 @@ def shifted_gains(
     """
     changes: list[tuple[int, float]] = []
     for band in bands:
-        if not choose(float(band.get("frequency_hz", 0))):
+        # Выключенную полосу не крутим: её не слышно (поле `enabled` — API 15.09.2026).
+        if band.get("enabled") is False or not choose(float(band.get("frequency_hz", 0))):
             continue
         current = float(band.get("gain_db", 0.0))
         target = round(max(-limit, min(limit, current + step)), 1)
@@ -228,11 +230,13 @@ def assign_to_bands(
 
     Две точки на одну полосу — берётся последняя: модель уточняла.
     """
-    if not bands:
+    # Выключенные полосы не слышно — кривая ложится только на включённые.
+    audible = [band for band in bands if band.get("enabled") is not False]
+    if not audible:
         return []
     chosen: dict[int, float] = {}
     for hz, db in points:
-        nearest = min(bands, key=lambda band: abs(float(band.get("frequency_hz", 0)) - hz))
+        nearest = min(audible, key=lambda band: abs(float(band.get("frequency_hz", 0)) - hz))
         chosen[int(nearest["band"])] = round(max(-limit, min(limit, db)), 1)
     return sorted(chosen.items())
 
@@ -266,7 +270,7 @@ class PeaceSkill(Skill):
     meta = SkillMeta(
         name="peace",
         description="Эквалайзер Peace Nexus: пресеты, басы, середина, верха, баланс",
-        version="0.1.3",
+        version="0.2.0",
         platforms=("windows",),
         spoken=("пис", "peace", "эквалайзер"),
     )
@@ -435,6 +439,63 @@ class PeaceSkill(Skill):
             return refusal
         self.log.info("Peace: сохранён пресет %s", saved)
         return ToolResult.success({"preset": saved}, speech={"ru": f"Сохранил пресет {saved}.", "en": f"Saved {saved}."})
+
+    # Удаление — только прямой фразой: модели не видно, план его не выберет.
+    # Peace удаляет сам (API 15.09.2026), вместе с горячей клавишей и записями
+    # автоматизации; встроенный «Equalizer Default» не удаляется.
+    @tool(routable=False, phrases=["удали пресет {name}", "удалить пресет {name}", "сотри пресет {name}"],
+          reversible=False)
+    async def delete_preset(self, name: str) -> ToolResult:
+        """Удалить пресет эквалайзера. Отменить нельзя.
+
+        :param name: название пресета, как его назвали.
+        """
+        found, refusal = await self._preset_by_ear(name)
+        if refusal:
+            return refusal
+        _, refusal = await self._safely(lambda api: api.delete_preset(found))
+        if refusal:
+            return refusal
+        self.log.info("Peace: удалён пресет %s", found)
+        return ToolResult.success({"deleted": found}, speech={"ru": f"Удалил пресет {found}.", "en": f"Deleted {found}."})
+
+    # Переименование обратимо: назад — той же командой. Занятое имя Peace не
+    # принимает, чужой пресет не перетирается.
+    @tool(routable=False, phrases=["переименуй пресет {name} в {new_name}", "переименовать пресет {name} в {new_name}"],
+          reversible=True)
+    async def rename_preset(self, name: str, new_name: str) -> ToolResult:
+        """Переименовать пресет эквалайзера.
+
+        :param name: нынешнее название, как его назвали.
+        :param new_name: новое название.
+        """
+        found, refusal = await self._preset_by_ear(name)
+        if refusal:
+            return refusal
+        wanted = new_name.strip()
+        # Голос приходит строчными, а пресеты у владельца — с заглавной («Вечер»).
+        wanted = wanted[:1].upper() + wanted[1:]
+        _, refusal = await self._safely(lambda api: api.rename_preset(found, wanted))
+        if refusal:
+            return refusal
+        self.log.info("Peace: пресет %s переименован в %s", found, wanted)
+        return ToolResult.success(
+            {"preset": wanted, "was": found},
+            speech={"ru": f"Переименовал {found} в {wanted}.", "en": f"Renamed {found} to {wanted}."},
+        )
+
+    async def _preset_by_ear(self, name: str) -> tuple[str, ToolResult | None]:
+        """Найти пресет по услышанному названию или готовый отказ."""
+        names, refusal = await self._safely(lambda api: api.presets())
+        if refusal:
+            return "", refusal
+        found = pick_preset(name, names)
+        if found is None:
+            return "", ToolResult.failure(
+                f"пресет {name!r} не найден. Есть: {', '.join(names) or 'ни одного'}",
+                speech={"ru": f"Не нашёл пресет {name}. Есть: {few_names(names)}.", "en": f"No preset {name}."},
+            )
+        return found, None
 
     @tool(routable=False, phrases=["выровняй эквалайзер", "сбрось эквалайзер", "эквалайзер в ноль",
                                    "убери эквалайзер в ноль"],
