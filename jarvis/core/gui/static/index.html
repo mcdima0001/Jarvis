@@ -103,8 +103,7 @@
   .big { font-size: 24px; color: var(--cyan-soft); font-weight: 600; }
   .small { color: var(--muted); font-size: 12.5px; }
   /* Главная: живая лента и график под карточками — не плитками, а полосами. */
-  .live { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; margin-top: 18px; }
-  @media (max-width: 1000px) { .live { grid-template-columns: minmax(0, 1fr); } }
+  .live { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-top: 18px; }
   .live-block { position: relative; padding: 14px 18px 16px; border-left: 2px solid var(--cyan-dim); background: linear-gradient(90deg, rgba(79, 216, 255, 0.06), transparent 70%); min-width: 0; }
   .live-block h2.caption { margin-top: 0; }
   .feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
@@ -124,6 +123,12 @@
   .chart .label { fill: var(--dim); font: 11px var(--mono); }
   .chart .line { fill: none; stroke: var(--cyan); stroke-width: 2; filter: drop-shadow(0 0 4px rgba(79, 216, 255, 0.6)); }
   .chart .now { fill: var(--cyan); }
+  .chart .line.gpu { stroke: #ffb454; filter: drop-shadow(0 0 4px rgba(255, 180, 84, 0.5)); }
+  .chart .line.jarvis { stroke: rgba(230, 245, 255, 0.55); stroke-width: 1.5; stroke-dasharray: 4 3; filter: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  .legend .key::before { content: ""; display: inline-block; width: 14px; height: 2px; margin: 0 6px 3px 0; vertical-align: middle; background: var(--cyan); }
+  .legend .key.gpu::before { background: #ffb454; }
+  .legend .key.jarvis::before { background: rgba(230, 245, 255, 0.55); }
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   td { padding: 8px; border-bottom: 1px solid rgba(79, 216, 255, 0.08); vertical-align: middle; }
@@ -556,43 +561,80 @@ async function loadActivity() {
   drawLoad(data);
 }
 function drawLoad(data) {
-  const box = $("load-chart");
-  if (!data.metered) {
+  const box = $("load-chart"), note = $("load-note");
+  const points = data.load;
+  // Машина целиком — из MSI Afterburner, когда он запущен; иначе — свой счётчик Jarvis.
+  const machine = points.some((p) => p.cpu != null);
+  if (!data.metered && !machine) {
     box.replaceChildren();
-    $("load-note").textContent = "Счётчик нагрузки выключен (runtime.meter в config.yaml).";
+    note.textContent = "Счётчик нагрузки выключен (runtime.meter в config.yaml), а MSI Afterburner не запущен.";
     return;
   }
-  const points = data.load;
   if (points.length < 2) {
     box.replaceChildren();
-    $("load-note").textContent = "График копится: точка раз в 15 секунд.";
+    note.textContent = "График копится: точка раз в 15 секунд.";
     return;
   }
+  const cores = Math.max(1, data.cores);
+  const jarvis = (p) => (p.core == null ? null : p.core / cores);
+  const series = machine
+    ? [{ cls: "line", value: (p) => p.cpu }, { cls: "line gpu", value: (p) => p.gpu }, { cls: "line jarvis", value: jarvis }]
+    : [{ cls: "line", value: (p) => p.core }];
   const width = 600, height = 170, left = 34, bottom = 20, top = 10;
   const now = Date.now() / 1000, from = now - 3600;
-  const peak = Math.max(...points.map((p) => p.core));
-  const ceiling = Math.max(10, Math.ceil(peak * 1.2 / 5) * 5);
+  const values = points.flatMap((p) => series.map((s) => s.value(p))).filter((v) => v != null);
+  const peak = Math.max(0, ...values);
+  const ceiling = machine ? 100 : Math.max(10, Math.ceil(peak * 1.2 / 5) * 5);
   const x = (at) => left + ((Math.max(at, from) - from) / 3600) * (width - left - 4);
-  const y = (core) => top + (1 - core / ceiling) * (height - top - bottom);
-  const path = points.map((p, index) => `${index ? "L" : "M"}${x(p.at).toFixed(1)},${y(p.core).toFixed(1)}`).join(" ");
+  const y = (value) => top + (1 - Math.min(value, ceiling) / ceiling) * (height - top - bottom);
+  // Пропуск (Afterburner закрыли и открыли) рвёт линию, а не рисует ноль.
+  const pathOf = (s) => {
+    let d = "", pen = false;
+    for (const p of points) {
+      const v = s.value(p);
+      if (v == null) { pen = false; continue; }
+      d += `${pen ? "L" : "M"}${x(p.at).toFixed(1)},${y(v).toFixed(1)} `;
+      pen = true;
+    }
+    return d.trim();
+  };
   const grid = [0, 0.5, 1].map((share) => {
     const value = ceiling * share;
     return `<line class="axis" x1="${left}" x2="${width - 4}" y1="${y(value)}" y2="${y(value)}"/>` +
       `<text class="label" x="${left - 6}" y="${y(value) + 4}" text-anchor="end">${Math.round(value)}%</text>`;
   }).join("");
+  const main = points.filter((p) => series[0].value(p) != null);
   const last = points[points.length - 1];
+  const fill = main.length > 1
+    ? `<path d="${pathOf(series[0])} L${x(main[main.length - 1].at).toFixed(1)},${y(0)} L${x(main[0].at).toFixed(1)},${y(0)} Z" fill="url(#loadFill)"/>`
+    : "";
+  const dot = series[0].value(last) != null
+    ? `<circle class="now" cx="${x(last.at).toFixed(1)}" cy="${y(series[0].value(last)).toFixed(1)}" r="3.5"/>`
+    : "";
   // Разметка собирается только из чисел, поэтому вставлять её строкой безопасно.
   box.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Нагрузка за час">
     <defs><linearGradient id="loadFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#4fd8ff" stop-opacity="0.35"/><stop offset="1" stop-color="#4fd8ff" stop-opacity="0"/></linearGradient></defs>
     ${grid}
     <text class="label" x="${left}" y="${height - 4}">час назад</text>
     <text class="label" x="${width - 4}" y="${height - 4}" text-anchor="end">сейчас</text>
-    <path d="${path} L${x(last.at).toFixed(1)},${y(0)} L${x(points[0].at).toFixed(1)},${y(0)} Z" fill="url(#loadFill)"/>
-    <path class="line" d="${path}"/>
-    <circle class="now" cx="${x(last.at).toFixed(1)}" cy="${y(last.core).toFixed(1)}" r="3.5"/>
+    ${fill}
+    ${series.map((s) => `<path class="${s.cls}" d="${pathOf(s)}"/>`).join("")}
+    ${dot}
   </svg>`;
-  const machine = (share) => (share / Math.max(1, data.cores)).toFixed(1);
-  $("load-note").textContent = `Сейчас ${last.core}% ядра (${machine(last.core)}% процессора), пик за час ${peak}%.`;
+  if (!machine) {
+    note.textContent = `Jarvis сейчас ${last.core}% ядра (${(last.core / cores).toFixed(1)}% процессора), пик за час ${peak}%. ` +
+      "Запусти MSI Afterburner — здесь будет вся машина с температурами.";
+    return;
+  }
+  const degrees = (value) => (value == null ? "" : ` · ${Math.round(value)} °C`);
+  const percent = (value) => (value == null ? "—" : `${Math.round(value)}%`);
+  const cpuPeak = Math.max(0, ...points.map((p) => p.cpu ?? 0));
+  note.replaceChildren(el("div", { class: "legend" },
+    el("span", { class: "key" }, `Процессор ${percent(last.cpu)}${degrees(last.cpu_temp)}`),
+    last.gpu != null || last.gpu_temp != null ? el("span", { class: "key gpu" }, `Видеокарта ${percent(last.gpu)}${degrees(last.gpu_temp)}`) : "",
+    el("span", { class: "key jarvis" }, `Jarvis ${last.core == null ? "—" : `${(last.core / cores).toFixed(1)}%`}`),
+    el("span", {}, `пик процессора за час ${Math.round(cpuPeak)}%`),
+  ));
 }
 
 // --- расход -----------------------------------------------------------------

@@ -47,6 +47,7 @@ from jarvis.core.logging.visible import console_view
 from jarvis.core.tools import collect_tools, tool
 from jarvis.core.version import current
 
+from .afterburner import read_machine
 from .http import HttpServer, Request, Response, json_response
 from .settings import (
     describe_config,
@@ -127,8 +128,9 @@ class ControlPanel:
         self._meter = meter
         #: Последние команды: что услышал, какие инструменты отработали, что ответил.
         self._activity: deque[dict[str, Any]] = deque(maxlen=ACTIVITY_LIMIT)
-        #: Отсчёты нагрузки за последний час: момент и доля ядра в процентах.
-        self._load: deque[tuple[float, float]] = deque(maxlen=LOAD_POINTS)
+        #: Отсчёты нагрузки за последний час: момент, доля ядра у Jarvis и, если
+        #: запущен MSI Afterburner, загрузка и температура процессора и видеокарты.
+        self._load: deque[dict[str, Any]] = deque(maxlen=LOAD_POINTS)
         self._load_task: asyncio.Task[None] | None = None
         #: Команды «открой / закрой панель», зарегистрированные на время работы.
         self._tool_registrations: list[Any] = []
@@ -284,17 +286,30 @@ class ControlPanel:
         return last if last["heard"] and time.time() - last["at"] <= ENTRY_WINDOW_S else None
 
     async def _sample_load(self) -> None:
-        """Раз в 15 секунд — точка на графике нагрузки."""
+        """Раз в 15 секунд — точка на графике нагрузки.
+
+        Машина целиком — из MSI Afterburner (просьба владельца 15.09.2026): свой
+        счётчик знает только Jarvis, в долях ядра, и «пик 140%» ничего не
+        говорил о том, что с компьютером. Не запущен — точка без этих полей.
+        """
         while True:
             load = self._meter.recent()
-            self._load.append((time.time(), round(load.share * 100, 1)))
+            point: dict[str, Any] = {"at": time.time(), "core": round(load.share * 100, 1)}
+            try:
+                machine = await asyncio.to_thread(read_machine)
+            except Exception as exc:  # noqa: BLE001 — датчики не важнее графика
+                logger.debug("Afterburner не прочитался: %s", exc)
+                machine = None
+            if machine is not None:
+                point.update(machine.as_dict())
+            self._load.append(point)
             await asyncio.sleep(LOAD_EVERY_S)
 
     async def _activity_view(self, request: Request) -> Response:
         """Лента последних команд и нагрузка за час — для главной страницы."""
         return json_response({
             "commands": list(reversed(self._activity)),
-            "load": [{"at": at, "core": core} for at, core in self._load],
+            "load": list(self._load),
             "cores": os.cpu_count() or 1,
             "metered": bool(getattr(self._meter, "enabled", False)),
         })
