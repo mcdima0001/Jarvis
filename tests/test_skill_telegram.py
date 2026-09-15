@@ -227,3 +227,84 @@ def test_message_without_text_is_still_announced() -> None:
 def test_line_breaks_do_not_leak_into_speech() -> None:
     """Перевод строки в реплике синтезу не нужен и звучит паузой не там."""
     assert "\n" not in telegram.announcement("Чат", "первая\nвторая")
+
+
+# --- поручение, а не сообщение ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("dictated", "verb"),
+    [("спроси как дела и как настроение", "спроси"), ("и скажи, что буду позже", "скажи"),
+     ("буду через час", None), ("привет, как дела", None)],
+)
+def test_indirect_request_is_recognised(dictated: str, verb: str | None) -> None:
+    assert telegram.indirect_verb(dictated) == verb
+
+
+@pytest.mark.parametrize(
+    ("dictated", "message"),
+    [("спроси как дела и как настроение", "Как дела и как настроение?"),
+     ("скажи, что буду позже", "Буду позже."),
+     ("узнай у него, где ключи", "Где ключи?"),
+     ("поздравь её с днём рождения", None)],
+)
+def test_plain_rewrite_without_model(dictated: str, message: str | None) -> None:
+    assert telegram.plain_rewrite(dictated) == message
+
+
+class _SendingClient(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[tuple[Any, str]] = []
+
+    async def send_message(self, entity: Any, text: str) -> None:
+        self.messages.append((entity, text))
+
+
+class _FakeLLM:
+    available = True
+
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+        self.asked: list[str] = []
+
+    async def ask(self, prompt: str, *, task: str | None = None) -> str:
+        self.asked.append(prompt)
+        return self.answer
+
+
+def _messenger(llm: Any = None) -> Any:
+    skill = _telegram(None)
+    skill._client = _SendingClient()
+    skill._context.llm = llm
+    return skill
+
+
+async def test_instruction_becomes_a_message_from_the_owner() -> None:
+    """15.09.2026, 10:35: Роме ушло буквально «спроси как дела и как настроение»."""
+    skill = _messenger(_FakeLLM("«Как дела? Как настроение?»"))
+    result = await skill.send_message("маме", text="спроси как дела и как настроение")
+    assert result.ok
+    assert skill._client.messages == [("mama-entity", "Как дела? Как настроение?")]
+    assert result.speech_for("ru") == "Отправил Мама ❤️: Как дела? Как настроение?"
+
+
+async def test_without_model_the_simple_rule_rewrites() -> None:
+    skill = _messenger()
+    await skill.send_message("маме", text="спроси как дела и как настроение")
+    assert skill._client.messages == [("mama-entity", "Как дела и как настроение?")]
+
+
+async def test_instruction_that_cannot_be_rewritten_is_not_sent() -> None:
+    skill = _messenger()
+    result = await skill.send_message("маме", text="поздравь её с днём рождения")
+    assert not result.ok and skill._client.messages == []
+    assert "дословно" in result.speech_for("ru")
+
+
+async def test_ordinary_text_goes_as_dictated() -> None:
+    llm = _FakeLLM("не должно понадобиться")
+    skill = _messenger(llm)
+    result = await skill.send_message("маме", text="буду через час")
+    assert skill._client.messages == [("mama-entity", "буду через час")]
+    assert llm.asked == [] and result.speech_for("ru") == "Отправил Мама ❤️."

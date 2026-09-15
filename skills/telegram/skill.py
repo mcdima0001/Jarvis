@@ -33,11 +33,13 @@
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Sequence
 
 from jarvis.core.attention import LOW
 from jarvis.core.contracts import Event, ToolResult
+from jarvis.core.errors import LLMError
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.text import best_match, squash, starts
 from jarvis.core.tools import tool
@@ -129,6 +131,63 @@ def split_request(spoken: str, names: Sequence[str]) -> tuple[str, str]:
             best = (rank, found, " ".join(words[size:]).strip(" ,:—-"))
     return (best[1], best[2]) if best else ("", spoken.strip())
 
+#: Глаголы, с которых начинается **поручение**, а не само сообщение: «напиши
+#: Роме, спроси как дела» — это просьба спросить, и отправлять слово «спроси»
+#: Роме нельзя (живой случай 15.09.2026, 10:35: ушло «спроси как дела и как
+#: настроение»).
+INDIRECT_VERBS = (
+    "спроси", "узнай", "уточни", "скажи", "передай", "поздравь", "попроси",
+    "напомни", "поблагодари", "извинись", "предложи", "пригласи", "позови",
+    "предупреди", "сообщи", "ask", "tell",
+)
+_ASKING = ("спроси", "узнай", "уточни", "ask")
+_TELLING = ("скажи", "передай", "сообщи", "tell")
+
+#: Как переписать поручение в сообщение. Модель пишет **от первого лица**
+#: владельца: только она верно меняет лица («спроси, придёт ли он» → «Придёшь?»).
+_REWRITE_PROMPT = (
+    "Владелец диктует голосовому ассистенту поручение для сообщения в Telegram "
+    "собеседнику «{chat}»: «{message}». Напиши само сообщение так, как его написал "
+    "бы владелец: от первого лица, на «ты», коротко и естественно, как пишут в "
+    "мессенджере. Передай ровно то, о чём поручение, ничего не добавляй, не "
+    "здоровайся, если об этом не просили. Верни только текст сообщения, без кавычек "
+    "и пояснений."
+)
+
+
+def indirect_verb(message: str) -> str | None:
+    """Глагол поручения в начале текста, если текст — поручение, а не сообщение."""
+    words = re.findall(r"[\w'-]+", message.lower())
+    if not words:
+        return None
+    first = words[1] if words[0] in ("и", "а", "and") and len(words) > 1 else words[0]
+    return first if first in INDIRECT_VERBS else None
+
+
+def plain_rewrite(message: str) -> str | None:
+    """Переписать поручение без модели — там, где это можно сделать правилом.
+
+    «спроси как дела» → «Как дела?», «скажи, что буду позже» → «Буду позже.».
+    Остальное («поздравь», «попроси») правилом не переписать: ``None``.
+    """
+    verb = indirect_verb(message)
+    if verb is None:
+        return None
+    rest = message.strip()
+    rest = re.sub(r"^(и|а|and)\s+", "", rest, flags=re.IGNORECASE)
+    rest = rest[len(verb):] if rest.lower().startswith(verb) else rest
+    rest = re.sub(r"^[\s,:—-]*(у него|у неё|у нее|его|её|ее|ему|ей|him|her)?[\s,:—-]*", "", rest, flags=re.IGNORECASE)
+    if verb in _TELLING:
+        rest = re.sub(r"^(что|that)\s+", "", rest, flags=re.IGNORECASE)
+    elif verb not in _ASKING:
+        return None
+    rest = rest.strip(" ,.!?")
+    if not rest:
+        return None
+    ending = "?" if verb in _ASKING else "."
+    return rest[0].upper() + rest[1:] + ending
+
+
 #: Как называют «Избранное» — чат с самим собой. В списке диалогов Telethon он
 #: называется именем владельца аккаунта, а не «Избранное», поэтому сопоставлением
 #: с названиями его не найти. «Выбранное» — так Deepgram расслышал «Избранное»
@@ -174,7 +233,7 @@ class TelegramSkill(Skill):
     meta = SkillMeta(
         name="telegram",
         description="Сообщения и чаты Telegram",
-        version="0.2.0",
+        version="0.2.1",
         spoken=("телеграм", "telegram"),
     )
 
@@ -363,12 +422,47 @@ class TelegramSkill(Skill):
             )
 
         entity, name = found
+        dictated = message
+        if indirect_verb(message) is not None:
+            rewritten = await self._rewrite(message, name)
+            if rewritten is None:
+                # Отправить само поручение («поздравь её») — хуже, чем переспросить.
+                return ToolResult.failure(
+                    f"поручение {message!r} не удалось переписать в сообщение",
+                    speech={
+                        "ru": f"Не понял, что именно написать {name}. Продиктуй сообщение дословно.",
+                        "en": f"I couldn't phrase the message to {name}. Please dictate it word for word.",
+                    },
+                )
+            message = rewritten
         await self._client.send_message(entity, message)
         self.log.info("Отправлено в %s: %s", name, message)
-        return ToolResult.success(
-            {"chat": name, "text": message},
-            speech={"ru": f"Отправил {name}.", "en": f"Sent to {name}."},
-        )
+        if message != dictated:
+            # Текст писал не владелец, а ассистент: вслух — что именно ушло.
+            preview = message if len(message) <= PREVIEW else message[: PREVIEW - 1].rstrip() + "…"
+            speech = {"ru": f"Отправил {name}: {preview}", "en": f"Sent to {name}: {preview}"}
+        else:
+            speech = {"ru": f"Отправил {name}.", "en": f"Sent to {name}."}
+        return ToolResult.success({"chat": name, "text": message, "dictated": dictated}, speech=speech)
+
+    async def _rewrite(self, message: str, chat: str) -> str | None:
+        """Поручение → сообщение от первого лица. Моделью, а без неё — правилом.
+
+        :return: текст сообщения; ``None`` — переписать не удалось, отправлять нельзя.
+        """
+        llm = getattr(self.context, "llm", None)
+        if llm is not None and getattr(llm, "available", False):
+            try:
+                answer = await llm.ask(_REWRITE_PROMPT.format(chat=chat, message=message), task="dialog")
+            except (LLMError, TimeoutError, OSError) as error:
+                self.log.warning("Модель не переписала поручение (%s) — пробую правилом", error)
+            else:
+                text = answer.strip().strip("«»\"'").strip()
+                # Модель, начавшая рассуждать, выдаёт простыню; такое не отправляем.
+                if text and len(text) <= max(200, len(message) * 4):
+                    self.log.info("Поручение %r переписано: %r", message, text)
+                    return text
+        return plain_rewrite(message)
 
     @tool(phrases=["отправь скриншот из буфера {chat}", "отправь скриншот из буфера в {chat}",
                    "отправь картинку из буфера {chat}", "отправь картинку из буфера в {chat}",
