@@ -37,6 +37,7 @@ from jarvis.core.contracts import (
     Event,
     ToolResult,
     VoiceCommandRecognized,
+    WakeDismissed,
     WakeWordDetected,
 )
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
@@ -1116,6 +1117,7 @@ class WindowsSkill(Skill):
         self.context.scope.subscribe(WakeWordDetected.NAME, self._on_wake_word)
         self.context.scope.subscribe(VoiceCommandRecognized.NAME, self._on_command)
         self.context.scope.subscribe(AssistantReplied.NAME, self._on_replied)
+        self.context.scope.subscribe(WakeDismissed.NAME, self._on_dismissed)
 
     async def on_stop(self) -> None:
         """Вернуть громкость: приглушённая навсегда музыка — худший исход.
@@ -1150,6 +1152,17 @@ class WindowsSkill(Skill):
         # И заодно продлеваем страховку: работа идёт, бросать её посреди
         # выполнения незачем.
         self._arm_restore_timer()
+
+    async def _on_dismissed(self, event: Event) -> None:
+        """Фраза оказалась не к ассистенту — вернуть громкость сразу.
+
+        Раньше возвращал только страховочный таймер: услышав «имя» в песне,
+        ассистент молча убавлял музыку на двадцать секунд (15.09.2026, 09:12).
+        """
+        if not self._ducked:
+            return
+        self.log.debug("Не ко мне — возвращаю громкость")
+        await self._restore()
 
     async def _on_replied(self, event: Event) -> None:
         """Ответ прозвучал — вернуть громкость, если это был ответ на команду."""

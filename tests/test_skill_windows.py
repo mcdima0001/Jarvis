@@ -1198,3 +1198,28 @@ def test_hidden_and_system_folders_are_skipped(tmp_path) -> None:
     (tmp_path / "Отчёты").mkdir()
 
     assert list(windows.folder_catalog([tmp_path])) == ["Отчёты"]
+
+
+async def test_volume_comes_back_at_once_when_the_phrase_was_not_for_us() -> None:
+    """Раньше возвращал только страховочный таймер — через двадцать секунд (15.09.2026)."""
+    import logging
+
+    from jarvis.core.contracts import WakeDismissed
+
+    class Ducker(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-dismissed")
+
+    restored: list[bool] = []
+
+    async def restore(*, fade: bool = True) -> None:
+        restored.append(fade)
+
+    skill = object.__new__(Ducker)
+    skill._restore = restore
+    skill._ducked = {}
+    await skill._on_dismissed(WakeDismissed(source="voice", text="песня"))
+    assert restored == [], "не приглушали — возвращать нечего"
+
+    skill._ducked = {7: 1.0}
+    await skill._on_dismissed(WakeDismissed(source="voice", text="песня"))
+    assert restored == [True]

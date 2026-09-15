@@ -89,6 +89,21 @@ class WakeWordDetected(Event):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class WakeDismissed(Event):
+    """Имя было, но фраза оказалась не к ассистенту — ответа не будет.
+
+    Слова из песни, чужой разговор, запоздалое «имя» посреди фразы. Без этого
+    события приглушённая по имени музыка ждала страховочного таймера: двадцать
+    секунд тишины на ровном месте (живой запуск 15.09.2026, 09:12).
+    """
+
+    NAME: ClassVar[str] = "voice.wake.dismissed"
+
+    text: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class VoiceCommandRecognized(Event):
     """Whisper распознал реплику пользователя."""
 

@@ -23,6 +23,7 @@ from .events import (
     ToolCompleted,
     ToolInvoked,
     VoiceCommandRecognized,
+    WakeDismissed,
     WakeWordDetected,
 )
 from .intent import (
@@ -59,5 +60,6 @@ __all__ = [
     "detect_language",
     "dominant_language",
     "VoiceCommandRecognized",
+    "WakeDismissed",
     "WakeWordDetected",
 ]

@@ -1790,3 +1790,30 @@ def test_late_name_gets_no_early_sound(pipeline: VoicePipeline) -> None:
     pipeline._name_heard_at = now
     pipeline._acknowledge_early(now - 5)
     assert pipeline._early_ack == set() and pipeline._sound_task is None
+
+
+async def test_name_in_a_song_tells_that_no_reply_is_coming(pipeline: VoicePipeline) -> None:
+    """15.09.2026, 09:12: «имя» в песне убавило музыку на двадцать секунд без ответа."""
+    from jarvis.core.contracts import WakeDismissed
+    from jarvis.core.stt import Transcript
+
+    seen: list[WakeDismissed] = []
+    emit = pipeline._events.emit
+
+    def spy(event: object) -> None:
+        if isinstance(event, WakeDismissed):
+            seen.append(event)
+        emit(event)  # type: ignore[arg-type]
+
+    async def transcribe(audio: bytes, *, sample_rate: int = 16000) -> Transcript:
+        return Transcript(text="Любит своего бойфренда", language="ru")
+
+    pipeline._events.emit = spy  # type: ignore[method-assign]
+    pipeline._stt.transcribe = transcribe  # type: ignore[method-assign]
+    now = time.time()
+    pipeline._follow_up_until = now + 5
+    pipeline._name_heard_at = now
+
+    await pipeline._process(b"\x00" * 32000, now - 9.6)
+
+    assert [event.text for event in seen] == ["Любит своего бойфренда"]

@@ -48,6 +48,7 @@ from jarvis.core.contracts import (
     ToolResult,
     Utterance,
     VoiceCommandRecognized,
+    WakeDismissed,
     WakeWordDetected,
     dominant_language,
 )
@@ -356,6 +357,7 @@ class VoicePipeline:
         # Диспетчер решил, что это было не к нам (слова из песни, чужой разговор):
         # молчим совсем — «Готово» в ответ на «люблю тебя» хуже тишины.
         if isinstance(result.value, dict) and result.value.get("ignored"):
+            self._events.emit(WakeDismissed(source="voice", text=utterance.text, reason=str(result.value["ignored"])))
             return result
         if result.speech_stream is not None:
             reply = await self._say_stream(result.speech_stream, language=utterance.language)
@@ -892,6 +894,9 @@ class VoicePipeline:
         command = self._extract_command(transcript.text, spoken_at=spoken_at)
         if command is None:
             logger.debug("Обращения по имени нет — пропускаю")
+            # Музыку приглушили по имени — сказать, что ответа не будет, иначе
+            # она ждёт страховочного таймера (15.09.2026, 09:12: двадцать секунд).
+            self._events.emit(WakeDismissed(source="voice", text=transcript.text, reason="не ко мне"))
             return
 
         # Язык ответа — по команде, а не по всей расшифровке: имя в ней бывает
