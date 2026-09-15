@@ -182,7 +182,7 @@ class ClipboardSkill(Skill):
     meta = SkillMeta(
         name="clipboard",
         description="Читает буфер обмена, следит за изменениями и ведёт историю.",
-        version="0.1.0",
+        version="0.1.1",
         spoken=("буфер обмена", "clipboard"),
     )
 
@@ -374,7 +374,10 @@ class ClipboardSkill(Skill):
 
     @tool(phrases=["что копировали", "история буфера обмена"], reversible=True)
     async def clipboard_history(self, limit: int = 5) -> ToolResult:
-        """Показывает недавние копии из буфера обмена.
+        """Пересказать текст, который ассистент сам запомнил, пока следил за буфером.
+
+        Это не история Windows (Win+V), картинок в ней нет, и вставлять она не
+        умеет. «Вставь скриншоты из буфера» — не сюда.
 
         :param limit: сколько последних записей вернуть.
         """
@@ -388,8 +391,16 @@ class ClipboardSkill(Skill):
             return ToolResult.success(
                 {"items": [], "total": 0},
                 speech={
-                    "ru": "История буфера обмена пока пуста.",
-                    "en": "The clipboard history is empty so far.",
+                    # Живой случай 15.09.2026: на «вставь 16 скриншотов» прежнее
+                    # «история пуста» звучало враньём — в Win+V они были.
+                    "ru": (
+                        "Сам я из буфера ничего не запомнил: запоминаю только текст и только "
+                        "когда слежу за буфером. Историю Windows по Win+V не вижу."
+                    ),
+                    "en": (
+                        "I haven't kept anything from the clipboard: I only remember text while "
+                        "watching it. I can't see the Windows clipboard history."
+                    ),
                 },
             )
         last = payload[0]["preview"]
