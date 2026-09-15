@@ -401,6 +401,30 @@ async def test_unnamed_phrase_may_command_but_not_chat(lights_registry: ToolRegi
     assert chat.speech == "Болтаю."
 
 
+class _Guessing:
+    """Резолвер под именем модели: любую фразу считает включением света."""
+
+    @property
+    def name(self) -> str:
+        """Имя резолвера."""
+        return "llm"
+
+    async def resolve(self, utterance: Utterance) -> Intent | None:
+        """Угадать свет."""
+        return Intent(tool="lights.on", confidence=0.85)
+
+
+async def test_unnamed_phrase_is_not_trusted_to_model_guess(lights_registry: ToolRegistry) -> None:
+    """Живой случай 15.09.2026: разговор с другом без имени ушёл моделью в план."""
+    router = Router([PhraseResolver(lights_registry), _Guessing()], threshold=0.6)
+    dispatcher = Dispatcher(router=router, registry=lights_registry)
+    ignored = await dispatcher.handle(Utterance(text="тут реально есть другой десктоп", named=False))
+    assert ignored.ok and ignored.value == {"ignored": "без имени, разобрано моделью"}
+    # Шаблон без имени по-прежнему выполняется, а с именем модели доверяют.
+    assert (await dispatcher.handle(Utterance(text="зажги свет", named=False))).speech == "Свет включён."
+    assert (await dispatcher.handle(Utterance(text="сделай светло"))).speech == "Свет включён."
+
+
 class _Retelling(_Refusing):
     """Модель выбирает разговор, но вписывает в него свой пересказ."""
 

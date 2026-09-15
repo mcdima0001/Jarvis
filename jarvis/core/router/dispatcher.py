@@ -53,6 +53,8 @@ _NOT_UNDERSTOOD = {
 REPEAT_TOOL = "core.repeat"
 #: Свободный разговор. Реплике без имени он не положен (см. `Utterance.named`).
 CHAT_TOOL = "core.chat"
+#: Резолвер модели: его догадке реплика без имени не доверяется.
+LLM_RESOLVER = "llm"
 
 #: Ответ на отказ от подтверждения. Короткий намеренно: человек сказал «нет»,
 #: и обсуждать тут нечего.
@@ -302,6 +304,13 @@ class Dispatcher:
         if not utterance.named and intent.tool == CHAT_TOOL:
             logger.info("Без имени, и это не команда — не отвечаю: %r", utterance.text)
             return ToolResult.success({"ignored": "без имени в свободный разговор"}, tool="")
+        # То же, но разобранное моделью: к любой болтовне она подберёт инструмент.
+        # Разметка 15.09.2026: «Тут реально есть другой десктоп, покинь» и
+        # «Channel» ушли в план и справку. Без имени выполняется только то, что
+        # узнано шаблоном или выученным, — исковерканное «добавь басов» проходит.
+        if not utterance.named and intent.resolver == LLM_RESOLVER:
+            logger.info("Без имени, и команду угадывала модель — не отвечаю: %r", utterance.text)
+            return ToolResult.success({"ignored": "без имени, разобрано моделью"}, tool="")
 
         result = await self._call(utterance, intent)
 
