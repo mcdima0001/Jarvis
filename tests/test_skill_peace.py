@@ -331,3 +331,36 @@ def test_disabled_bands_are_left_alone() -> None:
     ]
     assert peace.shifted_gains(bands, lambda hz: hz < 250, 2.0, 12.0) == [(2, 2.0)]
     assert peace.assign_to_bands([(60.0, 5.0)], bands, 12.0) == [(2, 5.0)]
+
+
+async def test_reloaded_skill_reads_the_updated_api(tmp_path: Path) -> None:
+    """«Переподключи модуль» должно подхватывать и обновлённый peace_api, а не только skill.py."""
+    import os
+    import time as clock
+
+    (tmp_path / "peace_api.py").write_text("def version():\n    return 1\n", encoding="utf-8")
+
+    def fresh() -> Any:
+        skill = peace.PeaceSkill()
+        skill._context = SimpleNamespace(
+            setting=lambda key, default=None: str(tmp_path) if key == "api_dir" else default,
+            logger=logging.getLogger("test.peace"),
+        )
+        return skill
+
+    first = fresh()
+    await first.on_setup()
+    assert first._module().version() == 1
+
+    source = tmp_path / "peace_api.py"
+    source.write_text("def version():\n    return 2  # новый API\n", encoding="utf-8")
+    later = clock.time() + 5
+    os.utime(source, (later, later))  # иначе кеш байткода может принять файл за прежний
+
+    second = fresh()
+    await second.on_setup()
+    try:
+        assert second._module().version() == 2
+    finally:
+        sys.modules.pop("peace_api", None)
+        sys.path.remove(str(tmp_path))

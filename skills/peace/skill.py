@@ -270,7 +270,7 @@ class PeaceSkill(Skill):
     meta = SkillMeta(
         name="peace",
         description="Эквалайзер Peace Nexus: пресеты, басы, середина, верха, баланс",
-        version="0.2.0",
+        version="0.2.1",
         platforms=("windows",),
         spoken=("пис", "peace", "эквалайзер"),
     )
@@ -294,6 +294,13 @@ class PeaceSkill(Skill):
                 raise PeaceUnavailable(f"нет peace_api.py в {self._api_dir}")
             if str(self._api_dir) not in sys.path:
                 sys.path.insert(0, str(self._api_dir))
+            # Свежий экземпляр скилла — свежий модуль API. Python держит
+            # `peace_api` в кеше процесса, и после «переподключи модуль» скилл
+            # получал бы старый API без новых функций: так вышло 15.09.2026, когда
+            # API обновили в 10:46, а Jarvis работал с 10:39. Состояния у модуля
+            # нет, перечитать его безопасно.
+            sys.modules.pop("peace_api", None)
+            importlib.invalidate_caches()
             try:
                 self._api = importlib.import_module("peace_api")
             except Exception as exc:  # noqa: BLE001 — чужой модуль падает как угодно
