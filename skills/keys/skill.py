@@ -53,7 +53,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from jarvis.core.attention import LOW
+from jarvis.core.attention import LOW, URGENT
 from jarvis.core.contracts import CommandTyped, ToolResult
 from jarvis.core.errors import LLMError
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
@@ -468,8 +468,33 @@ LAYOUT_MARGIN = 1.0
 #: Сколько таких слов подряд, чтобы заговорить. Одно слово — не повод: имена в
 #: коде и названия бывают любыми, а двух подряд ложных почти не бывает.
 LAYOUT_WORDS = 2
-#: Не чаще раза в столько секунд: человек услышал и переключает раскладку.
-LAYOUT_COOLDOWN_S = 120.0
+#: Паузы по времени у замечания нет (просьба владельца 15.09.2026): на
+#: «Rfr ltkf& Xnj ltkftim&» через двадцать секунд после первого замечания
+#: двухминутная пауза промолчала, и выглядело это как «не понял». Повтор
+#: сдерживает другое — см. `LayoutGuard`: пока пишут не той раскладкой,
+#: замечание одно; снова — после слова в верной раскладке или Enter.
+
+#: Частые короткие слова: модели пар букв на двух-трёх буквах судить не по чему,
+#: а «как», «что», «ну», «да» — половина живого текста. Слово из списка,
+#: набранное в другой раскладке, засчитывается целиком. Отобраны так, чтобы
+#: форма в другой раскладке не встречалась в своём языке (проверено по тем же
+#: корпусам, что и модель): выброшены «мы» (vs), «че» (xt), «ща» (of).
+SHORT_RUSSIAN = (
+    "как что это так вот уже где кто там тут ну да нет мне вы ты он она они оно его её ещё еще "
+    "все всё без для про под над при или чем мой моя мои твой тоже раз два три час ага угу щас "
+    "чё не ни по из за до от на со же ли бы вам нам им ей ему тем том той эта эти тот уж вон "
+    "эх ой ох ах хм мда нас вас них ним нее неё был была было быть есть чей кем чём"
+).split()
+SHORT_ENGLISH = (
+    "the and you is it to of in on at be we are for not but can yes no ok so do my me how hi "
+    "hey all any was has had his her him its our out new now one two who why yet use get got "
+    "set see let did too off own way may say she they them this that with from have your"
+).split()
+#: Форма в чужой раскладке → каким языком слово было на самом деле.
+_SHORT_WRONG: dict[str, str] = {
+    **{"".join(_TO_LATIN[char] for char in word): "ru" for word in SHORT_RUSSIAN},
+    **{"".join(_TO_CYRILLIC[char] for char in word): "en" for word in SHORT_ENGLISH},
+}
 LAYOUT_MODEL = Path(__file__).with_name("layout_model.json")
 
 #: Реплики: «ru» — русский в английской раскладке, «en» — наоборот. Набранное не
@@ -479,11 +504,17 @@ DEFAULT_LAYOUT_QUIPS: dict[str, tuple[str, ...]] = {
         "Смелый шифр, сэр. Но раскладка, кажется, английская.",
         "Сэр, раскладка не та.",
         "Любопытный язык, сэр. Подозрительно похож на русский.",
+        "Сэр, это русский, просто в английской раскладке.",
+        "Похоже на пароль от Пентагона, сэр. Или на русский латиницей.",
+        "Раскладка, сэр. Опять она.",
     ),
     "en": (
         "Сэр, это английский в русской раскладке.",
         "Интересная кириллица, сэр. Раскладка не та.",
         "Раскладка русская, сэр, а слова — нет.",
+        "Сэр, по-английски это читалось бы лучше.",
+        "Древнерусский английский, сэр? Раскладка не та.",
+        "Сэр, кириллица не оценит ваш английский.",
     ),
 }
 
@@ -530,21 +561,20 @@ class LayoutModel:
 class LayoutGuard:
     """Копит набранные слова и замечает, когда несколько подряд — не в той раскладке.
 
-    Слово кончается на пробеле, знаке или Enter. Короткие слова не считаются и
-    счёт не сбивают; слово в верной раскладке — сбивает. Сработав, молчит
-    `cooldown_s`: человек услышал и переключает.
+    Слово кончается на пробеле, знаке или Enter. Короткие слова вне списка частых
+    не считаются и счёт не сбивают; слово в верной раскладке — сбивает.
+    Сработав, молчит, пока человек не переключится: слово в верной раскладке или
+    Enter (новое сообщение) снова взводят сторожа. Паузы по времени нет.
     """
 
-    def __init__(
-        self, model: LayoutModel, *, words: int = LAYOUT_WORDS, cooldown_s: float = LAYOUT_COOLDOWN_S
-    ) -> None:
+    def __init__(self, model: LayoutModel, *, words: int = LAYOUT_WORDS) -> None:
         self._model = model
         self._need = max(1, words)
-        self._cooldown = max(0.0, cooldown_s)
         self._word = ""
         self._streak = 0
         self._direction = ""
-        self._fired_at: float | None = None
+        #: Можно ли сейчас заметить. Снимается срабатыванием, взводится переключением.
+        self._armed = True
 
     def reset(self) -> None:
         """Забыть недописанное слово и счёт — сработала команда или чужое окно."""
@@ -567,17 +597,23 @@ class LayoutGuard:
         """Строка кончилась (Enter): закрыть последнее слово и начать счёт заново."""
         result = self._close(now)
         self._streak = 0
+        self._armed = True  # новое сообщение — снова можно заметить
         return result
 
     def _close(self, now: float | None) -> str | None:
         # «,» и «.» в конце — обычные знаки, а не «б» и «ю».
         word = self._word.rstrip(",.")
         self._word = ""
-        if sum(char.isalpha() for char in word) < LAYOUT_MIN_LETTERS:
-            return None
-        direction = self._model.wrong_layout(word)
+        direction = _SHORT_WRONG.get(word)
         if direction is None:
+            # Не из списка частых: короткое не судим, длинное — моделью.
+            if sum(char.isalpha() for char in word) < LAYOUT_MIN_LETTERS:
+                return None
+            direction = self._model.wrong_layout(word)
+        if direction is None:
+            # Слово в верной раскладке: переключился — следующая ошибка снова заметна.
             self._streak = 0
+            self._armed = True
             return None
         if direction != self._direction:
             self._direction, self._streak = direction, 0
@@ -585,10 +621,9 @@ class LayoutGuard:
         if self._streak < self._need:
             return None
         self._streak = 0
-        moment = time.monotonic() if now is None else now
-        if self._fired_at is not None and moment - self._fired_at < self._cooldown:
+        if not self._armed:
             return None
-        self._fired_at = moment
+        self._armed = False
         return direction
 
 
@@ -994,7 +1029,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.2.0",
+        version="0.2.1",
         platforms=("windows",),
         spoken=("клавиатура", "keyboard"),
     )
@@ -1133,8 +1168,11 @@ class KeysSkill(Skill):
         self.log.info(
             "Раскладка не та: %s", "русский латиницей" if direction == "ru" else "английский кириллицей"
         )
-        # Повод без текста: набранное в не той раскладке могло быть паролем.
-        self.context.announcer.offer(quip, importance=LOW, hold=False, cause="[набор в не той раскладке]")
+        # Срочное: общая пауза между репликами для шуток, а это исключение —
+        # замечание нужно сейчас, пока человек пишет (просьба владельца
+        # 15.09.2026). Режим «не слушаю» проверен выше. Повод без текста:
+        # набранное в не той раскладке могло быть паролем.
+        self.context.announcer.offer(quip, importance=URGENT, hold=False, cause="[набор в не той раскладке]")
 
     async def _write_ahead(self, reaction: Reaction) -> None:
         """Сочинить моделью реплику на это слово и приготовить её к следующему разу.

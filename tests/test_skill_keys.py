@@ -385,8 +385,30 @@ def test_ordinary_text_stays_quiet() -> None:
     assert _layout("привет, сегодня будем чинить раскладку и эквалайзер") == []
 
 
-def test_layout_remark_waits_between_times() -> None:
+def test_layout_remark_repeats_only_after_a_switch() -> None:
+    """Пока пишут не той раскладкой — одно замечание; переключился и снова ошибся — снова."""
     guard = keys.LayoutGuard(keys.LayoutModel.load())
-    assert _layout("ghbdtn ltkf", guard, now=0.0) == ["ru"]
-    assert _layout("ghbdtn ltkf", guard, now=10.0) == []
-    assert _layout("ghbdtn ltkf", guard, now=200.0) == ["ru"]
+    fired = [got for char in "ghbdtn ltkf rfr ltkf ltkftim " if (got := guard.feed(char))]
+    assert fired == ["ru"]
+    fired = [got for char in "привет ghbdtn ltkf " if (got := guard.feed(char))]
+    assert fired == ["ru"], "слово в верной раскладке снова взводит"
+    assert guard.finish() is None
+    fired = [got for char in "ghbdtn ltkf " if (got := guard.feed(char))]
+    assert fired == ["ru"], "Enter — новое сообщение"
+
+
+def test_short_common_words_count_too() -> None:
+    """«Rfr ltkf& Xnj ltkftim&» — «Как дела? Что делаешь?» (живой набор 15.09.2026)."""
+    assert _layout("Rfr ltkf& Xnj ltkftim&") == ["ru"]
+    assert _layout("ye lf") == ["ru"], "ну да"
+    assert _layout("еру фтв") == ["en"], "the and"
+
+
+def test_short_words_typed_right_stay_quiet() -> None:
+    assert _layout("is it ok to do so") == []
+    assert _layout("ну да, как дела, что там") == []
+
+
+def test_dropped_short_words_do_not_collide_with_english() -> None:
+    """«мы» (vs), «че» (xt), «ща» (of) в латинице — обычные английские токены."""
+    assert "vs" not in keys._SHORT_WRONG and "of" not in keys._SHORT_WRONG and "xt" not in keys._SHORT_WRONG

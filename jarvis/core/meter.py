@@ -336,6 +336,8 @@ class LoadReporter:
         try:
             while not self._stop:
                 await asyncio.sleep(self._every)
-                logger.info("Нагрузка: %s", self._meter.take().describe())
+                # В DEBUG: раз в минуту — это шум в обычном логе, а смотреть
+                # нагрузку есть график в панели (владелец, 15.09.2026).
+                logger.debug("Нагрузка: %s", self._meter.take().describe())
         except asyncio.CancelledError:
             raise
