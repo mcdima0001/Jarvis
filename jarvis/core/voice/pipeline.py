@@ -319,9 +319,10 @@ class VoicePipeline:
         text = event.text.strip()
         if not text:
             return
-        logger.info("Команда с клавиатуры: %r", text)
+        source = event.source or "keyboard"
+        logger.info("Команда текстом (%s): %r", source, text)
         await self.handle(
-            Utterance(text=text, language=event.language, source="keyboard")
+            Utterance(text=text, language=event.language, source=source)
         )
 
     # --- общий путь для голоса и текста ------------------------------------

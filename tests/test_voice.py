@@ -1817,3 +1817,18 @@ async def test_name_in_a_song_tells_that_no_reply_is_coming(pipeline: VoicePipel
     await pipeline._process(b"\x00" * 32000, now - 9.6)
 
     assert [event.text for event in seen] == ["Любит своего бойфренда"]
+
+
+async def test_typed_command_keeps_its_source(pipeline: VoicePipeline) -> None:
+    """Команда из панели не должна выглядеть в логе и обстановке как клавиатура."""
+    from jarvis.core.contracts import CommandTyped
+
+    handled: list[Utterance] = []
+
+    async def handle(utterance: Utterance) -> ToolResult:
+        handled.append(utterance)
+        return ToolResult.success(None)
+
+    pipeline.handle = handle  # type: ignore[method-assign]
+    await pipeline._on_typed(CommandTyped(source="panel", text="включи свет"))
+    assert [(u.text, u.source) for u in handled] == [("включи свет", "panel")]

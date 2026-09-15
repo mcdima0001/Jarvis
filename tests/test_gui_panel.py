@@ -645,3 +645,39 @@ async def test_panel_opens_and_closes_by_voice(tmp_path: Path, monkeypatch: pyte
     assert shut.speech_for("ru") == "Закрыл панель." and closed == [[777]]
     windows.clear()
     assert (await panel.close_panel()).speech_for("ru") == "Панель и так закрыта."
+
+
+async def test_typed_command_goes_the_same_way_as_voice(tmp_path: Path) -> None:
+    """Команда текстом из панели — событие `CommandTyped`, его ведёт конвейер (15.09.2026)."""
+    import asyncio
+
+    from jarvis.core.contracts import CommandTyped
+
+    panel, _, events = _panel(tmp_path)
+    seen: list[CommandTyped] = []
+
+    async def catch(event: Any) -> None:
+        seen.append(event)
+
+    events.subscribe(CommandTyped.NAME, catch)
+    response = await _call(panel, "POST", "/api/command", body={"text": "  какая   погода  "})
+    await asyncio.sleep(0.01)
+
+    assert response.status == 200
+    assert [(event.text, event.source) for event in seen] == [("какая погода", "panel")]
+
+    assert (await _call(panel, "POST", "/api/command", body={"text": "   "})).status == 400
+    assert (await _call(panel, "POST", "/api/command", body={"text": "я" * 501})).status == 400
+
+
+async def test_typed_command_is_labelled_as_panel_in_the_feed(tmp_path: Path) -> None:
+    from jarvis.core.contracts import CommandTyped
+
+    panel, _, _ = _panel(tmp_path)
+    await panel._on_heard(CommandTyped(source="panel", text="включи свет"))
+    await panel._on_heard(CommandTyped(source="keyboard", text="курс рубля"))
+    commands = _json(await _call(panel, "GET", "/api/activity"))["commands"]
+    assert [(entry["heard"], entry["source"]) for entry in commands] == [
+        ("курс рубля", "клавиатура"),
+        ("включи свет", "панель"),
+    ]

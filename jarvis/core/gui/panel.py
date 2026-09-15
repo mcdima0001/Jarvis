@@ -41,7 +41,7 @@ import yaml
 
 from jarvis.core.audio import outputs as audio_devices
 from jarvis.core.config import load_skill_settings
-from jarvis.core.contracts import Event, ToolResult
+from jarvis.core.contracts import CommandTyped, Event, ToolResult
 from jarvis.core.errors import ConfigError, SkillError
 from jarvis.core.logging.visible import console_view
 from jarvis.core.tools import collect_tools, tool
@@ -99,6 +99,10 @@ ENTRY_WINDOW_S = 60.0
 #: Раз в 5 секунд, а не 15: на 15 линия ползла рывками (владелец, 15.09.2026).
 LOAD_EVERY_S = 5.0
 LOAD_POINTS = int(30 * 60 / LOAD_EVERY_S)
+#: Откуда пришла команда, написанная в панели, — так её и подписывает лента.
+PANEL_SOURCE = "panel"
+#: Длиннее команды не бывает: это просьба, а не письмо.
+COMMAND_LIMIT = 500
 #: Сколько инструментов одной команды показывать: план может вызвать десяток.
 TOOLS_PER_ENTRY = 8
 
@@ -254,8 +258,14 @@ class ControlPanel:
     async def _on_heard(self, event: Event) -> None:
         self._heard = str(getattr(event, "text", ""))
         typed = getattr(event, "NAME", "") == "input.command.typed"
+        if not typed:
+            source = "голос"
+        elif getattr(event, "source", "") == PANEL_SOURCE:
+            source = "панель"
+        else:
+            source = "клавиатура"
         self._activity.append({
-            "at": time.time(), "heard": self._heard, "source": "клавиатура" if typed else "голос",
+            "at": time.time(), "heard": self._heard, "source": source,
             "tools": [], "reply": "",
         })
 
@@ -316,6 +326,23 @@ class ControlPanel:
             "metered": bool(getattr(self._meter, "enabled", False)),
         })
 
+    async def _command(self, request: Request) -> Response:
+        """Команда, написанная в панели, — то же, что сказанная голосом.
+
+        Панель её не выполняет сама: публикует `CommandTyped`, и конвейер ведёт
+        текст тем же путём, что распознанную речь, — роутер, ответ вслух,
+        приглушение микрофона. Так «новый вход не даёт новых прав» соблюдается
+        буквально (просьба владельца 15.09.2026). Ответ появится в ленте.
+        """
+        text = " ".join(str(request.json().get("text", "")).split())
+        if not text:
+            raise ValueError("пустая команда")
+        if len(text) > COMMAND_LIMIT:
+            raise ValueError(f"слишком длинная команда — больше {COMMAND_LIMIT} знаков")
+        logger.info("Панель: команда текстом %r", text)
+        self._events.emit(CommandTyped(source=PANEL_SOURCE, text=text))
+        return json_response({"message": "Отправил."})
+
     async def _on_replied(self, event: Event) -> None:
         if self._state != STOPPING:
             self._state = READY
@@ -358,6 +385,7 @@ class ControlPanel:
         routes = {
             ("GET", "/api/status"): self._status,
             ("GET", "/api/activity"): self._activity_view,
+            ("POST", "/api/command"): self._command,
             ("GET", "/api/modules"): self._modules,
             ("POST", "/api/modules"): self._toggle_module,
             ("POST", "/api/modules/reload"): self._reload_module,

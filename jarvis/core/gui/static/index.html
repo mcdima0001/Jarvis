@@ -104,6 +104,9 @@
   .small { color: var(--muted); font-size: 12.5px; }
   /* Главная: живая лента и график под карточками — не плитками, а полосами. */
   .live { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-top: 18px; }
+  .command { display: flex; gap: 10px; margin-top: 18px; }
+  .command input { flex: 1; min-width: 0; font-size: 14px; padding: 9px 12px; }
+  #command-note { min-height: 1.4em; margin-top: 6px; }
   .live-block { position: relative; padding: 14px 18px 16px; border-left: 2px solid var(--cyan-dim); background: linear-gradient(90deg, rgba(79, 216, 255, 0.06), transparent 70%); min-width: 0; }
   .live-block h2.caption { margin-top: 0; }
   .feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
@@ -285,6 +288,11 @@
 
   <section id="tab-status" class="on">
     <div class="grid" id="status-cards"></div>
+    <form class="command" id="command-form" autocomplete="off">
+      <input type="text" id="command-text" maxlength="500" placeholder="Напиши команду — как голосом: «включи трек…», «какая погода»" aria-label="Команда текстом">
+      <button class="act" type="submit">Отправить</button>
+    </form>
+    <div class="small" id="command-note"></div>
     <div class="live">
       <div class="live-block">
         <h2 class="caption">Нагрузка за 30 минут</h2>
@@ -1142,6 +1150,38 @@ async function loadLog() {
   if ($("follow").checked) $("log-scroll").scrollTop = $("log-scroll").scrollHeight;
 }
 $("log-clear").addEventListener("click", () => $("log").replaceChildren());
+
+// --- команда текстом: то же, что голосом --------------------------------------
+const commandHistory = [];
+let commandBack = 0;
+$("command-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = $("command-text"), note = $("command-note");
+  const text = input.value.trim();
+  if (!text) return;
+  input.disabled = true;
+  try {
+    await api("/api/command", { text });
+    commandHistory.push(text);
+    commandBack = 0;
+    input.value = "";
+    note.textContent = "Отправил — ответ прозвучит и появится в ленте.";
+    setTimeout(() => loadActivity().catch(() => {}), 400);
+  } catch (error) {
+    note.textContent = `Не отправилось: ${error.message}`;
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+});
+$("command-text").addEventListener("keydown", (event) => {
+  // Стрелками — по прошлым командам, как в консоли.
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  if (!commandHistory.length) return;
+  event.preventDefault();
+  commandBack = Math.max(0, Math.min(commandHistory.length, commandBack + (event.key === "ArrowUp" ? 1 : -1)));
+  event.target.value = commandBack ? commandHistory[commandHistory.length - commandBack] : "";
+});
 
 // --- настройки ------------------------------------------------------------
 let settings = null;
