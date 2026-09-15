@@ -43,12 +43,14 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import json
 import re
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
 from ctypes import wintypes
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from jarvis.core.attention import LOW
@@ -445,6 +447,151 @@ class Reactions:
         return result
 
 
+# --- раскладка --------------------------------------------------------------
+
+#: Одни и те же клавиши в двух раскладках: QWERTY и ЙЦУКЕН.
+LAYOUT_LATIN = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`"
+LAYOUT_CYRILLIC = "йцукенгшщзхъфывапролджэячсмитьбюё"
+_TO_CYRILLIC = dict(zip(LAYOUT_LATIN, LAYOUT_CYRILLIC, strict=True))
+_TO_LATIN = dict(zip(LAYOUT_CYRILLIC, LAYOUT_LATIN, strict=True))
+#: Знаки, которые в другой раскладке — буквы (ж, э, х, ъ, ё, б, ю).
+_LAYOUT_MARKS = ";'[]`,."
+
+#: Слова короче не судим: «d», «b», «rfr» — это «в», «и», «как», но и «db»,
+#: «ok» тоже. Они не засчитываются и не сбивают счёт.
+LAYOUT_MIN_LETTERS = 4
+#: Насколько слово в другой раскладке должно быть вероятнее, чем как набрано.
+#: Замер 15.09.2026 (`tools/layout_model.py`, отложенная половина слов от четырёх
+#: букв): русское латиницей ловится в 96.0%, ложно на английском — 0.21%;
+#: английское кириллицей — 92.1%, ложно на русском — 0.00%.
+LAYOUT_MARGIN = 1.0
+#: Сколько таких слов подряд, чтобы заговорить. Одно слово — не повод: имена в
+#: коде и названия бывают любыми, а двух подряд ложных почти не бывает.
+LAYOUT_WORDS = 2
+#: Не чаще раза в столько секунд: человек услышал и переключает раскладку.
+LAYOUT_COOLDOWN_S = 120.0
+LAYOUT_MODEL = Path(__file__).with_name("layout_model.json")
+
+#: Реплики: «ru» — русский в английской раскладке, «en» — наоборот. Набранное не
+#: цитируется намеренно: в не той раскладке набирают и пароли.
+DEFAULT_LAYOUT_QUIPS: dict[str, tuple[str, ...]] = {
+    "ru": (
+        "Смелый шифр, сэр. Но раскладка, кажется, английская.",
+        "Сэр, раскладка не та.",
+        "Любопытный язык, сэр. Подозрительно похож на русский.",
+    ),
+    "en": (
+        "Сэр, это английский в русской раскладке.",
+        "Интересная кириллица, сэр. Раскладка не та.",
+        "Раскладка русская, сэр, а слова — нет.",
+    ),
+}
+
+
+class LayoutModel:
+    """Вероятности пар букв для русского и английского — чтобы узнать не ту раскладку."""
+
+    def __init__(self, data: Mapping[str, Any]) -> None:
+        self._tables = {language: data[language] for language in ("ru", "en")}
+
+    @classmethod
+    def load(cls, path: Path = LAYOUT_MODEL) -> "LayoutModel | None":
+        """Прочитать модель; ``None`` — файла нет или он испорчен."""
+        try:
+            return cls(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def score(self, language: str, word: str) -> float:
+        """Средний логарифм вероятности пар букв слова — чем выше, тем правдоподобнее."""
+        table = self._tables[language]
+        pairs, unseen, floor = table["pairs"], table["unseen"], table["floor"]
+        padded = f"^{word}$"
+        total = 0.0
+        for first, second in zip(padded, padded[1:], strict=False):
+            value = pairs.get(first + second)
+            total += value if value is not None else unseen.get(first, floor)
+        return total / (len(padded) - 1)
+
+    def wrong_layout(self, word: str) -> str | None:
+        """«ru» — русское слово в английской раскладке, «en» — наоборот, ``None`` — всё верно."""
+        word = word.lower()
+        if sum(char.isalpha() for char in word) < LAYOUT_MIN_LETTERS:
+            return None
+        if all(char in _TO_CYRILLIC for char in word):
+            swapped = "".join(_TO_CYRILLIC[char] for char in word)
+            return "ru" if self.score("ru", swapped) - self.score("en", word) > LAYOUT_MARGIN else None
+        if all(char in _TO_LATIN for char in word):
+            swapped = "".join(_TO_LATIN[char] for char in word)
+            return "en" if self.score("en", swapped) - self.score("ru", word) > LAYOUT_MARGIN else None
+        return None
+
+
+class LayoutGuard:
+    """Копит набранные слова и замечает, когда несколько подряд — не в той раскладке.
+
+    Слово кончается на пробеле, знаке или Enter. Короткие слова не считаются и
+    счёт не сбивают; слово в верной раскладке — сбивает. Сработав, молчит
+    `cooldown_s`: человек услышал и переключает.
+    """
+
+    def __init__(
+        self, model: LayoutModel, *, words: int = LAYOUT_WORDS, cooldown_s: float = LAYOUT_COOLDOWN_S
+    ) -> None:
+        self._model = model
+        self._need = max(1, words)
+        self._cooldown = max(0.0, cooldown_s)
+        self._word = ""
+        self._streak = 0
+        self._direction = ""
+        self._fired_at: float | None = None
+
+    def reset(self) -> None:
+        """Забыть недописанное слово и счёт — сработала команда или чужое окно."""
+        self._word = ""
+        self._streak = 0
+
+    def backspace(self) -> None:
+        """Стереть последний символ слова."""
+        self._word = self._word[:-1]
+
+    def feed(self, char: str, *, now: float | None = None) -> str | None:
+        """Добавить символ; на конце слова, если набралось нужное число подряд, — направление."""
+        lowered = char.lower()
+        if lowered.isalpha() or lowered in _LAYOUT_MARKS:
+            self._word += lowered
+            return None
+        return self._close(now)
+
+    def finish(self, *, now: float | None = None) -> str | None:
+        """Строка кончилась (Enter): закрыть последнее слово и начать счёт заново."""
+        result = self._close(now)
+        self._streak = 0
+        return result
+
+    def _close(self, now: float | None) -> str | None:
+        # «,» и «.» в конце — обычные знаки, а не «б» и «ю».
+        word = self._word.rstrip(",.")
+        self._word = ""
+        if sum(char.isalpha() for char in word) < LAYOUT_MIN_LETTERS:
+            return None
+        direction = self._model.wrong_layout(word)
+        if direction is None:
+            self._streak = 0
+            return None
+        if direction != self._direction:
+            self._direction, self._streak = direction, 0
+        self._streak += 1
+        if self._streak < self._need:
+            return None
+        self._streak = 0
+        moment = time.monotonic() if now is None else now
+        if self._fired_at is not None and moment - self._fired_at < self._cooldown:
+            return None
+        self._fired_at = moment
+        return direction
+
+
 #: Слова, которыми диктующий просит вписать буквально, без переписывания.
 _VERBATIM_MARKERS = ("дословно", "буквально", "как есть", "verbatim")
 
@@ -650,12 +797,16 @@ class KeyboardWatcher:
         reactions: Reactions | None = None,
         on_react: Callable[[Reaction], None] | None = None,
         skip: tuple[str, ...] = DEFAULT_SKIP,
+        layout: LayoutGuard | None = None,
+        on_layout: Callable[[str], None] | None = None,
     ) -> None:
         self._triggers = triggers
         self._on_command = on_command
         self._to_loop = to_loop
         self._reactions = reactions
         self._on_react = on_react
+        self._layout = layout
+        self._on_layout = on_layout
         self._skip = skip
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -756,12 +907,21 @@ class KeyboardWatcher:
             self._triggers.backspace()
             if self._reactions is not None:
                 self._reactions.backspace()
+            if self._layout is not None:
+                self._layout.backspace()
             return
         if vk == _VK_RETURN:
             # Enter завершает строку. До него мы и реагируем — в этом вся суть,
             # — а после него начинаем с чистого листа. Реакция ждёт конца слова,
             # и последнее слово строки заканчивает как раз Enter.
             self._triggers.reset()
+            if self._layout is not None:
+                direction = self._layout.finish()
+                if direction is not None and self._on_layout is not None:
+                    self._to_loop(lambda: self._on_layout(direction))
+                    if self._reactions is not None:
+                        self._reactions.reset()
+                    return
             if self._reactions is not None:
                 ending = self._reactions.finish()
                 self._reactions.reset()
@@ -782,11 +942,18 @@ class KeyboardWatcher:
             self._to_loop(lambda: self._on_command(command))
             if self._reactions is not None:
                 self._reactions.reset()
+            if self._layout is not None:
+                self._layout.reset()
             return
-        if self._reactions is not None and self._on_react is not None:
-            reaction = self._reactions.feed(char)
-            if reaction is not None:
-                self._to_loop(lambda: self._on_react(reaction))
+        reaction = self._reactions.feed(char) if self._reactions is not None else None
+        if self._layout is not None and self._on_layout is not None:
+            direction = self._layout.feed(char)
+            if direction is not None:
+                # Не та раскладка важнее шутки: шутить над абракадаброй невпопад.
+                self._to_loop(lambda: self._on_layout(direction))
+                return
+        if reaction is not None and self._on_react is not None:
+            self._to_loop(lambda: self._on_react(reaction))
 
     def _translate(self, vk: int) -> str:
         """Перевести виртуальную клавишу в символ с учётом раскладки и Shift."""
@@ -827,7 +994,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.1.0",
+        version="0.2.0",
         platforms=("windows",),
         spoken=("клавиатура", "keyboard"),
     )
@@ -857,6 +1024,20 @@ class KeysSkill(Skill):
 
         self._triggers = Triggers(mapping, window=window, cooldown_s=cooldown)
         self._reactions = Reactions(quips, window=window) if react and quips else None
+        #: Замечать ли не ту раскладку («ghbdtn» вместо «привет»).
+        self._layout: LayoutGuard | None = None
+        custom = dict(self.context.setting("layout_quips", {}) or {})
+        self._layout_quips = {
+            direction: tuple(custom.get(direction) or quips_default)
+            for direction, quips_default in DEFAULT_LAYOUT_QUIPS.items()
+        }
+        self._layout_turn = 0
+        if bool(self.context.setting("layout", True)):
+            model = LayoutModel.load()
+            if model is None:
+                self.log.warning("Модель раскладки %s не прочиталась — о раскладке молчу", LAYOUT_MODEL.name)
+            else:
+                self._layout = LayoutGuard(model)
         if sys.platform == "win32":
             self._watcher = KeyboardWatcher(
                 self._triggers,
@@ -865,12 +1046,15 @@ class KeysSkill(Skill):
                 reactions=self._reactions,
                 on_react=self._react,
                 skip=skip,
+                layout=self._layout,
+                on_layout=self._on_layout,
             )
         self.log.info(
-            "Клавиатурный наблюдатель: %s, триггеров %d, реакций %d",
+            "Клавиатурный наблюдатель: %s, триггеров %d, реакций %d, раскладка: %s",
             "включён" if self._enabled else "выключен",
             len(self._triggers.phrases),
             len(self._reactions.patterns) if self._reactions else 0,
+            "слежу" if self._layout else "нет",
         )
 
     async def on_start(self) -> None:
@@ -930,6 +1114,23 @@ class KeysSkill(Skill):
             self.context.scope.spawn(
                 self._write_ahead(reaction), name="keys-react"
             )
+
+    def _on_layout(self, direction: str) -> None:
+        """Набирают не в той раскладке — сказать об этом, с иронией.
+
+        Через политику речи без вопроса, как шутки: уместно только сейчас, частоту
+        держит `Announcer`. Набранное **не цитируется** ни вслух, ни в логе: в не
+        той раскладке набирают и пароли, а цитата прозвучала бы на всю комнату.
+        """
+        if self.modes.active(DEAF):
+            return
+        quips = self._layout_quips.get(direction) or DEFAULT_LAYOUT_QUIPS["ru"]
+        quip = quips[self._layout_turn % len(quips)]
+        self._layout_turn += 1
+        self.log.info(
+            "Раскладка не та: %s", "русский латиницей" if direction == "ru" else "английский кириллицей"
+        )
+        self.context.announcer.offer(quip, importance=LOW, hold=False)
 
     async def _write_ahead(self, reaction: Reaction) -> None:
         """Сочинить моделью реплику на это слово и приготовить её к следующему разу.

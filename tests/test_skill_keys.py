@@ -344,3 +344,49 @@ def test_code_default_is_off() -> None:
     свежая машина) не должен поднимать его молча.
     """
     assert keys.DEFAULT_ENABLED is False
+
+
+# --- раскладка --------------------------------------------------------------
+
+
+def _layout(text: str, guard: Any = None, *, now: float = 0.0) -> list[str]:
+    """Напечатать строку и собрать, что заметил сторож раскладки."""
+    guard = guard or keys.LayoutGuard(keys.LayoutModel.load())
+    fired = [got for char in text if (got := guard.feed(char, now=now))]
+    ending = guard.finish(now=now)
+    return fired + ([ending] if ending else [])
+
+
+def test_layout_model_ships_with_the_skill() -> None:
+    assert keys.LayoutModel.load() is not None, "layout_model.json рядом со скиллом"
+
+
+@pytest.mark.parametrize(
+    ("word", "direction"),
+    [("ghbdtn", "ru"), ("yfgbib", "ru"), ("cjcnjzybt", "ru"), ("руддщ", "en"), ("цщкл", "en"),
+     ("hello", None), ("привет", None), ("json", None), ("localhost", None), ("github", None)],
+)
+def test_word_in_the_wrong_layout(word: str, direction: str | None) -> None:
+    assert keys.LayoutModel.load().wrong_layout(word) == direction
+
+
+def test_two_words_in_a_row_are_noticed() -> None:
+    # «привет как дела»: «как» короткое, не считается и не сбивает.
+    assert _layout("ghbdtn rfr ltkf") == ["ru"]
+    assert _layout("руддщ цщкдв") == ["en"]
+
+
+def test_one_word_is_not_enough() -> None:
+    assert _layout("ghbdtn hello world") == []
+
+
+def test_ordinary_text_stays_quiet() -> None:
+    assert _layout("please check this function again before release") == []
+    assert _layout("привет, сегодня будем чинить раскладку и эквалайзер") == []
+
+
+def test_layout_remark_waits_between_times() -> None:
+    guard = keys.LayoutGuard(keys.LayoutModel.load())
+    assert _layout("ghbdtn ltkf", guard, now=0.0) == ["ru"]
+    assert _layout("ghbdtn ltkf", guard, now=10.0) == []
+    assert _layout("ghbdtn ltkf", guard, now=200.0) == ["ru"]

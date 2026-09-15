@@ -32,7 +32,7 @@
 
 ```bash
 cd /root/Jarvis
-.venv/bin/python -m pytest -q            # 1563 тестов, около сорока секунд
+.venv/bin/python -m pytest -q            # 1579 тестов, около сорока секунд
 .venv/bin/python -m ruff check .         # линтер: осиротевшие импорты и прочий мусор
 .venv/bin/python -m mypy                 # типы: py.typed обещан, значит проверяется
 .venv/bin/python -m jarvis --check       # отчёт о сборке, ~6 с, без моделей
@@ -454,7 +454,7 @@ skills/             плагины (см. skills/README.md); browser/page — п
                     peace/ — эквалайзер Peace Nexus голосом
 extension/          расширение браузера (см. extension/README.md)
 config/config.yaml  настройки ядра; настройки скилла — в skills/<имя>/config.yaml
-tests/              1563 тестов на швы архитектуры
+tests/              1579 тестов на швы архитектуры
 tools/photo_bench/  замер «где снято»: набор с известными координатами и промах
 launcher/           Jarvis.exe: запускатель без консоли, собирается build.py
 docs/lessons.md     журнал граблей: читать перед правкой подсистемы
@@ -1363,6 +1363,11 @@ scope, reload), конфиг, логирование, память, `LLMService`
   аргумент — свободная речь, и слот-разбор её резал. Свой же ввод хук пропускает
   по `LLKHF_INJECTED`. Грабли (ctypes на 64 бит, echo-loop, реакции как речь без
   вопроса, диктовка мимо шаблонов) — в `docs/lessons.md`.
+  **Не та раскладка** (15.09.2026, `layout`): два слова подряд, похожих на другой
+  язык в другой раскладке («ghbdtn ltkf»), — ироничная реплика через `Announcer`,
+  раз в две минуты, набранное не цитируется. Модель пар букв —
+  `skills/keys/layout_model.json`, собирается `tools/layout_model.py`; замер:
+  ловит 96/92%, ложно 0.2/0% на слово.
 
 **Скиллов-заглушек нет** — `youtube` и `esp32` удалены 30.07.2026 по просьбе
 владельца. Событийную часть шины показывает `telegram.message.received` —

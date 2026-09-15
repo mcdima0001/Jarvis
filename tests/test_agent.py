@@ -454,3 +454,18 @@ async def test_plan_does_not_resume_someone_elses_goal(
     await registry.invoke("core.plan", {"goal": "совсем другое дело"})
 
     assert skill.calls == [], "разрешённый шаг выполнился в чужом плане"
+
+
+def test_long_arguments_are_not_read_out_in_the_question() -> None:
+    """«…кривую эквалайзера: 60:6,120:5,250:4…» на слух не понять (15.09.2026)."""
+    from jarvis.core.builtin import _describe_step
+    from jarvis.core.contracts import Intent
+
+    class Registry:
+        def get(self, name: str) -> None:
+            return None
+
+    curve = Intent(tool="peace.set_curve", arguments={"gains": "60:6,120:5,250:4,500:2", "preamp": -3})
+    assert _describe_step(curve, Registry()) == "peace.set_curve", "кривая не зачитывается, и предусиление без неё тоже"
+    preset = Intent(tool="peace.save_preset", arguments={"name": "JBL Flip 6 Bass"})
+    assert _describe_step(preset, Registry()) == "peace.save_preset: JBL Flip 6 Bass"

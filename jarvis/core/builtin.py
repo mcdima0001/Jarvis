@@ -146,12 +146,29 @@ def _describe_step(intent: "Intent", registry: ToolRegistry) -> str:
     # но в логе выглядит опечаткой, а логи тут читают.
     if what[:1].isupper() and not what[:2].isupper():
         what = what[0].lower() + what[1:]
-    shown = ", ".join(
-        str(value) for value in intent.arguments.values() if str(value).strip()
-    )
-    if not shown:
+    values = [str(value).strip() for value in intent.arguments.values() if str(value).strip()]
+    # Длинное и списочное вслух не зачитываем: «60:6,120:5,250:4,…» на слух не
+    # значит ничего (владелец, 15.09.2026). Выпало хоть одно — молчим и об
+    # остальных: «…и предусиление: 0» без кривой только путает.
+    if not values or not all(_speakable(value) for value in values):
         return what
-    return f"{what}: {shorten(shown, limit=STEP_LIMIT)}"
+    return f"{what}: {shorten(', '.join(values), limit=STEP_LIMIT)}"
+
+
+#: Длиннее этого значение аргумента в вопрос о шаге не идёт.
+SPOKEN_VALUE_LIMIT = 40
+
+
+def _speakable(value: str) -> bool:
+    """Можно ли значение аргумента понять на слух.
+
+    Короткое имя («JBL Flip 6 Bass», «маме») — да. Перечисление («60:6,120:5»)
+    или длинный текст — нет: соглашаются на то, что будет сделано, а не на
+    таблицу чисел.
+    """
+    if len(value) > SPOKEN_VALUE_LIMIT:
+        return False
+    return value.count(",") + value.count(";") < 2 and value.count(":") < 2
 
 
 def _steps_done(outcome: "Outcome", language: str) -> str:
