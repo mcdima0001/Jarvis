@@ -470,7 +470,7 @@ tts:
 
 audio:
   engine: sounddevice      # sounddevice | null (null — работа без звука)
-  input_device: null       # null = по умолчанию; номер или имя из --devices
+  input_device: "Onboard MIC (Технология Intel® , MME"       # null = по умолчанию; номер или имя из --devices
   output_device: null
   # Голосом выход меняется на ходу: «говори через колонку», «какие есть
   # аудиовыходы», «говори через выход по умолчанию». Выбор помнится после

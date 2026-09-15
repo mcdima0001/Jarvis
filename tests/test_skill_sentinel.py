@@ -69,6 +69,7 @@ def test_downloads_skip_existing_partial_and_growing_files() -> None:
     assert watch.check({"old.pdf": 10, "movie.mkv": 800}) == [], "о готовом — один раз"
 
 
-def test_download_line_names_the_file_not_the_path() -> None:
-    assert sentinel.download_line(["Отчёт за сентябрь.pdf"]) == "Загрузилось: Отчёт за сентябрь."
-    assert sentinel.download_line(["a.zip", "b.zip"]).startswith("Загрузилось файлов: 2")
+def test_download_line_does_not_read_file_names() -> None:
+    """Просьба владельца 15.09.2026: имя вроде «6ec697122191d32398a6…» вслух не нужно."""
+    assert sentinel.download_line(["6ec697122191d32398a60275159ce5cf4f00440a.bin"]) == "Файл загрузился."
+    assert sentinel.download_line(["a.zip", "b.zip"]) == "Загрузилось файлов: 2."
