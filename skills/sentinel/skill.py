@@ -217,15 +217,49 @@ class DownloadWatch:
         return sorted(finished)
 
 
+#: Что именно скачалось — по расширению (просьба владельца 17.09.2026: «.mp3 —
+#: трек загрузился, .jpg — фотка скачалась»). Одно: реплика; много одного рода:
+#: формы слова для числа. Чего нет в таблице — просто «файл».
+DOWNLOAD_KINDS: tuple[tuple[tuple[str, ...], str, tuple[str, str, str]], ...] = (
+    ((".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus", ".wma", ".aiff"),
+     "Трек загрузился.", ("трек", "трека", "треков")),
+    ((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".tif", ".tiff", ".dng", ".cr2", ".nef", ".arw"),
+     "Фотка скачалась.", ("фотка", "фотки", "фоток")),
+    ((".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".flv", ".m4v"),
+     "Видео скачалось.", ("видео", "видео", "видео")),
+    ((".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz"),
+     "Архив скачался.", ("архив", "архива", "архивов")),
+    ((".pdf", ".doc", ".docx", ".rtf", ".odt", ".txt", ".xls", ".xlsx", ".csv", ".ppt", ".pptx"),
+     "Документ скачался.", ("документ", "документа", "документов")),
+    ((".exe", ".msi", ".msix", ".appx"),
+     "Установщик скачался.", ("установщик", "установщика", "установщиков")),
+    ((".iso", ".img"), "Образ диска скачался.", ("образ диска", "образа диска", "образов диска")),
+    ((".flp",), "Проект FL Studio скачался.", ("проект FL Studio", "проекта FL Studio", "проектов FL Studio")),
+    ((".torrent",), "Торрент скачался.", ("торрент", "торрента", "торрентов")),
+)
+_FILE = ("файл", "файла", "файлов")
+
+
+def _kind(name: str) -> tuple[str, tuple[str, str, str]]:
+    """Реплика об одном файле и формы слова для счёта."""
+    suffix = Path(name).suffix.lower()
+    for suffixes, line, forms in DOWNLOAD_KINDS:
+        if suffix in suffixes:
+            return line, forms
+    return "Файл загрузился.", _FILE
+
+
 def download_line(names: list[str]) -> str:
-    """Реплика о законченных загрузках — без названий.
+    """Реплика о законченных загрузках: что это было, но без названий.
 
     Имя файла вслух бесполезно (просьба владельца 15.09.2026): у загрузок оно
     часто хеш вроде «6ec697122191d32398a6…», и синтез читал его целиком.
     """
+    kinds = [_kind(name) for name in names]
     if len(names) == 1:
-        return "Файл загрузился."
-    return f"Загрузилось файлов: {len(names)}."
+        return kinds[0][0]
+    forms = kinds[0][1] if all(kind[1] == kinds[0][1] for kind in kinds) else _FILE
+    return f"Загрузилось {len(names)} {plural_form(len(names), forms)}."
 
 
 # --- скилл ------------------------------------------------------------------
@@ -237,7 +271,7 @@ class SentinelSkill(Skill):
     meta = SkillMeta(
         name="sentinel",
         description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
-        version="0.1.3",
+        version="0.1.4",
         platforms=("windows",),
         spoken=("страж", "слежение", "sentinel"),
     )

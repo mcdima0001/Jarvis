@@ -72,4 +72,12 @@ def test_downloads_skip_existing_partial_and_growing_files() -> None:
 def test_download_line_does_not_read_file_names() -> None:
     """Просьба владельца 15.09.2026: имя вроде «6ec697122191d32398a6…» вслух не нужно."""
     assert sentinel.download_line(["6ec697122191d32398a60275159ce5cf4f00440a.bin"]) == "Файл загрузился."
-    assert sentinel.download_line(["a.zip", "b.zip"]) == "Загрузилось файлов: 2."
+    assert sentinel.download_line(["a.bin", "b.zip"]) == "Загрузилось 2 файла."
+
+
+def test_download_line_says_what_arrived() -> None:
+    """Просьба владельца 17.09.2026: «.mp3 — трек загрузился, .jpg — фотка скачалась»."""
+    assert sentinel.download_line(["Song.MP3"]) == "Трек загрузился."
+    assert sentinel.download_line(["IMG_0042.jpg"]) == "Фотка скачалась."
+    assert sentinel.download_line(["a.png", "b.jpg", "c.webp", "d.heic", "e.jpg"]) == "Загрузилось 5 фоток."
+    assert sentinel.download_line(["one.mp3", "two.flac"]) == "Загрузилось 2 трека."
