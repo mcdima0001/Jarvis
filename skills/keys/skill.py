@@ -454,6 +454,20 @@ LAYOUT_LATIN = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`"
 LAYOUT_CYRILLIC = "йцукенгшщзхъфывапролджэячсмитьбюё"
 _TO_CYRILLIC = dict(zip(LAYOUT_LATIN, LAYOUT_CYRILLIC, strict=True))
 _TO_LATIN = dict(zip(LAYOUT_CYRILLIC, LAYOUT_LATIN, strict=True))
+#: Те же клавиши с Shift: без них «Rfr ltkf&» исправилось бы в «Как дела&».
+_SHIFTED_LATIN = 'QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>~/?@#$^&|'
+_SHIFTED_CYRILLIC = 'ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ.,"№;:?/'
+_FIX_TO_CYRILLIC = dict(zip(LAYOUT_LATIN + _SHIFTED_LATIN, LAYOUT_CYRILLIC + _SHIFTED_CYRILLIC, strict=True))
+_FIX_TO_LATIN = {cyrillic: latin for latin, cyrillic in _FIX_TO_CYRILLIC.items()}
+
+
+def swap_layout(text: str, direction: str) -> str:
+    """Тот же набор клавиш в другой раскладке: «ru» — латиницу в кириллицу, «en» — обратно.
+
+    Пробелы, цифры и всё, что в обеих раскладках на месте, не трогаются.
+    """
+    table = _FIX_TO_CYRILLIC if direction == "ru" else _FIX_TO_LATIN
+    return "".join(table.get(char, char) for char in text)
 #: Знаки, которые в другой раскладке — буквы (ж, э, х, ъ, ё, б, ю).
 _LAYOUT_MARKS = ";'[]`,."
 
@@ -519,6 +533,10 @@ DEFAULT_LAYOUT_QUIPS: dict[str, tuple[str, ...]] = {
 }
 
 
+#: Добавка к замечанию, когда текст уже переписан в верной раскладке.
+LAYOUT_FIXED = "Поправил."
+
+
 class LayoutModel:
     """Вероятности пар букв для русского и английского — чтобы узнать не ту раскладку."""
 
@@ -565,6 +583,12 @@ class LayoutGuard:
     не считаются и счёт не сбивают; слово в верной раскладке — сбивает.
     Сработав, молчит, пока человек не переключится: слово в верной раскладке или
     Enter (новое сообщение) снова взводят сторожа. Паузы по времени нет.
+
+    Заодно помнит **строку** — что набрано в поле с последнего места, где курсор
+    мог сдвинуться (`break_line`), — и, сработав, откуда в ней начался текст не в
+    той раскладке. Это `pending_fix`: наблюдатель стирает ровно столько и
+    впечатывает то же самое в верной раскладке (просьба владельца 17.09.2026).
+    Строка живёт только в памяти и никуда не пишется.
     """
 
     def __init__(self, model: LayoutModel, *, words: int = LAYOUT_WORDS) -> None:
@@ -575,30 +599,77 @@ class LayoutGuard:
         self._direction = ""
         #: Можно ли сейчас заметить. Снимается срабатыванием, взводится переключением.
         self._armed = True
+        #: Набранное в поле с места, где курсор последний раз мог сдвинуться.
+        self._line = ""
+        #: Где в строке начинается слово, которое сейчас набирают.
+        self._word_start = 0
+        #: Докуда строка набрана в верной раскладке: дальше — кандидат в правку.
+        self._clean_end = 0
+        #: Откуда править, если сработали и правка ещё не сделана.
+        self._fix_start: int | None = None
+        self._fix_direction = ""
 
     def reset(self) -> None:
         """Забыть недописанное слово и счёт — сработала команда или чужое окно."""
-        self._word = ""
         self._streak = 0
+        self.break_line()
+
+    def break_line(self) -> None:
+        """Курсор мог уйти (стрелки, сочетание, другое окно): набранное раньше не править."""
+        self._line = ""
+        self._word = ""
+        self._word_start = self._clean_end = 0
+        self._fix_start = None
 
     def backspace(self) -> None:
         """Стереть последний символ слова."""
         self._word = self._word[:-1]
+        self._line = self._line[:-1]
+        self._clean_end = min(self._clean_end, len(self._line))
+        if self._fix_start is not None and self._fix_start > len(self._line):
+            self._fix_start = None
 
     def feed(self, char: str, *, now: float | None = None) -> str | None:
         """Добавить символ; на конце слова, если набралось нужное число подряд, — направление."""
+        self._line += char
         lowered = char.lower()
         if lowered.isalpha() or lowered in _LAYOUT_MARKS:
+            if not self._word:
+                self._word_start = len(self._line) - 1
             self._word += lowered
             return None
         return self._close(now)
 
     def finish(self, *, now: float | None = None) -> str | None:
-        """Строка кончилась (Enter): закрыть последнее слово и начать счёт заново."""
+        """Строка кончилась (Enter): закрыть последнее слово и начать счёт заново.
+
+        Править после Enter нечего: сообщение, скорее всего, уже ушло.
+        """
         result = self._close(now)
         self._streak = 0
         self._armed = True  # новое сообщение — снова можно заметить
+        self.break_line()
         return result
+
+    def pending_fix(self) -> tuple[str, str] | None:
+        """Что исправить после срабатывания: направление и набранное не той раскладкой."""
+        if self._fix_start is None:
+            return None
+        typed = self._line[self._fix_start:]
+        return (self._fix_direction, typed) if typed.strip() else None
+
+    def fixed(self, replacement: str) -> None:
+        """Правка впечатана: в строке теперь верный текст."""
+        if self._fix_start is None:
+            return
+        self._line = self._line[: self._fix_start] + replacement
+        self._clean_end = len(self._line)
+        self._word = ""
+        self._fix_start = None
+
+    def cancel_fix(self) -> None:
+        """Править не вышло или нельзя — забыть о правке."""
+        self._fix_start = None
 
     def _close(self, now: float | None) -> str | None:
         # «,» и «.» в конце — обычные знаки, а не «б» и «ю».
@@ -614,8 +685,12 @@ class LayoutGuard:
             # Слово в верной раскладке: переключился — следующая ошибка снова заметна.
             self._streak = 0
             self._armed = True
+            self._clean_end = len(self._line)
             return None
         if direction != self._direction:
+            if self._streak:
+                # Прежние слова были не той раскладкой в другую сторону — их не трогаем.
+                self._clean_end = self._word_start
             self._direction, self._streak = direction, 0
         self._streak += 1
         if self._streak < self._need:
@@ -624,6 +699,7 @@ class LayoutGuard:
         if not self._armed:
             return None
         self._armed = False
+        self._fix_start, self._fix_direction = self._clean_end, direction
         return direction
 
 
@@ -681,6 +757,10 @@ _VK_BACK = 0x08
 _VK_RETURN = 0x0D
 _VK_SHIFT = 0x10
 _VK_CAPITAL = 0x14
+#: Ctrl, Alt и Win: пока зажаты, буквы — это сочетания, и строку править нельзя.
+_VK_COMBO = frozenset({0x11, 0xA2, 0xA3, 0x12, 0xA4, 0xA5, 0x5B, 0x5C})
+#: Своё сообщение потоку хука: сделать правку раскладки между событиями клавиатуры.
+_WM_FIX_LAYOUT = 0x8000 + 1
 #: Событие клавиатуры вставлено программой, а не человеком. Свой же ввод (диктовка
 #: ниже) приходит с этим флагом — и его надо пропускать, иначе ассистент
 #: среагирует на то, что напечатал сам.
@@ -770,6 +850,54 @@ def type_text_os(text: str) -> int:
     return int(sent)
 
 
+def replace_typed_os(erase: int, text: str) -> bool:
+    """Стереть `erase` символов перед курсором и впечатать `text` — одним вызовом.
+
+    Один `SendInput` не перемешивается с тем, что человек продолжает набирать:
+    ОС вставляет пачку в поток ввода целиком.
+    """
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendInput.restype = wintypes.UINT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
+    keys: list[tuple[int, int, int]] = []  # (vk, scan, flags)
+    for _ in range(erase):
+        keys += [(_VK_BACK, 0, 0), (_VK_BACK, 0, _KEYEVENTF_KEYUP)]
+    for unit, is_up in unicode_events(text):
+        keys.append((0, unit, _KEYEVENTF_UNICODE | (_KEYEVENTF_KEYUP if is_up else 0)))
+    if not keys:
+        return True
+    array = (_INPUT * len(keys))()
+    for slot, (vk, scan, flags) in zip(array, keys, strict=True):
+        slot.type = _INPUT_KEYBOARD
+        slot.u.ki = _KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=None)
+    return int(user32.SendInput(len(array), array, ctypes.sizeof(_INPUT))) == len(keys)
+
+
+#: Язык раскладки, в которую переключать: младшее слово HKL.
+_LAYOUT_LANGUAGES = {"ru": 0x0419, "en": 0x0409}
+_WM_INPUTLANGCHANGEREQUEST = 0x0050
+
+
+def switch_layout_os(hwnd: Any, direction: str) -> bool:
+    """Попросить окно переключиться на русскую («ru») или английскую («en») раскладку."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetKeyboardLayoutList.restype = ctypes.c_int
+    user32.GetKeyboardLayoutList.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    user32.PostMessageW.restype = wintypes.BOOL
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    count = user32.GetKeyboardLayoutList(0, None)
+    if count <= 0:
+        return False
+    layouts = (ctypes.c_void_p * count)()
+    user32.GetKeyboardLayoutList(count, layouts)
+    wanted = _LAYOUT_LANGUAGES[direction]
+    target = next((value for value in layouts if value and value & 0xFFFF == wanted), None)
+    if target is None:
+        return False
+    # LPARAM знаковый, а старшие биты HKL бывают выставлены: переводим без проверки.
+    return bool(user32.PostMessageW(hwnd, _WM_INPUTLANGCHANGEREQUEST, 0, ctypes.c_ssize_t(target).value))
+
+
 def _configure(user32: Any, kernel32: Any) -> None:
     """Объявить типы функций WinAPI.
 
@@ -833,7 +961,8 @@ class KeyboardWatcher:
         on_react: Callable[[Reaction], None] | None = None,
         skip: tuple[str, ...] = DEFAULT_SKIP,
         layout: LayoutGuard | None = None,
-        on_layout: Callable[[str], None] | None = None,
+        on_layout: Callable[[str, bool], None] | None = None,
+        fix_layout: bool = False,
     ) -> None:
         self._triggers = triggers
         self._on_command = on_command
@@ -842,6 +971,10 @@ class KeyboardWatcher:
         self._on_react = on_react
         self._layout = layout
         self._on_layout = on_layout
+        self._fix_layout_enabled = fix_layout
+        #: Окно, в котором набрана строка сторожа: сменилось — строку не правим.
+        self._line_window: Any = None
+        self._combo: set[int] = set()
         self._skip = skip
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -912,7 +1045,14 @@ class KeyboardWatcher:
 
         message = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
-            pass  # хук работает в колбэке; нам нужен лишь живой цикл сообщений
+            # Хук работает в колбэке. Правку раскладки делаем здесь, между
+            # событиями: колбэк обязан вернуться быстро, слать из него ввод нельзя.
+            if message.message == _WM_FIX_LAYOUT:
+                try:
+                    self._fix_layout()
+                except Exception:  # noqa: BLE001 — поток хука не имеет права падать
+                    if self._layout is not None:
+                        self._layout.cancel_fix()
         user32.UnhookWindowsHookEx(self._hook)
         self._hook = None
 
@@ -927,6 +1067,14 @@ class KeyboardWatcher:
             return
         vk = int(info.vkCode)
         down = wparam in (_WM_KEYDOWN, _WM_SYSKEYDOWN)
+        if vk in _VK_COMBO:
+            if down:
+                self._combo.add(vk)
+                if self._layout is not None:
+                    self._layout.break_line()
+            else:
+                self._combo.discard(vk)
+            return
 
         # Модификаторы ведём сами, и на нажатие, и на отпускание.
         if vk in (_VK_SHIFT, 0xA0, 0xA1):
@@ -952,8 +1100,10 @@ class KeyboardWatcher:
             self._triggers.reset()
             if self._layout is not None:
                 direction = self._layout.finish()
-                if direction is not None and self._on_layout is not None:
-                    self._to_loop(lambda: self._on_layout(direction))
+                on_layout = self._on_layout
+                if direction is not None and on_layout is not None:
+                    # После Enter не правим: сообщение, скорее всего, уже ушло.
+                    self._to_loop(lambda: on_layout(direction, False))
                     if self._reactions is not None:
                         self._reactions.reset()
                     return
@@ -969,6 +1119,12 @@ class KeyboardWatcher:
             return
 
         char = self._translate(vk)
+        if self._layout is not None:
+            window = self._user32.GetForegroundWindow()
+            # Стрелки, Delete, Tab, другое окно, сочетание: курсор мог сдвинуться.
+            if not char or not char.isprintable() or self._combo or window != self._line_window:
+                self._layout.break_line()
+                self._line_window = window
         if not char:
             return
         command = self._triggers.feed(char)
@@ -981,14 +1137,48 @@ class KeyboardWatcher:
                 self._layout.reset()
             return
         reaction = self._reactions.feed(char) if self._reactions is not None else None
-        if self._layout is not None and self._on_layout is not None:
+        on_layout = self._on_layout
+        if self._layout is not None and on_layout is not None and char.isprintable() and not self._combo:
             direction = self._layout.feed(char)
             if direction is not None:
                 # Не та раскладка важнее шутки: шутить над абракадаброй невпопад.
-                self._to_loop(lambda: self._on_layout(direction))
+                if self._fix_layout_enabled and self._layout.pending_fix() is not None:
+                    # Замечание прозвучит после правки: «поправил» говорят, поправив.
+                    self._user32.PostThreadMessageW(self._thread_id, _WM_FIX_LAYOUT, 0, 0)
+                else:
+                    self._layout.cancel_fix()
+                    self._to_loop(lambda: on_layout(direction, False))
                 return
         if reaction is not None and self._on_react is not None:
             self._to_loop(lambda: self._on_react(reaction))
+
+    def _fix_layout(self) -> None:
+        """Стереть набранное не той раскладкой, впечатать то же в верной и переключить окно.
+
+        Зовётся из цикла сообщений потока хука, поэтому строка сторожа уже
+        включает всё, что успели набрать после срабатывания. Окно сменилось или
+        стало запретным — не правим: стирать пришлось бы вслепую.
+        """
+        guard, on_layout = self._layout, self._on_layout
+        if guard is None or on_layout is None:
+            return
+        pending = guard.pending_fix()
+        if pending is None:
+            return
+        direction, typed = pending
+        window = self._user32.GetForegroundWindow()
+        if window != self._line_window or self._foreground_sensitive():
+            guard.cancel_fix()
+            self._to_loop(lambda: on_layout(direction, False))
+            return
+        replacement = swap_layout(typed, direction)
+        done = replace_typed_os(len(typed), replacement)
+        if done:
+            guard.fixed(replacement)
+            switch_layout_os(window, direction)
+        else:
+            guard.cancel_fix()
+        self._to_loop(lambda: on_layout(direction, done))
 
     def _translate(self, vk: int) -> str:
         """Перевести виртуальную клавишу в символ с учётом раскладки и Shift."""
@@ -1029,7 +1219,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.2.1",
+        version="0.3.0",
         platforms=("windows",),
         spoken=("клавиатура", "keyboard"),
     )
@@ -1073,6 +1263,8 @@ class KeysSkill(Skill):
                 self.log.warning("Модель раскладки %s не прочиталась — о раскладке молчу", LAYOUT_MODEL.name)
             else:
                 self._layout = LayoutGuard(model)
+        #: Исправлять ли набранное не той раскладкой и переключать ли раскладку.
+        self._layout_fix = bool(self.context.setting("layout_fix", True))
         if sys.platform == "win32":
             self._watcher = KeyboardWatcher(
                 self._triggers,
@@ -1083,6 +1275,7 @@ class KeysSkill(Skill):
                 skip=skip,
                 layout=self._layout,
                 on_layout=self._on_layout,
+                fix_layout=self._layout_fix,
             )
         self.log.info(
             "Клавиатурный наблюдатель: %s, триггеров %d, реакций %d, раскладка: %s",
@@ -1153,8 +1346,11 @@ class KeysSkill(Skill):
                 self._write_ahead(reaction), name="keys-react"
             )
 
-    def _on_layout(self, direction: str) -> None:
+    def _on_layout(self, direction: str, fixed: bool = False) -> None:
         """Набирают не в той раскладке — сказать об этом, с иронией.
+
+        :param fixed: набранное уже переписано в верной раскладке и раскладка
+            переключена — к замечанию добавляется «поправил».
 
         Через политику речи без вопроса, как шутки: уместно только сейчас, частоту
         держит `Announcer`. Набранное **не цитируется** ни вслух, ни в логе: в не
@@ -1165,8 +1361,12 @@ class KeysSkill(Skill):
         quips = self._layout_quips.get(direction) or DEFAULT_LAYOUT_QUIPS["ru"]
         quip = quips[self._layout_turn % len(quips)]
         self._layout_turn += 1
+        if fixed:
+            quip = f"{quip} {LAYOUT_FIXED}"
         self.log.info(
-            "Раскладка не та: %s", "русский латиницей" if direction == "ru" else "английский кириллицей"
+            "Раскладка не та: %s%s",
+            "русский латиницей" if direction == "ru" else "английский кириллицей",
+            ", текст исправлен" if fixed else "",
         )
         # Срочное: общая пауза между репликами для шуток, а это исключение —
         # замечание нужно сейчас, пока человек пишет (просьба владельца

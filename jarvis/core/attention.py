@@ -92,6 +92,8 @@ class Held:
     at: float = 0.0
     #: На что откликнулись — едет вместе с репликой до панели.
     cause: str = ""
+    #: После какого момента (unix-время) реплика устарела; 0 — не стареет.
+    expires_at: float = 0.0
 
 
 class Announcer:
@@ -184,6 +186,7 @@ class Announcer:
         language: str = "ru",
         hold: bool = True,
         cause: str = "",
+        expires_s: float = 0.0,
     ) -> str:
         """Предложить реплику. Возвращает принятое решение.
 
@@ -194,6 +197,10 @@ class Announcer:
             Для неё ``hold=False`` — «сказать или забыть», без очереди.
         :param cause: на что откликнулись («Получилось [ввод с клавиатуры]») —
             панель покажет это в строке «Вы». Пусто — повода нет.
+        :param expires_s: сколько секунд придержанная реплика остаётся правдой.
+            Замер состояния устаревает: «на диске 7 гигабайт», придержанное в
+            06:55, прозвучало в 09:39, когда там было уже 18 (16.09.2026).
+            Ноль — не стареет (доклад о поручении ждут и через час).
         """
         clean = text.strip()
         if not clean:
@@ -209,7 +216,14 @@ class Announcer:
             self._speak(clean, language, importance, now, cause=cause)
         elif decision == "hold":
             self._held.append(
-                Held(text=clean, language=language, importance=importance, at=now, cause=cause)
+                Held(
+                    text=clean,
+                    language=language,
+                    importance=importance,
+                    at=now,
+                    cause=cause,
+                    expires_at=now + expires_s if expires_s > 0 else 0.0,
+                )
             )
             logger.info("Придержал (%s): %s", importance, clean)
         else:
@@ -228,8 +242,13 @@ class Announcer:
         if not self._held:
             return 0
         now = time.time()
-        items = list(self._held)
+        stale = [item for item in self._held if item.expires_at and item.expires_at <= now]
+        items = [item for item in self._held if item not in stale]
         self._held.clear()
+        for item in stale:
+            logger.info("Придержанное устарело, не говорю: %s", item.text)
+        if not items:
+            return 0
         for item in items:
             self._speak(item.text, item.language or language, item.importance, now, cause=item.cause)
         logger.info("Досказал придержанное: %d реплик(и)", len(items))

@@ -38,6 +38,9 @@ from jarvis.core.tts.normalize import plural_form
 PARTIAL = (".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload", ".!ut")
 PERCENT = ("процент", "процента", "процентов")
 GIGABYTE = ("гигабайт", "гигабайта", "гигабайт")
+#: Сколько секунд придержанное замечание стража остаётся правдой (16.09.2026:
+#: «7 гигабайт» прозвучало через три часа, когда было уже 18).
+STALE_AFTER_S = 600.0
 MINUTE = ("минуту", "минуты", "минут")
 
 
@@ -234,7 +237,7 @@ class SentinelSkill(Skill):
     meta = SkillMeta(
         name="sentinel",
         description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
-        version="0.1.1",
+        version="0.1.2",
         platforms=("windows",),
         spoken=("страж", "слежение", "sentinel"),
     )
@@ -337,5 +340,8 @@ class SentinelSkill(Skill):
         if repeat and now - self._last_said.get(key, -1e9) < self._repeat_s:
             return
         self._last_said[key] = now
-        decision = self.context.announcer.offer(text, importance=importance, language="ru")
+        # Замер правдив, пока свеж: придержанное дольше `STALE_AFTER_S` не говорим.
+        decision = self.context.announcer.offer(
+            text, importance=importance, language="ru", expires_s=STALE_AFTER_S
+        )
         self.log.info("Страж (%s): %s → %s", importance, text, decision)

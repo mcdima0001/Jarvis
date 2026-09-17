@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -412,3 +414,57 @@ def test_short_words_typed_right_stay_quiet() -> None:
 def test_dropped_short_words_do_not_collide_with_english() -> None:
     """«мы» (vs), «че» (xt), «ща» (of) в латинице — обычные английские токены."""
     assert "vs" not in keys._SHORT_WRONG and "of" not in keys._SHORT_WRONG and "xt" not in keys._SHORT_WRONG
+
+
+# --- исправление раскладки ----------------------------------------------------
+
+
+def _typed(guard: Any, text: str) -> list[str]:
+    return [got for char in text if (got := guard.feed(char))]
+
+
+def test_swap_layout_keeps_case_and_shifted_signs() -> None:
+    assert keys.swap_layout("Rfr ltkf& Xnj ltkftim&", "ru") == "Как дела? Что делаешь?"
+    assert keys.swap_layout("руддщ цщкдв", "en") == "hello world"
+    assert keys.swap_layout(keys.swap_layout("Привет, 42!", "en"), "ru") == "Привет, 42!"
+
+
+def test_fix_covers_only_text_after_the_last_right_word() -> None:
+    """Просьба владельца 17.09.2026: сказать и заменить текст на тот же в верной раскладке."""
+    guard = keys.LayoutGuard(keys.LayoutModel.load())
+    assert _typed(guard, "hello ghbdtn rfr ") == ["ru"]
+    assert guard.pending_fix() == ("ru", "ghbdtn rfr ")
+    guard.fixed(keys.swap_layout("ghbdtn rfr ", "ru"))
+    assert guard.pending_fix() is None
+
+
+def test_fix_includes_what_was_typed_before_it_ran() -> None:
+    """Правка делается между событиями: успевшее набраться после срабатывания тоже чинится."""
+    guard = keys.LayoutGuard(keys.LayoutModel.load())
+    _typed(guard, "Rfr ltkf& Xn")
+    assert guard.pending_fix() == ("ru", "Rfr ltkf& Xn")
+
+
+def test_fix_follows_backspace_and_is_dropped_when_the_cursor_moves() -> None:
+    guard = keys.LayoutGuard(keys.LayoutModel.load())
+    _typed(guard, "ghbdtn ltkf x")
+    guard.backspace()
+    assert guard.pending_fix() == ("ru", "ghbdtn ltkf ")
+    guard.break_line()
+    assert guard.pending_fix() is None
+    _typed(guard, "ghbdtn ltkf ")
+    assert guard.finish() is None and guard.pending_fix() is None, "после Enter не правим"
+
+
+def test_layout_remark_says_it_fixed() -> None:
+    skill = keys.KeysSkill()
+    said: list[str] = []
+    skill._layout_quips = dict(keys.DEFAULT_LAYOUT_QUIPS)
+    skill._layout_turn = 0
+    skill._context = SimpleNamespace(  # type: ignore[assignment]
+        announcer=SimpleNamespace(offer=lambda text, **_: said.append(text)),
+        modes=SimpleNamespace(active=lambda mode: False),
+        logger=logging.getLogger("test.keys"),
+    )
+    skill._on_layout("ru", True)
+    assert said[-1].endswith(keys.LAYOUT_FIXED)

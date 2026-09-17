@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
-from jarvis.core.attention import NORMAL, Announcer
+from jarvis.core.attention import NORMAL, URGENT, Announcer
 from jarvis.core.audio import AudioStack, build_audio
 from jarvis.core.builtin import NAMESPACE as CORE_NAMESPACE
 from jarvis.core.builtin import CoreTools
@@ -53,9 +53,9 @@ from jarvis.core.runtime import BlockingWorker
 from jarvis.core.situation import Situation
 from jarvis.core.skills import SkillManager
 from jarvis.core.state import Modes
-from jarvis.core.stt import build_stt
+from jarvis.core.stt import FallbackSTT, build_stt
 from jarvis.core.tools import ToolRegistry, collect_tools
-from jarvis.core.tts import build_tts
+from jarvis.core.tts import TTS, build_tts
 from jarvis.core.version import current, platform_line
 from jarvis.core.voice import VoicePipeline
 
@@ -85,6 +85,12 @@ def _quiet_broken_connections() -> None:
             previous(target, context)
 
     loop.set_exception_handler(handler)
+
+
+#: Что сказать, когда облако распознавания отказало. Приготовлена заранее
+#: основным голосом (`JarvisApp.run`): без сети облачный голос её не синтезирует,
+#: а из кеша она звучит и так.
+STT_OUTAGE = "Сэр, пропала связь с облаком. Слушаю местной моделью, первая команда займёт полминуты."
 
 
 def _offer(announcer: Announcer, text: str, language: str) -> None:
@@ -121,6 +127,8 @@ class JarvisApp:
     core: CoreTools | None = None
     #: Панель управления; ``None``, если выключена в конфиге.
     panel: ControlPanel | None = None
+    #: Синтез — чтобы заранее приготовить реплики, нужные без сети.
+    tts: TTS | None = None
 
     # --- сборка ------------------------------------------------------------
 
@@ -203,6 +211,12 @@ class JarvisApp:
             min_gap_s=config.attention.min_gap_s,
             repeat_after_s=config.attention.repeat_after_s,
         )
+        if isinstance(stt, FallbackSTT):
+            # Срочно и без очереди: новость нужна сейчас, через час она бесполезна.
+            def warn_outage() -> None:
+                announcer.offer(STT_OUTAGE, importance=URGENT, hold=False)
+
+            stt.on_outage = warn_outage
 
         # Фоновые поручения. Ставятся до инструментов ядра, потому что
         # `core.later` без них не имеет смысла, и до конвейера — доклад уходит
@@ -355,6 +369,7 @@ class JarvisApp:
             stopping=stopping,
             core=core_tools,
             panel=panel,
+            tts=tts,
         )
 
     # --- жизненный цикл ----------------------------------------------------
@@ -437,6 +452,9 @@ class JarvisApp:
         # сервисов: служебные режимы (`--check`, `--say`) остаются молчаливыми.
         if self.persona.greet_on_start:
             await self.pipeline.announce(GREETING)
+        if self.tts is not None:
+            # Пока сеть есть: без неё облачный голос эту фразу уже не скажет.
+            await self.tts.prewarm(STT_OUTAGE, language="ru")
         try:
             await stop_event.wait()
         finally:

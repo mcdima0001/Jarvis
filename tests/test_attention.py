@@ -225,3 +225,15 @@ async def test_cause_travels_with_the_announcement_even_when_held() -> None:
         ("Поздравляю, сэр.", "Получилось [ввод с клавиатуры]"),
         ("готово: разобрать логи", "поручение"),
     ]
+
+
+def test_stale_held_remark_is_not_said_later() -> None:
+    """Живой случай 16.09.2026: «на диске 7 гигабайт» придержано в 06:55, сказано в 09:39."""
+    modes = Modes()
+    modes.on(DEAF, minutes=30)
+    announcer = Announcer(modes=modes)
+    announcer.offer("на диске 7 гигабайт", importance=NORMAL, expires_s=0.01)
+    announcer.offer("готово: разобрать логи", importance=NORMAL)
+    time.sleep(0.02)
+    assert announcer.flush() == 1
+    assert not announcer.held

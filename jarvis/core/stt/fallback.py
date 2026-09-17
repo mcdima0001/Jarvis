@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 from jarvis.core.errors import STTError
 
@@ -55,6 +56,10 @@ class FallbackSTT:
         self._blocked_until = 0.0
         #: Поднимали ли уже запасной. Он тяжёлый, и поднимается один раз.
         self._backup_ready = False
+        #: Кого известить, когда облако отказало (раз на обрыв). Ставит сборка
+        #: приложения: живой запуск 16.09.2026 молча ждал 40 секунд Whisper.
+        self.on_outage: Callable[[], None] | None = None
+        self._outage = False
 
     @property
     def service_name(self) -> str:
@@ -106,7 +111,11 @@ class FallbackSTT:
             if self._blocked_until:
                 logger.info("Пробую снова основное распознавание")
             try:
-                return await self._primary.transcribe(audio, sample_rate=sample_rate)
+                result = await self._primary.transcribe(audio, sample_rate=sample_rate)
+                if self._outage:
+                    logger.info("Основное распознавание снова работает")
+                    self._outage = False
+                return result
             except STTError as exc:
                 self._blocked_until = now + self._retry_after
                 logger.warning(
@@ -115,6 +124,10 @@ class FallbackSTT:
                     exc,
                     self._retry_after,
                 )
+                if not self._outage:
+                    self._outage = True
+                    if self.on_outage is not None:
+                        self.on_outage()
 
         await self._wake_backup()
         return await self._backup.transcribe(audio, sample_rate=sample_rate)
