@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from importlib.util import find_spec
 
 from jarvis.core.config import STTConfig
 from jarvis.core.runtime import BlockingWorker
@@ -22,13 +23,14 @@ def _one(config: STTConfig, worker: BlockingWorker, engine: str) -> STT | None:
         return NullSTT()
 
     if engine == "faster-whisper":
-        try:
-            import faster_whisper  # noqa: F401
-            import numpy  # noqa: F401
-        except ImportError as exc:
+        # Только наличие пакетов, без их загрузки: сам `faster_whisper` тянет
+        # ctranslate2 и на холодном старте стоит десятки секунд, а нужен он
+        # лишь при обрыве облака. Модель и так грузится лениво, в `start`.
+        missing = [name for name in ("faster_whisper", "numpy") if find_spec(name) is None]
+        if missing:
             logger.warning(
-                "faster-whisper недоступен (%s). Установи: pip install 'jarvis-core[stt]'",
-                exc,
+                "faster-whisper недоступен (нет %s). Установи: pip install 'jarvis-core[stt]'",
+                ", ".join(missing),
             )
             return None
         return FasterWhisperSTT(config, worker)
