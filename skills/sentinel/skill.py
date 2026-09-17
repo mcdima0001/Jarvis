@@ -237,7 +237,7 @@ class SentinelSkill(Skill):
     meta = SkillMeta(
         name="sentinel",
         description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
-        version="0.1.2",
+        version="0.1.3",
         platforms=("windows",),
         spoken=("страж", "слежение", "sentinel"),
     )
@@ -250,6 +250,9 @@ class SentinelSkill(Skill):
         self._disk_free_gb = float(setting("disk_free_gb", 10))
         self._cpu = CpuWatch(busy=float(setting("cpu_busy", 90)) / 100, minutes=float(setting("cpu_busy_minutes", 10)))
         self._downloads = DownloadWatch() if bool(setting("downloads", True)) else None
+        #: Загрузки смотрятся чаще прочего: о готовом файле хотят слышать сразу, а
+        #: не через полминуты (просьба владельца 17.09.2026). Проход — список одной папки.
+        self._downloads_every = max(1.0, float(setting("downloads_every_s", 2)))
         self._repeat_s = float(setting("repeat_after_min", 60)) * 60
         self._last_said: dict[str, float] = {}
         self._cpu_before: tuple[int, int, int] | None = None
@@ -258,6 +261,9 @@ class SentinelSkill(Skill):
     async def on_start(self) -> None:
         """Начать смотреть."""
         self.context.scope.spawn(self._watch(), name="sentinel-watch")
+        folder = downloads_dir() if self._downloads is not None else None
+        if folder is not None:
+            self.context.scope.spawn(self._watch_downloads(folder), name="sentinel-downloads")
 
     async def health(self) -> HealthStatus:
         return HealthStatus.healthy(self._last) if self._last else HealthStatus.healthy()
@@ -299,17 +305,35 @@ class SentinelSkill(Skill):
         return power, free, share
 
     async def _watch(self) -> None:
-        folder = downloads_dir() if self._downloads is not None else None
         while True:
             try:
-                await self._check_once(folder)
+                await self._check_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — страж не имеет права умереть от одного замера
                 self.log.warning("Страж: проход не удался: %s", exc)
             await asyncio.sleep(self._every)
 
-    async def _check_once(self, folder: Path | None) -> None:
+    async def _watch_downloads(self, folder: Path) -> None:
+        """Загрузки — своим, частым проходом: готовым файл считается через два прохода."""
+        while True:
+            try:
+                await self._check_downloads(folder)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — страж не имеет права умереть от одного замера
+                self.log.warning("Страж: проход по загрузкам не удался: %s", exc)
+            await asyncio.sleep(self._downloads_every)
+
+    async def _check_downloads(self, folder: Path) -> None:
+        if self._downloads is None:
+            return
+        finished = self._downloads.check(await asyncio.to_thread(scan, folder))
+        if finished:
+            # Каждый файл — новое событие, хотя фраза та же.
+            self._say(f"download:{finished[-1]}", download_line(finished), LOW, repeat=False, allow_repeat=True)
+
+    async def _check_once(self) -> None:
         power, free, share = await asyncio.to_thread(self._measure)
         self._last = (
             f"заряд {power[0] if power else '—'}%, диск {free:.1f} ГБ, процессор "
@@ -329,12 +353,8 @@ class SentinelSkill(Skill):
             line = self._cpu.check(share, time.monotonic())
             if line:
                 self._say("cpu", line, NORMAL, repeat=False)
-        if self._downloads is not None and folder is not None:
-            finished = self._downloads.check(await asyncio.to_thread(scan, folder))
-            if finished:
-                self._say(f"download:{finished[-1]}", download_line(finished), LOW, repeat=False)
 
-    def _say(self, key: str, text: str, importance: str, *, repeat: bool = True) -> None:
+    def _say(self, key: str, text: str, importance: str, *, repeat: bool = True, allow_repeat: bool = False) -> None:
         """Предложить реплику политике речи; одно и то же — не чаще `repeat_after_min`."""
         now = time.monotonic()
         if repeat and now - self._last_said.get(key, -1e9) < self._repeat_s:
@@ -342,6 +362,6 @@ class SentinelSkill(Skill):
         self._last_said[key] = now
         # Замер правдив, пока свеж: придержанное дольше `STALE_AFTER_S` не говорим.
         decision = self.context.announcer.offer(
-            text, importance=importance, language="ru", expires_s=STALE_AFTER_S
+            text, importance=importance, language="ru", expires_s=STALE_AFTER_S, allow_repeat=allow_repeat
         )
         self.log.info("Страж (%s): %s → %s", importance, text, decision)

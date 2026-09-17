@@ -151,14 +151,16 @@ class Announcer:
         last = self._said.get(text)
         return last is not None and now - last < self._repeat_after
 
-    def verdict(self, importance: str, text: str, *, now: float | None = None) -> str:
+    def verdict(
+        self, importance: str, text: str, *, now: float | None = None, allow_repeat: bool = False
+    ) -> str:
         """Что делать с репликой: ``say``, ``hold`` или ``drop``.
 
         Вынесено отдельно от произнесения, потому что решение тут — чистая
         функция от состояния, и проверять его надо без синтеза и без шины.
         """
         moment = now if now is not None else time.time()
-        if self._repeated(text, moment):
+        if not allow_repeat and self._repeated(text, moment):
             # Повтор одного и того же — всегда мусор, какой бы важности он ни
             # был: второй раз услышать то же самое ничего не добавляет.
             return "drop"
@@ -187,6 +189,7 @@ class Announcer:
         hold: bool = True,
         cause: str = "",
         expires_s: float = 0.0,
+        allow_repeat: bool = False,
     ) -> str:
         """Предложить реплику. Возвращает принятое решение.
 
@@ -201,13 +204,15 @@ class Announcer:
             Замер состояния устаревает: «на диске 7 гигабайт», придержанное в
             06:55, прозвучало в 09:39, когда там было уже 18 (16.09.2026).
             Ноль — не стареет (доклад о поручении ждут и через час).
+        :param allow_repeat: одинаковый текст — не повтор, а новое событие. «Файл
+            загрузился.» про второй файл выбрасывался как повтор первого (16.09.2026).
         """
         clean = text.strip()
         if not clean:
             return "drop"
 
         now = time.time()
-        decision = self.verdict(importance, clean, now=now)
+        decision = self.verdict(importance, clean, now=now, allow_repeat=allow_repeat)
         if decision == "hold" and not hold:
             # Придержать нечего смысла: реплика привязана к моменту.
             logger.debug("Не время и держать незачем, отбросил: %s", clean)

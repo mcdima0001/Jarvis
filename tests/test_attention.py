@@ -237,3 +237,11 @@ def test_stale_held_remark_is_not_said_later() -> None:
     time.sleep(0.02)
     assert announcer.flush() == 1
     assert not announcer.held
+
+
+def test_same_text_about_a_new_event_is_not_a_repeat() -> None:
+    """Живой случай 16.09.2026: «Файл загрузился.» о втором файле выбрасывался как повтор."""
+    announcer = Announcer(min_gap_s=0.0)
+    assert announcer.offer("Файл загрузился.", importance=LOW) == "say"
+    assert announcer.offer("Файл загрузился.", importance=LOW) == "drop"
+    assert announcer.offer("Файл загрузился.", importance=LOW, allow_repeat=True) == "say"
