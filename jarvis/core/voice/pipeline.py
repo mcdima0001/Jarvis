@@ -23,7 +23,9 @@ from __future__ import annotations
 import asyncio
 import difflib
 import logging
+import math
 import time
+from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -84,6 +86,25 @@ FILLER_SOURCE = "voice.filler"
 #: первым, поэтому запоздалое срабатывание — улика. Фраза, где имя расслышано и
 #: в тексте, этим правилом не затрагивается вовсе.
 LATE_NAME_S = 2.0
+
+
+def level_db(data: bytes) -> float:
+    """Громкость куска PCM в дБ от полной шкалы; тишина — -120."""
+    count = len(data) // 2
+    if not count:
+        return -120.0
+    samples = memoryview(data[: count * 2]).cast("h")
+    power = sum(sample * sample for sample in samples) / count
+    return 10 * math.log10(power / 32768**2) if power else -120.0
+
+
+def speech_level_db(audio: bytes, frame_bytes: int) -> float:
+    """Громкость речи во фразе: громкие кадры (верхняя пятая часть), а не среднее
+    с паузами — иначе тихая длинная фраза выглядела бы громче короткой громкой."""
+    levels = sorted(level_db(audio[i : i + frame_bytes]) for i in range(0, len(audio), frame_bytes))
+    if not levels:
+        return -120.0
+    return levels[int(len(levels) * 0.8)]
 
 
 def foreign_script(text: str) -> bool:
@@ -188,6 +209,8 @@ class VoicePipeline:
         #: Когда детектор услышал имя, открывшее окно. Нужно, чтобы отличить
         #: имя в начале фразы от «имени», пойманного посреди песни (`LATE_NAME_S`).
         self._name_heard_at = 0.0
+        #: Уровень фона микрофона в дБ; ``None`` — ещё не слышали тишины.
+        self._floor_db: float | None = None
         #: Последняя разобранная фраза прошла без имени в тексте, а детектор
         #: сработал посреди неё. Такой фразе команда разрешена, разговор — нет.
         self._unnamed = False
@@ -643,6 +666,8 @@ class VoicePipeline:
         buffer = bytearray()
         silence = 0
         speaking = False
+        #: Последние кадры до начала речи: детектор узнаёт о ней с опозданием.
+        before: deque[bytes] = deque(maxlen=self._config.preroll_frames or 1)
         #: Потоковое распознавание текущей фразы; ``None`` — не открыто.
         stream: STTStream | None = None
 
@@ -657,6 +682,7 @@ class VoicePipeline:
                         stream.cancel()
                         stream = None
                     buffer.clear()
+                    before.clear()
                     silence = 0
                     speaking = False
                     self._vad.reset()
@@ -680,6 +706,9 @@ class VoicePipeline:
                 if speech:
                     if not speaking:
                         logger.debug("Начало речи")
+                        if self._config.preroll_frames:
+                            buffer.extend(b"".join(before))
+                        before.clear()
                     buffer.extend(frame.data)
                     stream = self._stream_utterance(buffer, stream, frame.data)
                     silence = 0
@@ -687,6 +716,8 @@ class VoicePipeline:
                     continue
 
                 if not speaking:
+                    before.append(frame.data)
+                    self._note_floor(frame.data)
                     continue
 
                 # Немного тишины оставляем в конце: Whisper лучше слышит границу.
@@ -708,6 +739,11 @@ class VoicePipeline:
             raise
         except Exception:
             logger.exception("Цикл прослушивания остановлен из-за ошибки")
+
+    def _note_floor(self, data: bytes) -> None:
+        """Уровень фона: медленное среднее громкости кадров без речи, в дБ."""
+        level = level_db(data)
+        self._floor_db = level if self._floor_db is None else self._floor_db * 0.98 + level * 0.02
 
     def _note_hotword(self, spotted: Any) -> None:
         """Замер слов без имени: записать, что сработало бы. Ничего не выполнять.
@@ -836,6 +872,15 @@ class VoicePipeline:
             if stream is not None:
                 stream.cancel()
             return
+        speech_db = speech_level_db(audio, self._config.frame_bytes)
+        if self._floor_db is not None:
+            # Только числа, звук не сохраняется: по ним видно, в микрофоне ли
+            # беда, когда расшифровка — каша (стенд 18.09.2026: при разнице
+            # 20 дБ Deepgram слышит «Братарвис и daily cheese»).
+            logger.info(
+                "Уровень фразы: речь %.0f дБ, фон %.0f дБ, разница %.0f дБ",
+                speech_db, self._floor_db, speech_db - self._floor_db,
+            )
         if stream is not None:
             # Итог просим сразу, а не когда до фразы дойдёт очередь разбора: пока
             # выполняется прошлая команда, облако закрыло бы молчащий поток.

@@ -1832,3 +1832,53 @@ async def test_typed_command_keeps_its_source(pipeline: VoicePipeline) -> None:
     pipeline.handle = handle  # type: ignore[method-assign]
     await pipeline._on_typed(CommandTyped(source="panel", text="включи свет"))
     assert [(u.text, u.source) for u in handled] == [("включи свет", "panel")]
+
+
+async def test_sound_before_speech_is_kept_for_the_name(registry: ToolRegistry, events: LocalEventBus) -> None:
+    """Замер 18.09.2026: детектор речи опаздывает, и «Дж» в «Джарвис» терялось («Дарвис»)."""
+    pipeline = _pipeline(registry, events)
+    frame_bytes = pipeline._config.frame_bytes
+
+    class LoudIsSpeech:
+        def is_speech(self, frame: object) -> bool:
+            return max(abs(v) for v in memoryview(frame.data).cast("h")) > 1000  # type: ignore[attr-defined]
+
+        def reset(self) -> None: ...
+
+    class Phrase:
+        service_name = "fake"
+
+        async def start(self) -> None: ...
+
+        async def stop(self) -> None: ...
+
+        async def frames(self):
+            for value, count in ((30, 20), (20000, 10), (30, 60)):
+                for _ in range(count):
+                    yield _frame(value)
+            await asyncio.sleep(1)
+
+    pipeline._source = Phrase()  # type: ignore[assignment]
+    pipeline._vad = LoudIsSpeech()  # type: ignore[assignment]
+    task = asyncio.create_task(pipeline._listen())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    audio, _, _ = pipeline._pending.get_nowait()
+    kept = pipeline._config.preroll_frames
+    assert kept == 10
+    assert len(audio) == (kept + 10 + pipeline._config.silence_frames) * frame_bytes
+    assert audio[:frame_bytes] == _frame(30).data, "фраза начинается с тихого звука до речи"
+
+
+def test_levels_are_counted_in_decibels() -> None:
+    from jarvis.core.voice.pipeline import level_db, speech_level_db
+
+    full = (32767).to_bytes(2, "little", signed=True) * 480
+    assert round(level_db(full)) == 0
+    assert level_db(b"\x00" * 960) == -120.0
+    quiet = (327).to_bytes(2, "little", signed=True) * 480
+    assert round(level_db(quiet)) == -40
+    # Громкие кадры решают, паузы внутри фразы — нет.
+    assert round(speech_level_db(quiet * 4 + b"\x00" * 960 * 16, 960)) == -40

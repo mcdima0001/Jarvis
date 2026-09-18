@@ -414,6 +414,11 @@ class AudioConfig:
     frame_ms: int = 30
     #: Сколько тишины считать концом фразы.
     silence_ms: int = 800
+    #: Сколько звука **до** начала речи приклеивать к фразе. Детектор речи
+    #: узнаёт о ней с опозданием, и первый звук — «Дж» в «Джарвис» — терялся:
+    #: отсюда «Дарвис», «Чарвис», «Сдобавь высоких» (замер 18.09.2026,
+    #: `tools/preroll_bench.py`: на тихой речи детектор опаздывает на 50–260 мс).
+    preroll_ms: int = 300
     #: Предохранитель от бесконечной записи.
     max_utterance_s: float = 15.0
     #: Минимальная длина фрагмента, который вообще имеет смысл распознавать.
@@ -441,6 +446,11 @@ class AudioConfig:
     def frame_bytes(self) -> int:
         """Размер одного кадра в байтах (моно, 16 бит)."""
         return int(self.sample_rate * self.frame_ms / 1000) * 2
+
+    @property
+    def preroll_frames(self) -> int:
+        """Сколько кадров до начала речи держать про запас."""
+        return max(0, int(self.preroll_ms / self.frame_ms))
 
     @property
     def silence_frames(self) -> int:
