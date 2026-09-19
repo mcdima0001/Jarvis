@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Sequence
@@ -85,6 +86,27 @@ class TelegramMessageReceived(Event):
 #: Сколько слов может занимать имя адресата в начале фразы.
 _MAX_NAME_WORDS = 5
 
+#: Падежные окончания имён: «Роме», «Эли», «Мишей», «Олей».
+_CASE_ENDINGS = ("ой", "ей", "ою", "ею", "ем", "ом", "ам", "ям")
+
+
+def _base(word: str) -> str:
+    """Основа имени без падежного окончания: «эли», «эле», «эля» → «эл»."""
+    tight = squash(word)
+    for ending in _CASE_ENDINGS:
+        if tight.endswith(ending) and len(tight) - len(ending) >= 2:
+            return tight[: -len(ending)]
+    if len(tight) >= 3 and tight[-1] in "аяеиоуыюь":
+        return tight[:-1]
+    return tight
+
+
+def spoken_name(name: str) -> str:
+    """Имя чата для речи: без эмодзи и значков («Ромка Малютка ❤️❤️» → «Ромка Малютка»)."""
+    clean = re.sub(r"[^\w\s.,'\-]", "", name)
+    return " ".join(clean.split()) or name
+
+
 def match_chat(query: str, names: Sequence[str]) -> str | None:
     """Найти чат по услышанному имени.
 
@@ -95,6 +117,14 @@ def match_chat(query: str, names: Sequence[str]) -> str | None:
 
     :return: имя чата, либо ``None``, если уверенности нет.
     """
+    # Имя из одного слова сперва сверяется по основе, без падежного окончания:
+    # «Эли», «Эле» — это «Эля», а не начало «Элины» (живой случай 16.09.2026,
+    # 12:05: трижды «не понял, кому», а на соседнем списке «эли» находило
+    # «Элину» — сообщение ушло бы не тому человеку).
+    if len(query.split()) == 1 and len(_base(query)) >= 2:
+        declined = [name for name in names if name.split() and _base(name.split()[0]) == _base(query)]
+        if declined:
+            return min(declined, key=len)
     return best_match(
         query,
         names,
@@ -227,13 +257,17 @@ def describe_dialogs(dialogs: Sequence[dict[str, Any]]) -> str:
         parts.append(f"{item.get('name', '')} — {count}" if count > 1 else str(item.get("name", "")))
     return f"Непрочитано в {len(dialogs)}: " + ", ".join(parts) + "."
 
+#: Пауза между попытками переподключения после обрыва, секунд.
+RETRY_DELAY_S = 10
+
+
 class TelegramSkill(Skill):
     """Чтение, пересказ и отправка сообщений Telegram."""
 
     meta = SkillMeta(
         name="telegram",
         description="Сообщения и чаты Telegram",
-        version="0.2.1",
+        version="0.2.2",
         spoken=("телеграм", "telegram"),
     )
 
@@ -296,7 +330,21 @@ class TelegramSkill(Skill):
             return
 
         self._session.parent.mkdir(parents=True, exist_ok=True)
-        client = TelegramClient(str(self._session.with_suffix("")), self._api_id, self._api_hash)
+        # Библиотека после обрыва сети переподключается сама — по умолчанию раз в
+        # секунду и без конца. 17.09.2026 с 09:40 это шло часами: ~350 строк в
+        # минуту в логе (20 тысяч за день), а Telegram в ответ начал отказывать
+        # «слишком часто» (HTTP 429), что только затягивало круг. Пауза между
+        # попытками даёт серверу остыть, а её предупреждения в логе глушатся:
+        # о состоянии связи скилл пишет сам.
+        logging.getLogger("telethon").setLevel(logging.ERROR)
+        client = TelegramClient(
+            str(self._session.with_suffix("")),
+            self._api_id,
+            self._api_hash,
+            connection_retries=-1,  # не сдаваться: сеть вернётся
+            retry_delay=RETRY_DELAY_S,
+            auto_reconnect=True,
+        )
         try:
             await client.connect()
             if not await client.is_user_authorized():
@@ -440,9 +488,11 @@ class TelegramSkill(Skill):
         if message != dictated:
             # Текст писал не владелец, а ассистент: вслух — что именно ушло.
             preview = message if len(message) <= PREVIEW else message[: PREVIEW - 1].rstrip() + "…"
-            speech = {"ru": f"Отправил {name}: {preview}", "en": f"Sent to {name}: {preview}"}
+            said = spoken_name(name)
+            speech = {"ru": f"Отправил {said}: {preview}", "en": f"Sent to {said}: {preview}"}
         else:
-            speech = {"ru": f"Отправил {name}.", "en": f"Sent to {name}."}
+            said = spoken_name(name)
+            speech = {"ru": f"Отправил {said}.", "en": f"Sent to {said}."}
         return ToolResult.success({"chat": name, "text": message, "dictated": dictated}, speech=speech)
 
     async def _rewrite(self, message: str, chat: str) -> str | None:
@@ -517,7 +567,7 @@ class TelegramSkill(Skill):
         self.log.info("Отправлена картинка в %s (%sx%s)", name, width, height)
         return ToolResult.success(
             {"chat": name, "width": width, "height": height},
-            speech={"ru": f"Отправил картинку в {name}.", "en": f"Sent the image to {name}."},
+            speech={"ru": f"Отправил картинку в {spoken_name(name)}.", "en": f"Sent the image to {spoken_name(name)}."},
         )
 
     @tool(phrases=["что нового в телеграме", "проверь телеграм", "новые сообщения",

@@ -286,7 +286,7 @@ async def test_instruction_becomes_a_message_from_the_owner() -> None:
     result = await skill.send_message("маме", text="спроси как дела и как настроение")
     assert result.ok
     assert skill._client.messages == [("mama-entity", "Как дела? Как настроение?")]
-    assert result.speech_for("ru") == "Отправил Мама ❤️: Как дела? Как настроение?"
+    assert result.speech_for("ru") == "Отправил Мама: Как дела? Как настроение?"
 
 
 async def test_without_model_the_simple_rule_rewrites() -> None:
@@ -307,4 +307,17 @@ async def test_ordinary_text_goes_as_dictated() -> None:
     skill = _messenger(llm)
     result = await skill.send_message("маме", text="буду через час")
     assert skill._client.messages == [("mama-entity", "буду через час")]
-    assert llm.asked == [] and result.speech_for("ru") == "Отправил Мама ❤️."
+    assert llm.asked == [] and result.speech_for("ru") == "Отправил Мама."
+
+
+def test_short_name_in_another_case_finds_its_owner_not_a_longer_name() -> None:
+    """16.09.2026, 12:05: «напиши Эли привет» — трижды «не понял, кому»; «эли» же совпадало с «Элиной»."""
+    from skills.telegram.skill import match_chat, split_request, spoken_name
+
+    names = ["Эля ❤️", "Элина Ковалёва", "Ромка Малютка ❤️❤️", "Мама"]
+    for heard in ("эли", "эле", "эля", "Элю"):
+        assert match_chat(heard, names) == "Эля ❤️", heard
+    assert split_request("Эли привет", names) == ("Эля ❤️", "привет")
+    assert match_chat("роме", names) == "Ромка Малютка ❤️❤️"
+    assert match_chat("маме", names) == "Мама"
+    assert spoken_name("Ромка Малютка ❤️❤️") == "Ромка Малютка"
