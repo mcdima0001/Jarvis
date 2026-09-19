@@ -102,7 +102,7 @@ DEFAULT_COOLDOWN = 4.0
 #: Сколько реплик, сочинённых моделью, держать на одно слово. Предел нужен:
 #: без него вечер работы превратил бы список в свалку, а кеш синтеза — в мусор,
 #: который вытеснит служебные фразы ассистента.
-LEARNED_PER_WORD = 4
+LEARNED_PER_WORD = 12
 #: Раздел памяти, где реплики переживают перезапуск.
 REACTIONS_SECTION = "reactions"
 
@@ -1247,7 +1247,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.3.1",
+        version="0.3.2",
         platforms=("windows",),
         spoken=("клавиатура", "keyboard"),
     )
