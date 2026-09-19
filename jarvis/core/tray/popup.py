@@ -26,12 +26,12 @@ from .menu import (
     POPUP_GAP,
     READY,
     STATE_COLORS,
-    STATE_WORDS,
     MenuItem,
     PopupLayout,
     popup_layout,
     popup_position,
     row_at,
+    status_line,
     step_row,
 )
 
@@ -238,7 +238,7 @@ class Painter:
             gdi.SelectObject(memory, gdi.GetStockObject(_NULL_PEN))
             gdi.SelectObject(memory, self._brush(STATE_COLORS.get(state, PALETTE["muted"])))
             gdi.Ellipse(memory, left, dot_top, left + dot + 1, dot_top + dot + 1)
-            words = STATE_WORDS.get(state, state)
+            words = status_line(state)
             self._text(memory, words, (left + dot + px(7), px(33), width - px(12), px(49)), "status", PALETTE["muted"])
             self._fill(memory, (px(12), header - 1, width - px(12), header), PALETTE["line"])
 

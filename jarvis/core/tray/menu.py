@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from jarvis import __version__
+
 #: Модели и скиллы грузятся: на Vosk это полторы минуты, и всё это время
 #: ассистент не слышит. Без отдельного вида значок врал бы, что готов.
 STARTING = "starting"
@@ -175,9 +177,18 @@ def popup_position(
 DEFAULT_ACTION = "panel"
 
 
-def tip(name: str, state: str) -> str:
-    """Подпись под значком: «Jarvis — слушает»."""
-    return f"{name} — {STATE_WORDS.get(state, state)}"[:TIP_LIMIT]
+def tip(name: str, state: str, version: str = __version__) -> str:
+    """Подпись под значком: «Jarvis 0.26.0 — слушает».
+
+    Версия здесь, чтобы узнать, что запущено, не открывая панель (просьба
+    владельца 19.09.2026): после правки ядра главный вопрос — перезапустился ли.
+    """
+    return f"{name} {version} — {STATE_WORDS.get(state, state)}"[:TIP_LIMIT]
+
+
+def status_line(state: str, version: str = __version__) -> str:
+    """Строка под названием в своём меню: «слушает · v0.26.0»."""
+    return f"{STATE_WORDS.get(state, state)} · v{version}"
 
 
 def menu_commands(menu: tuple[MenuItem | None, ...] = MENU) -> list[tuple[int, MenuItem | None]]:

@@ -143,7 +143,8 @@ def test_autostart_refusal_is_shown_as_error() -> None:
 
 
 def test_tip_names_state_and_fits_the_os_limit() -> None:
-    assert menu.tip("Jarvis", menu.READY) == "Jarvis — слушает"
+    assert menu.tip("Jarvis", menu.READY, "0.26.0") == "Jarvis 0.26.0 — слушает"
+    assert menu.status_line(menu.STOPPING, "0.26.0") == "выключается… · v0.26.0"
     assert len(menu.tip("J" * 300, menu.STARTING)) == menu.TIP_LIMIT
 
 
