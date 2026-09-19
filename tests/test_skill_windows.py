@@ -1223,3 +1223,29 @@ async def test_volume_comes_back_at_once_when_the_phrase_was_not_for_us() -> Non
     skill._ducked = {7: 1.0}
     await skill._on_dismissed(WakeDismissed(source="voice", text="песня"))
     assert restored == [True]
+
+
+async def test_admin_launch_is_asked_for_explicitly() -> None:
+    """19.09.2026: по умолчанию без прав, «от имени администратора» — отдельной командой."""
+    from jarvis.core.contracts import Utterance
+    from jarvis.core.router import PhraseResolver
+    from jarvis.core.tools import ToolRegistry, collect_tools
+
+    registry = ToolRegistry()
+    for item in collect_tools(windows.WindowsSkill(), namespace="windows"):
+        registry.register(item)
+    resolver = PhraseResolver(registry)
+    plain = await resolver.resolve(Utterance(text="запусти стим"))
+    admin = await resolver.resolve(Utterance(text="запусти стим от имени администратора"))
+    assert plain is not None and plain.tool == "windows.launch_program"
+    assert admin is not None and admin.tool == "windows.launch_program_admin"
+    assert admin.arguments["program"] == "стим"
+    assert registry.get("windows.launch_program_admin").spec.reversible is False
+
+
+def test_plain_start_goes_through_explorer_when_elevated(monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[list[str]] = []
+    monkeypatch.setattr(windows, "process_is_admin", lambda: True)
+    monkeypatch.setattr(windows.subprocess, "Popen", lambda command, **_: started.append(command))
+    windows.start_plain("C:/Menu/Steam.lnk")
+    assert started == [["explorer.exe", "C:/Menu/Steam.lnk"]]

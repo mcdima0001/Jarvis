@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import ctypes
 import difflib
 import io
 import os
@@ -1050,13 +1051,51 @@ def sound_sessions() -> list[tuple[Any, SoundSession]]:
     return found
 
 
+def process_is_admin() -> bool:
+    """Запущен ли сам ассистент с правами администратора."""
+    try:
+        return bool(ctypes.WinDLL("shell32").IsUserAnAdmin())
+    except (OSError, AttributeError):
+        return False
+
+
+def start_plain(target: str) -> None:
+    """Запустить с **обычными** правами, даже если сам ассистент — администратор.
+
+    Запущенное через `os.startfile` наследует права ассистента, а он работает
+    от администратора: любая программа, открытая голосом, получала полные права
+    (просьба владельца 19.09.2026 — по умолчанию без них). Проводник же всегда
+    работает с обычными правами: новый `explorer.exe` передаёт путь уже
+    запущенной оболочке и завершается, а программу запускает она.
+    """
+    if not process_is_admin():
+        os.startfile(target)  # type: ignore[attr-defined]  # есть только на Windows
+        return
+    subprocess.Popen(["explorer.exe", target], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def start_elevated(target: str) -> None:
+    """Запустить с правами администратора. Ассистент сам с правами — окна UAC не будет."""
+    if process_is_admin():
+        os.startfile(target)  # type: ignore[attr-defined]  # есть только на Windows
+        return
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.ShellExecuteW.restype = ctypes.c_void_p
+    shell32.ShellExecuteW.argtypes = [
+        ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_int,
+    ]
+    code = shell32.ShellExecuteW(None, "runas", target, None, None, 1)
+    if (code or 0) <= 32:
+        raise OSError(f"ShellExecute отказал ({code}): возможно, отказались в окне UAC")
+
+
 class WindowsSkill(Skill):
     """Запуск программ, блокировка компьютера и громкость."""
 
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.3.0",
+        version="0.4.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1620,10 +1659,26 @@ class WindowsSkill(Skill):
                    "open {program}", "launch {program}", "start {program}"],
           reversible=True)
     async def launch_program(self, program: str) -> ToolResult:
-        """Запустить программу по названию.
+        """Запустить программу по названию — с обычными правами, без администратора.
 
         :param program: название, как его произносят: «стим», «обс», «браузер».
         """
+        return await self._launch(program, elevated=False)
+
+    @tool(phrases=["запусти {program} от имени администратора", "запусти {program} с правами администратора",
+                   "запусти {program} от админа", "запусти {program} с правами админа",
+                   "открой {program} от имени администратора", "открой {program} с правами администратора",
+                   "открой {program} от админа", "run {program} as administrator", "run {program} as admin"],
+          reversible=False)
+    async def launch_program_admin(self, program: str) -> ToolResult:
+        """Запустить программу с правами администратора — только по прямой просьбе.
+
+        :param program: название программы.
+        """
+        return await self._launch(program, elevated=True)
+
+    async def _launch(self, program: str, *, elevated: bool) -> ToolResult:
+        """Найти программу в каталоге и запустить с обычными правами или с правами администратора."""
         found = match_program(program, self._catalog)
         if found is None:
             # Программы с таким названием нет — возможно, это сайт. «Открой
@@ -1651,7 +1706,7 @@ class WindowsSkill(Skill):
         try:
             # Ни shell=True, ни строки-команды: только конкретный путь или URI,
             # который мы сами нашли в каталоге.
-            os.startfile(target)  # type: ignore[attr-defined]  # есть только на Windows
+            await asyncio.to_thread(start_elevated if elevated else start_plain, target)
         except OSError as exc:
             self.log.error("Не удалось запустить %s (%s): %s", name, target, exc)
             return ToolResult.failure(
@@ -1662,7 +1717,12 @@ class WindowsSkill(Skill):
                 },
             )
 
-        self.log.info("Запущено: %s (%s)", name, target)
+        self.log.info("Запущено%s: %s (%s)", " с правами администратора" if elevated else "", name, target)
+        if elevated:
+            return ToolResult.success(
+                {"program": name, "target": target, "elevated": True},
+                speech={"ru": f"Запускаю {name} от имени администратора.", "en": f"Launching {name} as administrator."},
+            )
         return ToolResult.success(
             {"program": name, "target": target},
             speech={
