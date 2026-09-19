@@ -468,3 +468,18 @@ def test_layout_remark_says_it_fixed() -> None:
     )
     skill._on_layout("ru", True)
     assert said[-1].endswith(keys.LAYOUT_FIXED)
+
+
+def test_reactions_survive_restart() -> None:
+    """Жалоба 19.09.2026: после перезапуска на «работает» снова первая реплика, сочинённое пропадало."""
+    first = keys.Reactions({"работает": ("Раз.", "Два.")}, cooldown_s=0)
+    assert first.feed_pattern("работает ").quip == "Раз."
+    assert first.learn("работает", "Сочинил сам.")
+    saved = first.snapshot()
+
+    second = keys.Reactions({"работает": ("Раз.", "Два.")}, cooldown_s=0)
+    second.restore(saved)
+    assert second.feed_pattern("работает ").quip == "Два.", "круг продолжается, а не начинается заново"
+    assert "Сочинил сам." in second.options("работает")
+    second.restore({"learned": {"удалённое слово": ["x"]}, "turn": {"удалённое слово": 3}})
+    assert "удалённое слово" not in second.snapshot()["learned"]

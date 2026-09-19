@@ -55,7 +55,7 @@ from typing import Any, NamedTuple
 
 from jarvis.core.attention import LOW, URGENT
 from jarvis.core.contracts import CommandTyped, ToolResult
-from jarvis.core.errors import LLMError
+from jarvis.core.errors import LLMError, MemoryError_
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.state import DEAF
 from jarvis.core.tools import tool
@@ -103,6 +103,8 @@ DEFAULT_COOLDOWN = 4.0
 #: без него вечер работы превратил бы список в свалку, а кеш синтеза — в мусор,
 #: который вытеснит служебные фразы ассистента.
 LEARNED_PER_WORD = 4
+#: Раздел памяти, где реплики переживают перезапуск.
+REACTIONS_SECTION = "reactions"
 
 #: Слежение выключено, пока владелец явно не включит. Гарантия в коде, а не в
 #: конфиге: пустой конфиг на свежей машине не должен поднять кейлоггер молча.
@@ -339,8 +341,34 @@ class Reactions:
         #: Какую реплику выдали прошлый раз — чтобы идти по кругу, а не повторять.
         self._turn: dict[str, int] = {}
         #: Сочинённое моделью впрок, отдельно от заданного в конфиге: вытесняется
-        #: только оно, и живёт ровно один сеанс.
+        #: только оно. Переживает перезапуск через `snapshot`/`restore`.
         self._learned: dict[str, tuple[str, ...]] = {}
+
+    def snapshot(self) -> dict[str, dict[str, object]]:
+        """Что стоит пережить перезапуск: сочинённое и место в круге каждого слова.
+
+        Жалоба владельца 19.09.2026: «какие фразы были, такие и остались». За
+        день десяток перезапусков, и каждый стирал сочинённое и сбрасывал круг —
+        на «работает» трижды подряд звучало одно и то же «Не трогайте, сэр».
+        """
+        return {
+            "learned": {pattern: list(lines) for pattern, lines in self._learned.items()},
+            "turn": dict(self._turn),
+        }
+
+    def restore(self, data: Mapping[str, object]) -> None:
+        """Вернуть сохранённое; слова, которых больше нет в списке, забываются."""
+        learned = data.get("learned")
+        if isinstance(learned, Mapping):
+            for pattern, lines in learned.items():
+                if pattern in self._quips and isinstance(lines, list):
+                    clean = tuple(" ".join(str(line).split()) for line in lines if str(line).strip())
+                    self._learned[pattern] = clean[-LEARNED_PER_WORD:]
+        turn = data.get("turn")
+        if isinstance(turn, Mapping):
+            for pattern, index in turn.items():
+                if pattern in self._quips and isinstance(index, int):
+                    self._turn[pattern] = index
 
     @property
     def patterns(self) -> tuple[str, ...]:
@@ -1219,7 +1247,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.3.0",
+        version="0.3.1",
         platforms=("windows",),
         spoken=("клавиатура", "keyboard"),
     )
@@ -1249,6 +1277,7 @@ class KeysSkill(Skill):
 
         self._triggers = Triggers(mapping, window=window, cooldown_s=cooldown)
         self._reactions = Reactions(quips, window=window) if react and quips else None
+        self._persist_reactions = True
         #: Замечать ли не ту раскладку («ghbdtn» вместо «привет»).
         self._layout: LayoutGuard | None = None
         custom = dict(self.context.setting("layout_quips", {}) or {})
@@ -1288,6 +1317,7 @@ class KeysSkill(Skill):
     async def on_start(self) -> None:
         """Поднять хук, если он включён и мы на Windows."""
         self._loop = asyncio.get_running_loop()
+        await self._load_reactions()
         if self._enabled and self._watcher is not None:
             self._watcher.start()
             self.log.info("Слежу за клавиатурой: %s", ", ".join(self._triggers.phrases))
@@ -1341,6 +1371,7 @@ class KeysSkill(Skill):
         # панели видно, на что была шутка (просьба владельца 15.09.2026).
         cause = f"{reaction.keyword[:1].upper()}{reaction.keyword[1:]} [ввод с клавиатуры]"
         self.context.announcer.offer(reaction.quip, importance=LOW, hold=False, cause=cause)
+        self.context.scope.spawn(self._save_reactions(), name="keys-save")
         if self._react_llm and self.context.llm.available:
             self.context.scope.spawn(
                 self._write_ahead(reaction), name="keys-react"
@@ -1374,6 +1405,29 @@ class KeysSkill(Skill):
         # набранное в не той раскладке могло быть паролем.
         self.context.announcer.offer(quip, importance=URGENT, hold=False, cause="[набор в не той раскладке]")
 
+    async def _load_reactions(self) -> None:
+        """Поднять с диска сочинённые реплики и место в круге."""
+        if self._reactions is None:
+            return
+        try:
+            data = await self.context.memory.documents.read(REACTIONS_SECTION)
+        except MemoryError_ as exc:
+            self._persist_reactions = False
+            self.log.warning(
+                "Реплики не переживут перезапуск: %s. Добавь «%s» в memory.documents", exc, REACTIONS_SECTION
+            )
+            return
+        self._reactions.restore(data)
+
+    async def _save_reactions(self) -> None:
+        """Записать сочинённое и круг: тихо пропускаем, если раздела нет."""
+        if self._reactions is None or not self._persist_reactions:
+            return
+        try:
+            await self.context.memory.documents.update(REACTIONS_SECTION, self._reactions.snapshot())
+        except MemoryError_ as exc:
+            self.log.debug("Реплики не сохранились: %s", exc)
+
     async def _write_ahead(self, reaction: Reaction) -> None:
         """Сочинить моделью реплику на это слово и приготовить её к следующему разу.
 
@@ -1397,6 +1451,7 @@ class KeysSkill(Skill):
         if self._reactions is None or not self._reactions.learn(reaction.keyword, line):
             return
         self.log.debug("Реплика впрок на «%s»: %r", reaction.keyword, line)
+        await self._save_reactions()
         # Синтез заранее: к следующему разу реплика прозвучит мгновенно.
         await self.context.tts.prewarm(line, language="ru")
 
