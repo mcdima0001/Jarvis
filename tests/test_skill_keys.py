@@ -490,5 +490,5 @@ def test_games_switch_the_watcher_off() -> None:
     games = keys.DEFAULT_GAMES
     assert keys.is_game(r"C:\Program Files\Java\bin\javaw.exe", False, games)
     assert keys.is_game(r"D:\SteamLibrary\steamapps\common\Game\game.exe", False, games)
-    assert keys.is_game(r"C:\Windows\explorer.exe", True, games), "во весь экран — как игра"
+    assert keys.is_game(r"C:\Windows\explorer.exe", True, games), "полноэкранный Direct3D — игра"
     assert not keys.is_game(r"C:\Program Files\Telegram\Telegram.exe", False, games)

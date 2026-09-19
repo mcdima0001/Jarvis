@@ -196,7 +196,7 @@ DEFAULT_GAMES = (
 
 
 def is_game(path: str, fullscreen: bool, patterns: tuple[str, ...]) -> bool:
-    """Похоже ли активное окно на игру: во весь экран или программа из игрового места."""
+    """Похоже ли активное окно на игру: полноэкранный Direct3D или программа из игрового места."""
     low = path.lower().replace("/", "\\")
     return fullscreen or any(mark in low for mark in patterns)
 
@@ -927,35 +927,20 @@ def _process_path(hwnd: Any) -> str:
         kernel32.CloseHandle(process)
 
 
-class _MONITORINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", wintypes.DWORD),
-        ("rcMonitor", wintypes.RECT),
-        ("rcWork", wintypes.RECT),
-        ("dwFlags", wintypes.DWORD),
-    ]
+def _d3d_fullscreen() -> bool:
+    """Идёт полноэкранная Direct3D-игра — сигнал самой Windows.
 
-
-def _fullscreen(hwnd: Any) -> bool:
-    """Окно закрывает свой монитор целиком — так выглядят игры (и видео на весь экран)."""
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.RECT)]
-    user32.MonitorFromWindow.restype = ctypes.c_void_p
-    user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, wintypes.DWORD]
-    user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
-    user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
-    name = ctypes.create_unicode_buffer(64)
-    user32.GetClassNameW(hwnd, name, 64)
-    if name.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
-        return False  # рабочий стол тоже «во весь экран»
-    rect = wintypes.RECT()
-    info = _MONITORINFO()
-    info.cbSize = ctypes.sizeof(_MONITORINFO)
-    monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
-    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)) or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+    Не «окно во весь экран»: так выглядит и браузер на F11, в котором печатают
+    (замечание владельца 19.09.2026). Игры в окне без рамки ловятся по пути
+    к программе (`games`).
+    """
+    try:
+        shell32 = ctypes.WinDLL("shell32")
+        state = ctypes.c_int()
+        # QUNS_RUNNING_D3D_FULL_SCREEN = 3
+        return shell32.SHQueryUserNotificationState(ctypes.byref(state)) == 0 and state.value == 3
+    except (OSError, AttributeError):
         return False
-    screen = info.rcMonitor
-    return (rect.left, rect.top, rect.right, rect.bottom) == (screen.left, screen.top, screen.right, screen.bottom)
 
 
 def replace_typed_os(erase: int, text: str) -> bool:
@@ -1321,7 +1306,7 @@ class KeyboardWatcher:
             user32.GetWindowTextW(hwnd, buffer, length + 1)
             title = buffer.value
         self._sensitive = is_sensitive(title, self._skip) or (
-            self._games is not None and is_game(_process_path(hwnd), _fullscreen(hwnd), self._games)
+            self._games is not None and is_game(_process_path(hwnd), _d3d_fullscreen(), self._games)
         )
         self._sensitive_at = now
         return self._sensitive
@@ -1341,7 +1326,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.4.0",
+        version="0.4.1",
         platforms=("windows",),
         spoken=("клавиатура", "keyboard"),
     )
