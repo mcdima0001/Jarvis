@@ -26,6 +26,9 @@ PING_PORT = 443
 WARMUP_BYTES = 256 * 1024
 PROBE_BYTES = 8 * 1024 * 1024
 UPLOAD_BYTES = 2 * 1024 * 1024
+# Cloudflare отвечает 403 на подпись по умолчанию «Python-urllib» (замер
+# 19.09.2026): замер скорости молча срывался и назывался «сеть недоступна».
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jarvis-speedtest"
 # Ограничение на одну пробу, чтобы голосовой круг не ждал вечно.
 PROBE_TIMEOUT = 20.0
 
@@ -36,7 +39,7 @@ class SpeedtestSkill(Skill):
     meta = SkillMeta(
         name="speedtest",
         description="Измеряет скорость загрузки, отдачи и задержку интернета.",
-        version="0.1.0",
+        version="0.1.1",
         spoken=("скорость интернета", "speedtest"),
     )
 
@@ -67,7 +70,18 @@ class SpeedtestSkill(Skill):
 
         try:
             payload = await asyncio.to_thread(self._run_probes, normalized)
+        except urllib.error.HTTPError as exc:
+            # Сеть есть, отказал сервер замера — это не «сеть недоступна».
+            self.log.warning("Сервер замера скорости отказал: %s", exc)
+            return ToolResult.failure(
+                f"Сервер замера отказал: {exc}",
+                speech={
+                    "ru": "Сервер замера скорости отказал, сеть при этом есть.",
+                    "en": "The speed test server refused, but the network is up.",
+                },
+            )
         except (urllib.error.URLError, http.client.HTTPException, OSError, ssl.SSLError) as exc:
+            self.log.warning("Замер скорости не удался: %s", exc)
             return ToolResult.failure(
                 f"Не удалось выполнить замер: {exc}",
                 speech={
@@ -139,7 +153,7 @@ class SpeedtestSkill(Skill):
         """Качает заданное число байт и возвращает объём и затраченное время."""
         request = urllib.request.Request(
             DOWNLOAD_URL.format(size=size),
-            headers={"Cache-Control": "no-cache"},
+            headers={"Cache-Control": "no-cache", "User-Agent": USER_AGENT},
         )
         received = 0
         started = time.perf_counter()
@@ -160,7 +174,7 @@ class SpeedtestSkill(Skill):
         request = urllib.request.Request(
             UPLOAD_URL,
             data=body,
-            headers={"Content-Type": "application/octet-stream"},
+            headers={"Content-Type": "application/octet-stream", "User-Agent": USER_AGENT},
             method="POST",
         )
         started = time.perf_counter()
