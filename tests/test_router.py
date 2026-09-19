@@ -462,3 +462,53 @@ def test_plans_and_help_are_never_learned() -> None:
     from jarvis.core.router.resolvers.learned import NEVER_LEARN
 
     assert {"core.plan", "core.later", "core.help"} <= NEVER_LEARN
+
+
+class Picker:
+    """Скилл, который не уверен и предлагает выбрать."""
+
+    def __init__(self) -> None:
+        self.done: list[str] = []
+
+    @tool(phrases=["найди модуль"], reversible=True)
+    async def ask(self) -> ToolResult:
+        """Предложить варианты."""
+        from jarvis.core.contracts import Choice, numbered
+
+        options = [Choice(name, Intent(tool="picker.take", arguments={"name": name})) for name in ("keys", "peace")]
+        return ToolResult.choosing(options, question=f"Какой? {numbered(['keys', 'peace'])}.")
+
+    @tool(routable=False, reversible=True)
+    async def take(self, name: str) -> ToolResult:
+        """Выполнить выбранное.
+
+        :param name: что выбрали.
+        """
+        self.done.append(name)
+        return ToolResult.success(name, speech=f"Взял {name}.")
+
+
+async def test_numbered_choice_runs_the_picked_option(registry: ToolRegistry) -> None:
+    """19.09.2026: вместо двадцати названий — пять с номерами, ответ «второй» выполняет выбранное."""
+    picker = Picker()
+    for item in collect_tools(picker, namespace="picker"):
+        registry.register(item)
+    dispatcher = Dispatcher(router=Router([PhraseResolver(registry)], threshold=0.6), registry=registry)
+
+    asked = await dispatcher.handle_text("найди модуль")
+    assert asked.speech == "Какой? 1 — keys, 2 — peace." and len(asked.choices) == 2
+    chosen = await dispatcher.handle_text("номер два")
+    assert picker.done == ["peace"] and chosen.speech == "Взял peace."
+
+    await dispatcher.handle_text("найди модуль")
+    dropped = await dispatcher.handle_text("нет")
+    assert picker.done == ["peace"] and dropped.value == {"chosen": None}
+
+
+def test_rank_puts_the_likely_first_and_cuts_to_five() -> None:
+    from jarvis.core.text import rank
+
+    names = {name: (name,) for name in ("keys", "peace", "screen", "search", "sentinel", "speedtest", "telegram")}
+    names["keys"] += ("кейс", "case")
+    assert rank("Кейс", names)[0] == "keys"
+    assert len(rank("что-то", names)) == 5

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from jarvis.core.agent import Outcome, Planner, Step
 from jarvis.core.audio.outputs import Output, find_output, is_default, query_outputs
 from jarvis.core.audio.protocol import SelectableSink
-from jarvis.core.contracts import LIVE_SPEECH, Intent, ToolResult
+from jarvis.core.contracts import LIVE_SPEECH, Choice, Intent, ToolResult, numbered
 from jarvis.core.dialogue import Conversation
 from jarvis.core.errors import AudioError
 from jarvis.core.jobs import Jobs, busy_line, shorten
@@ -30,7 +30,7 @@ from jarvis.core.meter import Meter
 from jarvis.core.persona import Persona
 from jarvis.core.situation import Situation
 from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, minutes_word
-from jarvis.core.text import best_match
+from jarvis.core.text import best_match, rank
 from jarvis.core.tools import ToolRegistry, tool
 from jarvis.core.tts.normalize import plural_form
 from jarvis.core.version import current
@@ -206,6 +206,11 @@ class _Waiting:
         """Протух ли: согласие через час — это уже про другое."""
         moment = time.monotonic() if now is None else now
         return moment - self.at >= RESUME_TTL_S
+
+
+def _say_name(name: str, spellings: tuple[str, ...]) -> str:
+    """Как назвать модуль вслух: первое русское имя из паспорта, иначе настоящее."""
+    return next((spelling for spelling in spellings if any("а" <= char <= "я" for char in spelling.lower())), name)
 
 
 class CoreTools:
@@ -579,13 +584,25 @@ class CoreTools:
         """
         found = self._skills.find(skill) or self._fresh_skill(skill)
         if found is None:
-            known = ", ".join(self._skills.loaded) or "ни одного"
-            return ToolResult.failure(
-                f"Скилл {skill!r} не найден. Загружены: {known}",
-                speech={
-                    "ru": f"Не нашёл модуль {skill}. Есть: {known}.",
-                    "en": f"No module named {skill}. Available: {known}.",
+            # Не перечень всех модулей, а пять самых похожих с номерами: 19.09.2026
+            # на «модуль Case» прозвучал список из двадцати одного названия.
+            spellings = self._skills.spellings
+            likely = rank(skill, spellings, limit=5)
+            if not likely:
+                return ToolResult.failure(
+                    f"Скилл {skill!r} не найден, загруженных нет",
+                    speech={"ru": f"Не нашёл модуль {skill}.", "en": f"No module named {skill}."},
+                )
+            labels = [_say_name(name, spellings[name]) for name in likely]
+            listed = numbered(labels)
+            return ToolResult.choosing(
+                [Choice(label, Intent(tool="core.reload_skill", arguments={"skill": name}))
+                 for label, name in zip(labels, likely, strict=True)],
+                question={
+                    "ru": f"Не нашёл модуль {skill}. Похожие: {listed}. Какой?",
+                    "en": f"No module named {skill}. Closest: {listed}. Which one?",
                 },
+                value={"not_found": skill, "choices": likely},
             )
         # Вслух отвечаем теми словами, какими спросили: «модуль браузер
         # перезагружен» вместо «модуль browser». Настоящее имя нужно коду, а

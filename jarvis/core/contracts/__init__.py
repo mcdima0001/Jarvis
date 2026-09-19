@@ -33,7 +33,7 @@ from .intent import (
     dominant_language,
     parse_number,
 )
-from .results import LIVE_SPEECH, ToolResult
+from .results import LIVE_SPEECH, Choice, ToolResult, numbered
 
 __all__ = [
     "AnnouncementRequested",
@@ -56,6 +56,8 @@ __all__ = [
     "ToolInvoked",
     "LIVE_SPEECH",
     "ToolResult",
+    "Choice",
+    "numbered",
     "Utterance",
     "detect_language",
     "dominant_language",

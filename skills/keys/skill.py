@@ -1326,9 +1326,9 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.4.1",
+        version="0.4.2",
         platforms=("windows",),
-        spoken=("клавиатура", "keyboard"),
+        spoken=("клавиатура", "кейс", "case", "keyboard"),
     )
 
     def __init__(self) -> None:

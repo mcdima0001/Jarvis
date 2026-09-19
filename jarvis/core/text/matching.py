@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .spoken import romanize, skeleton, squash
 
@@ -182,6 +182,34 @@ def best_match(
         if score >= similarity and (best is None or score > best[0]):
             best = (score, name)
     return best[1] if best else None
+
+
+def similarity(query: str, spelling: str) -> float:
+    """Насколько написание похоже на услышанное — для упорядочивания вариантов.
+
+    Не порог, а мера: берётся лучшее из сравнения как есть и латиницей
+    («кейс» и «keys»), а совпадение краем или по звучанию добавляет сверху.
+    """
+    tight, known = squash(query), squash(spelling)
+    latin, known_latin = squash(romanize(query)), squash(romanize(spelling))
+    score = max(closeness(tight, known), closeness(latin, known_latin))
+    if touches(tight, known) or touches(latin, known_latin) or sounds_alike(query, spelling):
+        score += 0.25
+    return score
+
+
+def rank(query: str, candidates: Mapping[str, Iterable[str]], *, limit: int = 5) -> list[str]:
+    """Кандидаты по убыванию похожести на услышанное, не больше `limit`.
+
+    :param candidates: вариант → его написания (настоящее имя и как его называют
+        вслух). Сравнивается с каждым, в зачёт идёт лучшее.
+    """
+    scored = [
+        (max((similarity(query, spelling) for spelling in spellings), default=0.0), label)
+        for label, spellings in candidates.items()
+    ]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [label for _, label in scored[: max(0, limit)]]
 
 
 def shared_word(left: str, right: str, *, least: int = 4) -> bool:

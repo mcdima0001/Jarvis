@@ -121,6 +121,11 @@ class SkillManager:
         """Имена загруженных скиллов."""
         return tuple(sorted(self._records))
 
+    @property
+    def spellings(self) -> dict[str, tuple[str, ...]]:
+        """Имя скилла -> все его имена (настоящее и как его зовут вслух)."""
+        return {name: record.instance.meta.names for name, record in sorted(self._records.items())}
+
     def find(self, spoken: str) -> str | None:
         """Найти загруженный скилл по услышанному названию.
 

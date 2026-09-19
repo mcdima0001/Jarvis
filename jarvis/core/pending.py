@@ -82,6 +82,38 @@ def answer(text: str) -> bool | None:
     return None
 
 
+#: Номера вариантов словами: «первый», «два», «номер три», «first».
+_NUMBERS = {
+    1: ("1", "один", "одна", "одно", "одну", "первый", "первая", "первое", "первую", "первого", "one", "first"),
+    2: ("2", "два", "две", "второй", "вторая", "второе", "вторую", "второго", "two", "second"),
+    3: ("3", "три", "третий", "третья", "третье", "третью", "третьего", "three", "third"),
+    4: ("4", "четыре", "четвёртый", "четвертый", "четвёртая", "четвертая", "четвёртое", "четвертое",
+        "четвёртую", "четвертую", "four", "fourth"),
+    5: ("5", "пять", "пятый", "пятая", "пятое", "пятую", "пятого", "five", "fifth"),
+}
+_NUMBER_WORDS = {word: number for number, spellings in _NUMBERS.items() for word in spellings}
+#: Слова вокруг номера, которые ответ не портят: «давай второй», «номер три».
+_PICK_FILLER = frozenset({"номер", "вариант", "давай", "ну", "это", "тот", "та", "number", "the", "option"})
+
+
+def pick(text: str, count: int) -> int | bool | None:
+    """Разобрать реплику как выбор варианта по номеру.
+
+    :return: номер варианта с нуля; ``False`` — отказ («нет», «отмена»);
+        ``None`` — это не ответ.
+    """
+    parts = words(text)
+    if not parts or len(parts) > MAX_WORDS:
+        return None
+    if any(part in NO_MARKERS for part in parts):
+        return False
+    numbers = [_NUMBER_WORDS[part] for part in parts if part in _NUMBER_WORDS]
+    rest = [part for part in parts if part not in _NUMBER_WORDS and part not in _PICK_FILLER]
+    if len(numbers) != 1 or rest or not 1 <= numbers[0] <= count:
+        return None
+    return numbers[0] - 1
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Pending:
     """Заданный вопрос и то, что произойдёт при согласии."""
@@ -92,18 +124,27 @@ class Pending:
     intent: Intent
     question: str = ""
     language: str = "ru"
+    #: Варианты на выбор; пусто — вопрос «да или нет» про `intent`.
+    choices: tuple[Intent, ...] = ()
     #: Момент, после которого вопрос считается протухшим.
     until: float = 0.0
 
     @classmethod
     def about(
-        cls, intent: Intent, *, question: str = "", language: str = "ru", ttl: float = TTL
+        cls,
+        intent: Intent,
+        *,
+        question: str = "",
+        language: str = "ru",
+        ttl: float = TTL,
+        choices: tuple[Intent, ...] = (),
     ) -> "Pending":
         """Завести вопрос со сроком годности от текущего момента."""
         return cls(
             intent=intent,
             question=question,
             language=language,
+            choices=choices,
             until=time.time() + ttl,
         )
 

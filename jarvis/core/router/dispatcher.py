@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from jarvis.core.bus import EventBus
 from jarvis.core.contracts import AssistantReplied, Intent, ToolResult, Utterance
 from jarvis.core.errors import ToolNotFound
-from jarvis.core.pending import Pending, answer
+from jarvis.core.pending import Pending, answer, pick
 from jarvis.core.tools import ToolRegistry
 
 from .resolvers import LearnedResolver
@@ -229,6 +229,18 @@ class Dispatcher:
             logger.info("Вопрос про %s протух, ответа не жду", question.intent.tool)
             return None
 
+        if question.choices:
+            chosen = pick(utterance.text, len(question.choices))
+            if chosen is None:
+                logger.info("Реплика %r не выбор — снимаю вопрос", utterance.text)
+                return None
+            if chosen is False:
+                logger.info("Владелец не выбрал ничего")
+                return ToolResult.success({"chosen": None}, speech=_DROPPED)
+            intent = question.choices[chosen]
+            logger.info("Владелец выбрал %d: %s", chosen + 1, intent.tool)
+            return await self._call(utterance, intent)
+
         said = answer(utterance.text)
         if said is None:
             logger.info("Реплика %r не ответ — снимаю вопрос", utterance.text)
@@ -247,6 +259,15 @@ class Dispatcher:
 
     def _note_question(self, utterance: Utterance, result: ToolResult) -> None:
         """Запомнить вопрос, если инструмент его задал."""
+        if result.choices:
+            self._pending = Pending.about(
+                result.choices[0].intent,
+                question=result.speech_for(utterance.language) or "",
+                language=utterance.language or "ru",
+                choices=tuple(choice.intent for choice in result.choices),
+            )
+            logger.info("Жду выбора из %d вариантов", len(result.choices))
+            return
         if result.confirm is None:
             return
         self._pending = Pending.about(

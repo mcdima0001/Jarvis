@@ -35,6 +35,19 @@ LIVE_SPEECH: ContextVar[bool] = ContextVar("LIVE_SPEECH", default=False)
 Speakable = str | Sequence[str] | Mapping[str, str | Sequence[str]] | None
 
 
+@dataclass(frozen=True, slots=True)
+class Choice:
+    """Вариант на выбор: как он звучит и что выполнить, если выберут."""
+
+    label: str
+    intent: Intent
+
+
+def numbered(labels: Sequence[str], language: str = "ru") -> str:
+    """Варианты с номерами для речи: «1 — keys, 2 — peace»."""
+    return ", ".join(f"{index} — {label}" for index, label in enumerate(labels, 1))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ToolResult:
     """Итог работы инструмента.
@@ -59,6 +72,9 @@ class ToolResult:
     #: подтверждённый шаг **не получает новых прав** — он идёт тем же путём,
     #: что и команда, сказанная вслух с самого начала.
     confirm: "Intent | None" = None
+    #: Варианты на выбор по номеру: «1 — keys, 2 — peace». Ответ «первый»,
+    #: «два», «номер три» выполняет выбранное — тем же путём, что и команда.
+    choices: tuple["Choice", ...] = ()
     #: Ответ, который ещё пишется: куски текста по порядку. Отдаётся вместо
     #: `speech` и только когда `LIVE_SPEECH` включён — резать на предложения и
     #: произносить будет тот, кто его включил.
@@ -104,6 +120,22 @@ class ToolResult:
         если бы он молча ничего не сделал.
         """
         return cls(ok=True, value=value, tool=tool, speech=question, confirm=confirm)
+
+    @classmethod
+    def choosing(
+        cls,
+        choices: Sequence["Choice"],
+        *,
+        question: Speakable,
+        value: Any = None,
+        tool: str = "",
+    ) -> "ToolResult":
+        """Вопрос владельцу: какой из вариантов он имел в виду.
+
+        Варианты — не больше пяти и уже по убыванию похожести: зачитывать
+        двадцать названий подряд бессмысленно (жалоба владельца 19.09.2026).
+        """
+        return cls(ok=True, value=value, tool=tool, speech=question, choices=tuple(choices))
 
     def speech_options(
         self, language: str | None, *, fallback: str = "ru"

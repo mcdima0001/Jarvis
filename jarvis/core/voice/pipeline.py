@@ -430,7 +430,7 @@ class VoicePipeline:
             # памяти то единственное, ради чего она заведена.
             self._conversation.replied(reply)
 
-        if result.confirm is not None:
+        if result.confirm is not None or result.choices:
             self._await_answer()
         else:
             # Владелец сам заговорил — значит он рядом и слушает. Лучшего
