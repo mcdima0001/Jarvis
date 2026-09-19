@@ -34,14 +34,17 @@ from typing import Any, Container, Mapping, Sequence
 from jarvis.core.contracts import (
     AssistantReplied,
     AssistantSpeaking,
+    Choice,
     Event,
+    Intent,
     ToolResult,
     VoiceCommandRecognized,
     WakeDismissed,
     WakeWordDetected,
+    numbered,
 )
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
-from jarvis.core.text import best_match, closeness, romanize, skeleton, squash, touches
+from jarvis.core.text import best_match, closeness, rank, romanize, skeleton, squash, touches
 from jarvis.core.tools import tool
 from jarvis.core.tts.normalize import plural_form
 
@@ -1053,7 +1056,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.2.0",
+        version="0.3.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1403,6 +1406,168 @@ class WindowsSkill(Skill):
             len(catalog),
             len(self._configured),
             aliases,
+        )
+
+    # --- блютуз ----------------------------------------------------------------
+
+    def _bt(self) -> Any:
+        """Модуль блютуза рядом со скиллом — по пути: скилл грузится без пакета.
+
+        Модуль берётся заново на каждый вызов, чтобы «переподключи модуль
+        windows» подхватывал и правки блютуза.
+        """
+        import importlib.util
+        import sys
+
+        name = "jarvis_skills.windows_bluetooth"
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("bluetooth.py"))
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    @tool(phrases=["включи блютуз", "включи bluetooth", "включи блютус", "turn on bluetooth"], reversible=True)
+    async def bluetooth_on(self) -> ToolResult:
+        """Включить блютуз."""
+        return await self._bt_radio("On")
+
+    @tool(phrases=["выключи блютуз", "выключи bluetooth", "выключи блютус", "turn off bluetooth"], reversible=True)
+    async def bluetooth_off(self) -> ToolResult:
+        """Выключить блютуз."""
+        return await self._bt_radio("Off")
+
+    async def _bt_radio(self, state: str) -> ToolResult:
+        bt = self._bt()
+        try:
+            status = await asyncio.to_thread(bt.radio, state)
+        except bt.BluetoothError as exc:
+            return ToolResult.failure(str(exc), speech={"ru": str(exc), "en": "Bluetooth is not available."})
+        if status == "none":
+            return ToolResult.failure(
+                "нет блютуза", speech={"ru": "Блютуза на этом компьютере нет.", "en": "There is no Bluetooth here."}
+            )
+        if status != "Allowed":
+            return ToolResult.failure(
+                f"радио ответило {status}",
+                speech={"ru": "Windows не дала переключить блютуз.", "en": "Windows refused to switch Bluetooth."},
+            )
+        on = state == "On"
+        return ToolResult.success(
+            {"bluetooth": on},
+            speech={
+                "ru": "Блютуз включён." if on else "Блютуз выключен.",
+                "en": "Bluetooth is on." if on else "Bluetooth is off.",
+            },
+        )
+
+    @tool(
+        phrases=["какие блютуз устройства", "что подключено по блютузу", "список блютуз устройств",
+                 "блютуз устройства", "bluetooth devices"],
+        reversible=True,
+    )
+    async def bluetooth_devices(self) -> ToolResult:
+        """Перечислить сопряжённые блютуз-устройства и что из них подключено."""
+        bt = self._bt()
+        try:
+            found = await asyncio.to_thread(bt.devices)
+        except bt.BluetoothError as exc:
+            return ToolResult.failure(str(exc), speech={"ru": str(exc), "en": "Bluetooth is not available."})
+        if not found:
+            return ToolResult.success([], speech={"ru": "Сопряжённых устройств нет.", "en": "No paired devices."})
+        connected = [device.name for device in found if device.connected]
+        others = [device.name for device in found if not device.connected]
+        parts = []
+        if connected:
+            parts.append("подключено: " + ", ".join(connected))
+        if others:
+            parts.append("не подключено: " + ", ".join(others[:5]))
+        line = "; ".join(parts)
+        return ToolResult.success(
+            [{"name": device.name, "connected": device.connected} for device in found],
+            speech={"ru": f"{line[:1].upper()}{line[1:]}.", "en": line},
+        )
+
+    @tool(
+        phrases=["подключи {device}", "подключись к {device}", "подключи блютуз {device}", "connect {device}"],
+        reversible=True,
+    )
+    async def bluetooth_connect(self, device: str) -> ToolResult:
+        """Подключить сопряжённое блютуз-устройство: наушники, колонку или по названию.
+
+        :param device: название устройства или его род («наушники», «колонку»).
+        """
+        return await self._bt_switch(device, True)
+
+    @tool(
+        phrases=["отключи {device}", "отключись от {device}", "отключи блютуз {device}",
+                 "отключи {device} по блютузу", "disconnect {device}"],
+        reversible=True,
+    )
+    async def bluetooth_disconnect(self, device: str) -> ToolResult:
+        """Отключить блютуз-устройство, не разрывая сопряжения.
+
+        :param device: название устройства или его род («наушники», «колонку»).
+        """
+        return await self._bt_switch(device, False)
+
+    async def _bt_switch(self, device: str, connect: bool) -> ToolResult:
+        """Найти устройство по услышанному и переключить; не уверен — предложить выбор."""
+        bt = self._bt()
+        try:
+            found = await asyncio.to_thread(bt.devices)
+        except bt.BluetoothError as exc:
+            return ToolResult.failure(str(exc), speech={"ru": str(exc), "en": "Bluetooth is not available."})
+        verb = "подключить" if connect else "отключить"
+        tool_name = "windows.bluetooth_connect" if connect else "windows.bluetooth_disconnect"
+        # Подключать имеет смысл отключённые, отключать — подключённые.
+        pool = [item for item in found if item.connected != connect] or found
+        kind = bt.category(device)
+        if kind:
+            fitting = bt.by_category(kind, pool)
+            if len(fitting) == 1:
+                return await self._bt_apply(bt, fitting[0], connect)
+            options = fitting or pool
+        else:
+            names = {item.name: item for item in pool}
+            exact = best_match(device, list(names), similarity=0.75)
+            if exact is not None:
+                return await self._bt_apply(bt, names[exact], connect)
+            options = pool
+        ranked = rank(device, {item.name: (item.name,) for item in options}, limit=5)
+        if not ranked:
+            return ToolResult.failure(
+                f"нет устройства {device!r}",
+                speech={"ru": f"Не нашёл блютуз-устройство {device}.", "en": f"No Bluetooth device {device}."},
+            )
+        return ToolResult.choosing(
+            [Choice(name, Intent(tool=tool_name, arguments={"device": name})) for name in ranked],
+            question={"ru": f"Что {verb}? {numbered(ranked)}.", "en": f"Which one? {numbered(ranked)}."},
+        )
+
+    async def _bt_apply(self, bt: Any, device: Any, connect: bool) -> ToolResult:
+        """Подключить или отключить найденное устройство."""
+        if device.connected == connect:
+            state = "уже подключено" if connect else "и так отключено"
+            return ToolResult.success(
+                {"device": device.name}, speech={"ru": f"{device.name} {state}.", "en": f"{device.name}: nothing to do."}
+            )
+        try:
+            accepted = await asyncio.to_thread(bt.set_connected, device.address, connect)
+        except bt.BluetoothError as exc:
+            return ToolResult.failure(str(exc), speech={"ru": str(exc), "en": "Bluetooth refused."})
+        if not accepted:
+            return ToolResult.failure(
+                f"службы {device.name} не переключились",
+                speech={"ru": f"{device.name} не отозвалось. Оно включено и рядом?", "en": f"{device.name} did not respond."},
+            )
+        self.log.info("Блютуз: %s %s (служб приняло: %d)", "подключаю" if connect else "отключаю", device.name, accepted)
+        return ToolResult.success(
+            {"device": device.name, "connected": connect},
+            speech={
+                "ru": f"{'Подключаю' if connect else 'Отключаю'} {device.name}.",
+                "en": f"{'Connecting' if connect else 'Disconnecting'} {device.name}.",
+            },
         )
 
     @tool(
