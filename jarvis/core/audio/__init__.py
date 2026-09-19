@@ -23,7 +23,7 @@ from .protocol import (
 from .silero import SileroVAD
 from .sound import load_sound, trim_silence
 from .vad import EnergyVAD, frame_rms
-from .wakeword import HotwordSpotter
+from .wakeword import RIVALS, HotwordSpotter
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,7 @@ def _vosk_wake_word(config: AudioConfig) -> WakeWord:
         phrases=config.wake_word.phrases,
         sample_rate=config.sample_rate,
         hold_ms=config.wake_word.hold_ms,
+        rivals=RIVALS if config.wake_word.rivals else (),
     )
 
 
