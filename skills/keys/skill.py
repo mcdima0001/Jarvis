@@ -178,6 +178,29 @@ DEFAULT_SKIP = (
 )
 
 
+#: Признаки игры в пути к программе активного окна. В игре WASD и чат —
+#: не текст: 19.09.2026 в Minecraft прозвучало «раскладка не та». Minecraft
+#: Java идёт как `javaw.exe` и обычно в окне, поэтому одного «во весь экран» мало.
+DEFAULT_GAMES = (
+    "steamapps",
+    "epic games",
+    "riot games",
+    "battle.net",
+    "ubisoft",
+    "ea games",
+    "xboxgames",
+    "gog galaxy\\games",
+    "minecraft",
+    "javaw.exe",
+)
+
+
+def is_game(path: str, fullscreen: bool, patterns: tuple[str, ...]) -> bool:
+    """Похоже ли активное окно на игру: во весь экран или программа из игрового места."""
+    low = path.lower().replace("/", "\\")
+    return fullscreen or any(mark in low for mark in patterns)
+
+
 def normalize(text: str) -> str:
     """Привести к виду для сравнения: нижний регистр, одиночные пробелы."""
     return " ".join(text.split()).lower()
@@ -878,6 +901,63 @@ def type_text_os(text: str) -> int:
     return int(sent)
 
 
+def _process_path(hwnd: Any) -> str:
+    """Путь к программе окна; не узнали — пусто."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, ctypes.c_wchar_p, ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    process = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        return ""
+    try:
+        size = wintypes.DWORD(1024)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(size)):
+            return buffer.value
+        return ""
+    finally:
+        kernel32.CloseHandle(process)
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+def _fullscreen(hwnd: Any) -> bool:
+    """Окно закрывает свой монитор целиком — так выглядят игры (и видео на весь экран)."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.RECT)]
+    user32.MonitorFromWindow.restype = ctypes.c_void_p
+    user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
+    user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    name = ctypes.create_unicode_buffer(64)
+    user32.GetClassNameW(hwnd, name, 64)
+    if name.value in ("Progman", "WorkerW", "Shell_TrayWnd"):
+        return False  # рабочий стол тоже «во весь экран»
+    rect = wintypes.RECT()
+    info = _MONITORINFO()
+    info.cbSize = ctypes.sizeof(_MONITORINFO)
+    monitor = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)) or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return False
+    screen = info.rcMonitor
+    return (rect.left, rect.top, rect.right, rect.bottom) == (screen.left, screen.top, screen.right, screen.bottom)
+
+
 def replace_typed_os(erase: int, text: str) -> bool:
     """Стереть `erase` символов перед курсором и впечатать `text` — одним вызовом.
 
@@ -991,6 +1071,7 @@ class KeyboardWatcher:
         layout: LayoutGuard | None = None,
         on_layout: Callable[[str, bool], None] | None = None,
         fix_layout: bool = False,
+        games: tuple[str, ...] | None = DEFAULT_GAMES,
     ) -> None:
         self._triggers = triggers
         self._on_command = on_command
@@ -1000,6 +1081,8 @@ class KeyboardWatcher:
         self._layout = layout
         self._on_layout = on_layout
         self._fix_layout_enabled = fix_layout
+        #: Признаки игры; ``None`` — не выключаться в играх.
+        self._games = games
         #: Окно, в котором набрана строка сторожа: сменилось — строку не правим.
         self._line_window: Any = None
         self._combo: set[int] = set()
@@ -1114,6 +1197,11 @@ class KeyboardWatcher:
         if not down:
             return
 
+        if self._foreground_sensitive():
+            # Запретное окно или игра: не копим вовсе, и начатое забываем.
+            self._forget()
+            return
+
         if vk == _VK_BACK:
             self._triggers.backspace()
             if self._reactions is not None:
@@ -1140,10 +1228,6 @@ class KeyboardWatcher:
                 self._reactions.reset()
                 if ending is not None and self._on_react is not None:
                     self._to_loop(lambda: self._on_react(ending))
-            return
-
-        if self._foreground_sensitive():
-            # В чужом окне (банк, менеджер паролей) не копим вовсе.
             return
 
         char = self._translate(vk)
@@ -1224,7 +1308,7 @@ class KeyboardWatcher:
         return ""
 
     def _foreground_sensitive(self) -> bool:
-        """Активное окно из списка запретных? Ответ кешируется на полсекунды."""
+        """Активное окно запретное или игра? Ответ кешируется на полсекунды."""
         now = time.monotonic()
         if now - self._sensitive_at < _FOREGROUND_TTL:
             return self._sensitive
@@ -1236,9 +1320,19 @@ class KeyboardWatcher:
             buffer = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(hwnd, buffer, length + 1)
             title = buffer.value
-        self._sensitive = is_sensitive(title, self._skip)
+        self._sensitive = is_sensitive(title, self._skip) or (
+            self._games is not None and is_game(_process_path(hwnd), _fullscreen(hwnd), self._games)
+        )
         self._sensitive_at = now
         return self._sensitive
+
+    def _forget(self) -> None:
+        """Сбросить всё накопленное: в запретном окне или игре набор не наш."""
+        self._triggers.reset()
+        if self._reactions is not None:
+            self._reactions.reset()
+        if self._layout is not None:
+            self._layout.reset()
 
 
 class KeysSkill(Skill):
@@ -1247,7 +1341,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.3.2",
+        version="0.4.0",
         platforms=("windows",),
         spoken=("клавиатура", "keyboard"),
     )
@@ -1305,6 +1399,9 @@ class KeysSkill(Skill):
                 layout=self._layout,
                 on_layout=self._on_layout,
                 fix_layout=self._layout_fix,
+                games=tuple(self.context.setting("games", list(DEFAULT_GAMES)))
+                if bool(self.context.setting("skip_games", True))
+                else None,
             )
         self.log.info(
             "Клавиатурный наблюдатель: %s, триггеров %d, реакций %d, раскладка: %s",

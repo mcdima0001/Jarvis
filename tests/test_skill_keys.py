@@ -483,3 +483,12 @@ def test_reactions_survive_restart() -> None:
     assert "Сочинил сам." in second.options("работает")
     second.restore({"learned": {"удалённое слово": ["x"]}, "turn": {"удалённое слово": 3}})
     assert "удалённое слово" not in second.snapshot()["learned"]
+
+
+def test_games_switch_the_watcher_off() -> None:
+    """19.09.2026: в Minecraft прозвучало «раскладка не та» — WASD и чат не текст."""
+    games = keys.DEFAULT_GAMES
+    assert keys.is_game(r"C:\Program Files\Java\bin\javaw.exe", False, games)
+    assert keys.is_game(r"D:\SteamLibrary\steamapps\common\Game\game.exe", False, games)
+    assert keys.is_game(r"C:\Windows\explorer.exe", True, games), "во весь экран — как игра"
+    assert not keys.is_game(r"C:\Program Files\Telegram\Telegram.exe", False, games)
