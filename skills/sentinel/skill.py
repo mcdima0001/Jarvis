@@ -41,6 +41,8 @@ GIGABYTE = ("гигабайт", "гигабайта", "гигабайт")
 #: Сколько секунд придержанное замечание стража остаётся правдой (16.09.2026:
 #: «7 гигабайт» прозвучало через три часа, когда было уже 18).
 STALE_AFTER_S = 600.0
+#: Сколько секунд новость о загрузке ждёт паузы между репликами, прежде чем устареть.
+DOWNLOAD_NEWS_S = 90.0
 MINUTE = ("минуту", "минуты", "минут")
 
 
@@ -271,7 +273,7 @@ class SentinelSkill(Skill):
     meta = SkillMeta(
         name="sentinel",
         description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
-        version="0.1.4",
+        version="0.1.5",
         platforms=("windows",),
         spoken=("страж", "слежение", "sentinel"),
     )
@@ -287,6 +289,9 @@ class SentinelSkill(Skill):
         #: Загрузки смотрятся чаще прочего: о готовом файле хотят слышать сразу, а
         #: не через полминуты (просьба владельца 17.09.2026). Проход — список одной папки.
         self._downloads_every = max(1.0, float(setting("downloads_every_s", 2)))
+        #: Докачавшееся, о чём ещё не сказали (пауза между репликами), и с какого момента.
+        self._unsaid: list[str] = []
+        self._unsaid_since = 0.0
         self._repeat_s = float(setting("repeat_after_min", 60)) * 60
         self._last_said: dict[str, float] = {}
         self._cpu_before: tuple[int, int, int] | None = None
@@ -363,9 +368,28 @@ class SentinelSkill(Skill):
         if self._downloads is None:
             return
         finished = self._downloads.check(await asyncio.to_thread(scan, folder))
+        now = time.monotonic()
         if finished:
-            # Каждый файл — новое событие, хотя фраза та же.
-            self._say(f"download:{finished[-1]}", download_line(finished), LOW, repeat=False, allow_repeat=True)
+            if not self._unsaid:
+                self._unsaid_since = now
+            self._unsaid.extend(finished)
+        if not self._unsaid:
+            return
+        if now - self._unsaid_since > DOWNLOAD_NEWS_S:
+            # Про загрузку говорят сразу или никогда: «фотка скачалась» через
+            # десять минут никому не нужна (19.09.2026: придержанное прозвучало
+            # в 15:47 про фотку из 15:37).
+            self.log.debug("Страж: новость о %d загрузках устарела, не говорю", len(self._unsaid))
+            self._unsaid.clear()
+            return
+        # Не придерживаем, а повторяем попытку на следующем проходе: пауза между
+        # репликами пройдёт — скажем обо всех накопившихся одной репликой.
+        decision = self._say(
+            f"download:{self._unsaid[-1]}", download_line(self._unsaid), LOW,
+            repeat=False, allow_repeat=True, hold=False,
+        )
+        if decision == "say":
+            self._unsaid.clear()
 
     async def _check_once(self) -> None:
         power, free, share = await asyncio.to_thread(self._measure)
@@ -388,14 +412,31 @@ class SentinelSkill(Skill):
             if line:
                 self._say("cpu", line, NORMAL, repeat=False)
 
-    def _say(self, key: str, text: str, importance: str, *, repeat: bool = True, allow_repeat: bool = False) -> None:
-        """Предложить реплику политике речи; одно и то же — не чаще `repeat_after_min`."""
+    def _say(
+        self,
+        key: str,
+        text: str,
+        importance: str,
+        *,
+        repeat: bool = True,
+        allow_repeat: bool = False,
+        hold: bool = True,
+    ) -> str:
+        """Предложить реплику политике речи; одно и то же — не чаще `repeat_after_min`.
+
+        :return: решение политики: ``say``, ``hold`` или ``drop``; пусто — не предлагали.
+        """
         now = time.monotonic()
         if repeat and now - self._last_said.get(key, -1e9) < self._repeat_s:
-            return
+            return ""
         self._last_said[key] = now
         # Замер правдив, пока свеж: придержанное дольше `STALE_AFTER_S` не говорим.
         decision = self.context.announcer.offer(
-            text, importance=importance, language="ru", expires_s=STALE_AFTER_S, allow_repeat=allow_repeat
+            text, importance=importance, language="ru", expires_s=STALE_AFTER_S,
+            allow_repeat=allow_repeat, hold=hold,
         )
-        self.log.info("Страж (%s): %s → %s", importance, text, decision)
+        # Отложенная загрузка переспрашивается каждые пару секунд — в лог только итог.
+        (self.log.info if decision != "drop" or hold else self.log.debug)(
+            "Страж (%s): %s → %s", importance, text, decision
+        )
+        return decision

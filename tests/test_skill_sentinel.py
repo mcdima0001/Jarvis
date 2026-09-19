@@ -81,3 +81,39 @@ def test_download_line_says_what_arrived() -> None:
     assert sentinel.download_line(["IMG_0042.jpg"]) == "Фотка скачалась."
     assert sentinel.download_line(["a.png", "b.jpg", "c.webp", "d.heic", "e.jpg"]) == "Загрузилось 5 фоток."
     assert sentinel.download_line(["one.mp3", "two.flac"]) == "Загрузилось 2 трека."
+
+
+async def test_downloads_are_said_together_when_the_pause_ends_or_never(monkeypatch: Any) -> None:
+    """19.09.2026: «фотка скачалась» прозвучала через десять минут, досказанной из придержанного."""
+    import logging
+    from types import SimpleNamespace
+
+    decisions = ["drop", "drop", "say"]
+    offered: list[tuple[str, bool]] = []
+
+    def offer(text: str, **kwargs: Any) -> str:
+        offered.append((text, kwargs["hold"]))
+        return decisions.pop(0)
+
+    skill = sentinel.SentinelSkill()
+    skill._context = SimpleNamespace(  # type: ignore[assignment]
+        announcer=SimpleNamespace(offer=offer), logger=logging.getLogger("test.sentinel")
+    )
+    skill._downloads = sentinel.DownloadWatch()
+    skill._unsaid, skill._unsaid_since, skill._last_said, skill._repeat_s = [], 0.0, {}, 3600.0
+    folder: dict[str, int] = {}
+    monkeypatch.setattr(sentinel, "scan", lambda path: dict(folder))
+
+    await skill._check_downloads(Path("."))  # первый проход только запоминает
+    folder["a.jpg"] = 10
+    await skill._check_downloads(Path("."))  # размер ещё не устоялся
+    await skill._check_downloads(Path("."))  # готово, но пауза — не сказано
+    folder["b.jpg"] = 20
+    await skill._check_downloads(Path("."))
+    await skill._check_downloads(Path("."))  # вторая готова — обе одной репликой
+    assert offered == [
+        ("Фотка скачалась.", False),  # пауза: не придерживается, а пробуется снова
+        ("Фотка скачалась.", False),
+        ("Загрузилось 2 фотки.", False),
+    ]
+    assert skill._unsaid == []
