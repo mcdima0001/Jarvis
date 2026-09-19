@@ -47,3 +47,4 @@ tests.py
 /Jarvis.exe
 # Ярлык на него — у каждого свой путь.
 /Jarvis.lnk
+bench/

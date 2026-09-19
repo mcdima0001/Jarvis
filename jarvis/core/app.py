@@ -17,6 +17,7 @@ from typing import Callable, Sequence
 
 from jarvis.core.attention import NORMAL, URGENT, Announcer
 from jarvis.core.audio import AudioStack, build_audio
+from jarvis.core.audio.recorder import UtteranceRecorder
 from jarvis.core.builtin import NAMESPACE as CORE_NAMESPACE
 from jarvis.core.builtin import CoreTools
 from jarvis.core.bus import LocalEventBus
@@ -91,6 +92,25 @@ def _quiet_broken_connections() -> None:
 #: основным голосом (`JarvisApp.run`): без сети облачный голос её не синтезирует,
 #: а из кеша она звучит и так.
 STT_OUTAGE = "Сэр, пропала связь с облаком. Слушаю местной моделью, первая команда займёт полминуты."
+
+
+def _recorder(config: JarvisConfig) -> UtteranceRecorder | None:
+    """Запись услышанных фраз, если её включили (`audio.record_dir`)."""
+    if not config.audio.record_dir:
+        return None
+    recorder = UtteranceRecorder(
+        config.root / config.audio.record_dir,
+        sample_rate=config.audio.sample_rate,
+        keep_days=config.audio.record_keep_days,
+    )
+    removed = recorder.cleanup()
+    logger.info(
+        "Записываю каждую услышанную фразу в %s (хранится %d дн.%s)",
+        recorder.directory,
+        config.audio.record_keep_days,
+        f", старых дней удалено: {removed}" if removed else "",
+    )
+    return recorder
 
 
 def _offer(announcer: Announcer, text: str, language: str) -> None:
@@ -304,6 +324,7 @@ class JarvisApp:
             vad=audio.vad,
             wake_word=audio.wake_word,
             hotwords=audio.hotwords,
+            recorder=_recorder(config),
             stt=stt,
             tts=tts,
             dispatcher=dispatcher,

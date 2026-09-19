@@ -171,9 +171,12 @@ class VoicePipeline:
         meter: "Meter | None" = None,
         conversation: "Conversation | None" = None,
         hotwords: Any = None,
+        recorder: Any = None,
     ) -> None:
         #: Детектор слов без имени — только замер: пишет в лог, ничего не делает.
         self._hotwords = hotwords
+        #: Запись услышанных фраз на диск (`audio.record_dir`); ``None`` — не писать.
+        self._recorder = recorder
         self._source = source
         self._sink = sink
         self._vad = vad
@@ -777,6 +780,7 @@ class VoicePipeline:
                 if silence >= self._config.silence_frames or too_long:
                     if too_long:
                         logger.debug("Фраза достигла предела длины, отправляю как есть")
+                    self._record(bytes(buffer))
                     self._submit(bytes(buffer), stream)
                     stream = None
                     buffer.clear()
@@ -787,6 +791,23 @@ class VoicePipeline:
             raise
         except Exception:
             logger.exception("Цикл прослушивания остановлен из-за ошибки")
+
+    def _record(self, audio: bytes) -> None:
+        """Сохранить фразу на диск, если просили, — в фоне, не задерживая слух."""
+        if self._recorder is None:
+            return
+        spoken_at = time.time() - len(audio) / 2 / self._config.sample_rate
+        named = spoken_at <= self._name_heard_at <= time.time()
+        recorder = self._recorder
+
+        def write() -> None:
+            try:
+                path = recorder.save(audio, spoken_at=spoken_at, named=named)
+                logger.info("Записал фразу: %s", path.relative_to(recorder.directory.parent))
+            except OSError as exc:
+                logger.warning("Фраза не записалась: %s", exc)
+
+        asyncio.get_running_loop().run_in_executor(None, write)
 
     def _note_floor(self, data: bytes) -> None:
         """Уровень фона: медленное среднее громкости кадров без речи, в дБ."""
