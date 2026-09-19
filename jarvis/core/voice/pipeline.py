@@ -38,6 +38,7 @@ from jarvis.core.audio import (
     WakeWord,
     load_sound,
 )
+from jarvis.core.audio.protocol import InterruptibleSink
 from jarvis.core.bus import EventBus
 from jarvis.core.config import AudioConfig
 from jarvis.core.contracts import (
@@ -86,6 +87,21 @@ FILLER_SOURCE = "voice.filler"
 #: первым, поэтому запоздалое срабатывание — улика. Фраза, где имя расслышано и
 #: в тексте, этим правилом не затрагивается вовсе.
 LATE_NAME_S = 2.0
+
+#: Просьбы замолчать. Сверяются целиком: «стоп» внутри фразы — уже команда
+#: («поставь на стоп»), и её разбирает роутер.
+HUSH_PHRASES = frozenset({
+    "стоп", "хватит", "замолчи", "замолкни", "тихо", "тише не надо", "заткнись",
+    "помолчи", "молчи", "всё хватит", "все хватит", "стоп стоп", "хорош",
+    "stop", "shut up", "enough", "be quiet",
+})
+
+
+def is_hush(text: str) -> bool:
+    """Просьба замолчать, сказанная сама по себе."""
+    return " ".join(text.lower().replace("ё", "е").strip(" .,!?…").split()) in {
+        phrase.replace("ё", "е") for phrase in HUSH_PHRASES
+    }
 
 
 def level_db(data: bytes) -> float:
@@ -239,6 +255,8 @@ class VoicePipeline:
         #: угодно, в том числе посреди ответа, — и две реплики полезли бы в
         #: динамик одновременно.
         self._voice = asyncio.Lock()
+        #: Просили замолчать: недоговорённый ответ бросается, звук обрывается.
+        self._hush = asyncio.Event()
         #: Подписка на просьбы что-нибудь произнести; снимается при остановке.
         self._announcements: Any = None
         #: Подписка на команды со стороны (клавиатура, позже — Telegram).
@@ -361,6 +379,11 @@ class VoicePipeline:
         роутер как «включи свет».
         """
         _, command = self._strip_wake(utterance.text)
+        if is_hush(command):
+            # Мимо роутера и мимо очереди голоса: пока ответ звучит, голос
+            # занят, и просьба замолчать дождалась бы конца того, что обрывает.
+            self.interrupt()
+            return ToolResult.success({"hushed": True}, tool="")
         if command != utterance.text:
             utterance = Utterance(
                 text=command,
@@ -469,6 +492,25 @@ class VoicePipeline:
                     )
         return await work
 
+    def interrupt(self) -> bool:
+        """Замолчать сейчас же: оборвать звук и бросить недоговорённое.
+
+        Просьба владельца 19.09.2026: ослышался — и читает стену текста, а
+        остановить нечем. Голосом перебить нельзя: на время своей речи микрофон
+        заглушён, а детектор имени на его же голосе срабатывает ложно (замер:
+        44 раза на 292 репликах из кеша). Поэтому просят клавишей, меню трея
+        или словом «стоп» текстом.
+
+        :return: было ли что обрывать.
+        """
+        if not self._speaking and not self._voice.locked():
+            return False
+        logger.info("Замолкаю по просьбе")
+        self._hush.set()
+        if isinstance(self._sink, InterruptibleSink):
+            self._sink.interrupt()
+        return True
+
     async def _say(self, text: str, *, language: str | None = None) -> None:
         """Озвучить реплику, заглушив на это время микрофон.
 
@@ -483,6 +525,7 @@ class VoicePipeline:
         # приходят из разных мест и запросто совпадают по времени; без очереди
         # они полезли бы в динамик вместе, а микрофон разглох бы посреди первой.
         async with self._voice:
+            self._hush.clear()
             await self._speak(text, language=language)
 
     async def _say_stream(self, pieces: AsyncIterator[str], *, language: str | None) -> str:
@@ -529,13 +572,18 @@ class VoicePipeline:
         said: list[str] = []
         writer = asyncio.create_task(write())
         async with self._voice:
+            self._hush.clear()
             while (item := await ready.get()) is not None:
                 sentence, warm = item
+                if self._hush.is_set():
+                    break
                 if warm is not None:
                     await warm
                 await self._speak(sentence, language=language, replied=False)
                 said.append(sentence)
-        await writer
+        if self._hush.is_set():
+            writer.cancel()
+        await asyncio.gather(writer, return_exceptions=True)
 
         if not said:
             reply = self._persona.line(FAILED, language)

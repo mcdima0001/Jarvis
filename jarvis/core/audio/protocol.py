@@ -94,6 +94,18 @@ class StreamingAudioSink(Protocol):
 
 
 @runtime_checkable
+class InterruptibleSink(Protocol):
+    """Вывод, который умеет оборвать звучащую реплику («замолчи»).
+
+    Умение, а не обязанность, как и поток: заглушкам обрывать нечего.
+    """
+
+    def interrupt(self) -> None:
+        """Оборвать то, что звучит сейчас. Следующая реплика играет как обычно."""
+        ...
+
+
+@runtime_checkable
 class SelectableSink(Protocol):
     """Вывод, которому можно сменить устройство на ходу («говори через колонку»).
 

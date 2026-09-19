@@ -1882,3 +1882,29 @@ def test_levels_are_counted_in_decibels() -> None:
     assert round(level_db(quiet)) == -40
     # Громкие кадры решают, паузы внутри фразы — нет.
     assert round(speech_level_db(quiet * 4 + b"\x00" * 960 * 16, 960)) == -40
+
+
+async def test_hush_cuts_a_long_answer_short(registry: ToolRegistry, events: LocalEventBus) -> None:
+    """Просьба 19.09.2026: ослышался и читает стену текста — остановить было нечем."""
+    tts = RecordingTTS()
+    pipeline = _pipeline(registry, events, tts=tts)
+
+    async def long_answer():
+        for index in range(20):
+            yield f"Предложение номер {index} длинного ответа, которое никто не просил. "
+            await asyncio.sleep(0.01)
+
+    speaking = asyncio.create_task(pipeline._say_stream(long_answer(), language="ru"))
+    await asyncio.sleep(0.03)
+    hushed = await pipeline.handle(Utterance(text="Стоп!", source="panel"))
+    reply = await speaking
+    assert hushed.value == {"hushed": True}
+    assert 0 < len(tts.said) < 20, "оборвал на середине, а не дочитал"
+    assert "номер 19" not in reply
+
+
+def test_hush_is_only_the_bare_word() -> None:
+    from jarvis.core.voice.pipeline import is_hush
+
+    assert is_hush("Хватит.") and is_hush("замолчи") and is_hush("stop")
+    assert not is_hush("поставь на стоп") and not is_hush("хватит играть музыку")

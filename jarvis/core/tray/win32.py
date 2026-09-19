@@ -24,7 +24,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-from .menu import DEFAULT_ACTION, MENU, POPUP_GAP, READY, STARTING, MenuItem, menu_commands
+from .menu import DEFAULT_ACTION, HUSH, MENU, POPUP_GAP, READY, STARTING, MenuItem, menu_commands
 from .popup import StyledMenu
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 _WM_NULL = 0x0000
 _WM_DESTROY = 0x0002
 _WM_CLOSE = 0x0010
+_WM_HOTKEY = 0x0312
+_HOTKEY_HUSH = 1
+_MOD_CONTROL, _MOD_SHIFT, _MOD_NOREPEAT = 0x0002, 0x0004, 0x4000
+_VK_SPACE = 0x20
 _WM_CONTEXTMENU = 0x007B
 _WM_LBUTTONDBLCLK = 0x0203
 _WM_RBUTTONUP = 0x0205
@@ -211,6 +215,9 @@ def _configure(user32: Any, shell32: Any, kernel32: Any) -> None:
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.CreatePopupMenu.restype = handle
     user32.AppendMenuW.argtypes = [handle, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR]
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.RegisterHotKey.argtypes = [handle, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+    user32.UnregisterHotKey.argtypes = [handle, ctypes.c_int]
     user32.TrackPopupMenu.argtypes = [handle, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, handle, handle]
     user32.TrackPopupMenuEx.argtypes = [handle, wintypes.UINT, ctypes.c_int, ctypes.c_int, handle, ctypes.c_void_p]
     user32.MonitorFromPoint.restype = handle
@@ -333,6 +340,10 @@ class TrayIcon:
         self._taskbar_created = user32.RegisterWindowMessageW("TaskbarCreated")
         self._load_icons()
         self._notify(_NIM_ADD)
+        # Замолчать с клавиатуры из любого окна. Занята другой программой —
+        # остаются меню и слово «стоп», запуск из-за этого не срывается.
+        if not user32.RegisterHotKey(hwnd, _HOTKEY_HUSH, _MOD_CONTROL | _MOD_SHIFT | _MOD_NOREPEAT, _VK_SPACE):
+            logger.warning("Ctrl+Shift+Пробел занят другой программой — «замолчать» только из меню трея")
         self._ready.set()
 
         message = wintypes.MSG()
@@ -390,6 +401,9 @@ class TrayIcon:
                 elif event in (_WM_RBUTTONUP, _WM_CONTEXTMENU):
                     self._popup()
                 return 0
+            if message == _WM_HOTKEY and wparam == _HOTKEY_HUSH:
+                self._fire(HUSH)
+                return 0
             if message == _WM_STATE:
                 self._notify(_NIM_MODIFY)
                 return 0
@@ -397,6 +411,7 @@ class TrayIcon:
                 self._notify(_NIM_ADD)
                 return 0
             if message == _WM_CLOSE:
+                self._user32.UnregisterHotKey(hwnd, _HOTKEY_HUSH)
                 self._notify(_NIM_DELETE)
                 self._user32.DestroyWindow(hwnd)
                 return 0

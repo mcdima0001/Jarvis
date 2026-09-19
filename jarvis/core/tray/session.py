@@ -33,7 +33,7 @@ from jarvis.core.contracts import Event, SystemStarted, SystemStopping
 from jarvis.core.logging.visible import visible_levels
 
 from .autostart import Autostart, AutostartError
-from .menu import AUTOSTART, READY, STARTING, STOPPING, tip
+from .menu import AUTOSTART, HUSH, READY, STARTING, STOPPING, tip
 
 if TYPE_CHECKING:
     from jarvis.core.app import JarvisApp
@@ -252,14 +252,32 @@ def _work_area() -> tuple[tuple[int, int, int, int], int] | None:
     return (rect.left, rect.top, rect.right, rect.bottom), dpi
 
 
+#: Свой профиль Edge для окна панели. В общем профиле Edge запоминал, где стояло
+#: его последнее окно, — а это окно панели, и **любое** новое окно браузера
+#: открывалось на месте панели (жалоба владельца 19.09.2026). Лежит в `memory/`:
+#: это состояние машины, а не код, и в репозиторий не едет.
+PANEL_PROFILE = Path(__file__).resolve().parents[3] / "memory" / "panel-browser"
+
+
 def panel_command(
-    url: str, edge: Path | None, geometry: tuple[int, int, int, int] | None = None
+    url: str,
+    edge: Path | None,
+    geometry: tuple[int, int, int, int] | None = None,
+    profile: Path = PANEL_PROFILE,
 ) -> list[str] | None:
     """Команда окна панели; ``None`` — Edge нет, откроется обычный браузер."""
     if edge is None:
         return None
     x, y, width, height = geometry or (40, 40, 1180, 760)
-    return [str(edge), f"--app={url}", f"--window-size={width},{height}", f"--window-position={x},{y}"]
+    return [
+        str(edge),
+        f"--app={url}",
+        f"--window-size={width},{height}",
+        f"--window-position={x},{y}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
 
 
 def open_panel(url: str, saved: tuple[int, int, int, int] | None = None) -> None:
@@ -339,6 +357,8 @@ class TraySession:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stopping: asyncio.Event | None = None
         self._quit_early = False
+        #: Как замолчать: ставится при подключении приложения.
+        self._hush: Callable[[], object] | None = None
         self.icon = icon_factory(self.on_action)
         # Галочки меню — факт системы, а не значка: значок только спрашивает.
         if hasattr(self.icon, "checked"):
@@ -374,6 +394,8 @@ class TraySession:
         if app.panel is not None:
             self._saved_window = app.panel.saved_window
         self.log_level = app.config.logging.level
+        pipeline = getattr(app, "pipeline", None)
+        self._hush = pipeline.interrupt if pipeline is not None else None
         app.events.subscribe(SystemStarted.NAME, self._on_started)
         app.events.subscribe(SystemStopping.NAME, self._on_stopping)
         self._set(STARTING)
@@ -396,6 +418,9 @@ class TraySession:
                 self._live_log(path, self.log_level)
         elif action == "folder":
             self._opener(self.root)
+        elif action == HUSH:
+            if self._loop is not None and self._hush is not None:
+                self._loop.call_soon_threadsafe(self._hush)
         elif action == AUTOSTART:
             self._toggle_autostart()
         elif action in ("restart", "quit"):

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import threading
 import time
 from typing import Any, AsyncIterator
 
@@ -169,6 +170,12 @@ class SoundDeviceSource:
             )
 
 
+def _pieces(audio: bytes, sample_rate: int, *, ms: int = 100) -> list[bytes]:
+    """Нарезать PCM на куски по `ms`: чаще проверять, не просили ли замолчать."""
+    size = max(2, sample_rate * 2 * ms // 1000 // 2 * 2)
+    return [audio[i : i + size] for i in range(0, len(audio), size)]
+
+
 class SoundDeviceSink:
     """Воспроизведение звука."""
 
@@ -177,6 +184,13 @@ class SoundDeviceSink:
         self._lock = asyncio.Lock()
         #: Куда звучать. Начинается с конфига, меняется голосом (`select`).
         self._device: str | int | None = config.output_device
+        #: Просьба оборвать звучащее. Ставится из любого потока, снимается
+        #: следующей репликой.
+        self._interrupted = threading.Event()
+
+    def interrupt(self) -> None:
+        """Оборвать звучащую реплику: поток вывода закроется посреди звука."""
+        self._interrupted.set()
 
     @property
     def service_name(self) -> str:
@@ -212,6 +226,7 @@ class SoundDeviceSink:
             return
         # Реплики не должны накладываться друг на друга.
         async with self._lock:
+            self._interrupted.clear()
             await asyncio.to_thread(self._play_sync, audio, sample_rate)
 
     async def play_stream(
@@ -246,8 +261,12 @@ class SoundDeviceSink:
             prebuffer = b""
             carry = b""
             need = int(sample_rate * 2 * PREBUFFER_MS / 1000)
+            self._interrupted.clear()
             try:
                 async for chunk in chunks:
+                    if self._interrupted.is_set():
+                        # Дальше облако можно не слушать: звук уже не нужен.
+                        break
                     if not chunk:
                         continue
                     chunk = carry + chunk
@@ -300,7 +319,15 @@ class SoundDeviceSink:
                     chunk = pipe.get()
                     if chunk is None:
                         break
-                    stream.write(chunk)
+                    if self._interrupted.is_set():
+                        stream.abort()
+                        while pipe.get() is not None:
+                            pass
+                        break
+                    for piece in _pieces(chunk, sample_rate):
+                        if self._interrupted.is_set():
+                            break
+                        stream.write(piece)
         except Exception as exc:  # noqa: BLE001
             logger.error("Не удалось воспроизвести поток: %s: %s", type(exc).__name__, exc)
             # Очередь дочитываем до метки конца: иначе тот, кто её наполняет,
@@ -318,6 +345,11 @@ class SoundDeviceSink:
                 channels=1,
                 dtype="int16",
             ) as stream:
-                stream.write(audio)
+                # Кусками по десятой секунды: между ними видно просьбу замолчать.
+                for piece in _pieces(audio, sample_rate):
+                    if self._interrupted.is_set():
+                        stream.abort()
+                        break
+                    stream.write(piece)
         except Exception as exc:  # noqa: BLE001
             logger.error("Не удалось воспроизвести звук: %s: %s", type(exc).__name__, exc)

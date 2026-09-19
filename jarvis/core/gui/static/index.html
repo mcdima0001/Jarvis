@@ -291,6 +291,7 @@
     <form class="command" id="command-form" autocomplete="off">
       <input type="text" id="command-text" maxlength="500" placeholder="Напиши команду — как голосом: «включи трек…», «какая погода»" aria-label="Команда текстом">
       <button class="act" type="submit">Отправить</button>
+      <button class="act danger" type="button" id="command-hush" title="Оборвать ответ. Из любого окна — Ctrl+Shift+Пробел">Замолчать</button>
     </form>
     <div class="small" id="command-note"></div>
     <div class="live">
@@ -1178,6 +1179,7 @@ async function loadLog() {
 $("log-clear").addEventListener("click", () => $("log").replaceChildren());
 
 // --- команда текстом: то же, что голосом --------------------------------------
+$("command-hush").addEventListener("click", () => run(() => api("/api/command", { text: "стоп" })));
 const commandHistory = [];
 let commandBack = 0;
 $("command-form").addEventListener("submit", async (event) => {

@@ -288,6 +288,8 @@ def test_panel_window_is_edge_app_mode() -> None:
     command = panel_command("http://127.0.0.1:8766/?token=t", Path("C:/Edge/msedge.exe"))
     assert command is not None and command[1] == "--app=http://127.0.0.1:8766/?token=t"
     assert panel_command("http://x", None) is None
+    # Свой профиль: иначе обычные окна Edge открывались на месте панели (19.09.2026).
+    assert any(part.startswith("--user-data-dir=") and "panel-browser" in part for part in command)
 
 
 async def test_folder_opens_project_root(tmp_path: Path) -> None:
@@ -409,7 +411,7 @@ def test_popup_layout_scales_and_skips_separators() -> None:
     layout = menu.popup_layout(menu.MENU, 1.5)
     assert layout.width == 372 and layout.header == 84
     items = [row for row in layout.rows if row.item is not None]
-    assert len(items) == 6 and all(row.height == 51 for row in items)
+    assert len(items) == 7 and all(row.height == 51 for row in items)
     assert layout.height == layout.rows[-1].top + layout.rows[-1].height + 9
     separator = next(index for index, row in enumerate(layout.rows) if row.item is None)
     assert menu.row_at(layout, layout.rows[separator].top + 1) is None
@@ -420,9 +422,9 @@ def test_popup_layout_scales_and_skips_separators() -> None:
 def test_arrows_walk_items_around_the_separator() -> None:
     layout = menu.popup_layout()
     assert menu.step_row(layout, None, 1) == 0
-    assert menu.step_row(layout, None, -1) == 7
-    assert menu.step_row(layout, 2, 1) == 4  # через разделитель
-    assert menu.step_row(layout, 7, 1) == 0  # по кругу
+    assert menu.step_row(layout, None, -1) == 8
+    assert menu.step_row(layout, 3, 1) == 5  # через разделитель
+    assert menu.step_row(layout, 8, 1) == 0  # по кругу
 
 
 def test_popup_hovers_above_the_taskbar_with_a_gap() -> None:
