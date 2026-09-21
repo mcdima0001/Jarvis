@@ -10,6 +10,7 @@
 
     python tools/place_agent_bench.py --prepare   # агент качает снимки и снимает EXIF
     python tools/place_agent_bench.py             # в отдельных сессиях спрашиваем о каждом
+    python tools/place_agent_bench.py --hurry     # то же, но с подгонялкой на 90-й секунде
 
 После подготовки у агента лежат `01.jpg … 10.jpg` без метаданных и без исходных
 имён: подсмотреть ответ негде — ни координат в EXIF, ни города в имени файла.
@@ -39,7 +40,13 @@ PLACE = "/home/jarvis/place"
 #: Набор Wikimedia с координатами камеры — общий с `tools/photo_bench`.
 SET = ROOT / "tools" / "photo_bench" / "set.json"
 OUT = ROOT / "bench" / "place_agent.json"
+HURRIED = ROOT / "bench" / "place_agent_hurry.json"
 PICKED = ROOT / "bench" / "place_agent_picked.json"
+#: Через сколько секунд подгонять агента (идея владельца 21.09.2026). Панель
+#: принимает второе сообщение в **работающую** сессию, и агент отвечает тем, что
+#: успел: проверено на длинной задаче — подгонялка пришла на 15-й секунде, ответ
+#: получен через 7 с со словами «перепроверку по твоей просьбе не делал».
+HURRY_S = 90.0
 #: Wikimedia отвергает безымянных роботов — представляемся, как просит их политика.
 FETCHER = (
     "JarvisPhotoBench/1.0 (private research bot; "
@@ -78,6 +85,14 @@ ASK = """Посмотри на снимок {place}/{name} и определи, 
 ТОЧНОСТЬ: <что обещаешь: город / район / улица / здание>
 """
 
+NUDGE = """Время вышло. Отвечай прямо сейчас тем, что уже выяснил, и больше
+ничего не проверяй. Если уверенности мало — так и скажи в строке ТОЧНОСТЬ, но
+ответь. Ровно три строки:
+МЕСТО: <город, страна; не понял — «не знаю»>
+ТОЧКА: <широта>, <долгота> числами
+ТОЧНОСТЬ: <город / район / улица / здание>
+"""
+
 POINT = re.compile(r"ТОЧКА:\s*[^\d\-]*(-?\d+[.,]\d+)\s*,\s*(-?\d+[.,]\d+)")
 PLACE_LINE = re.compile(r"МЕСТО:\s*(.+)")
 SURE = re.compile(r"ТОЧНОСТЬ:\s*(.+)")
@@ -91,17 +106,29 @@ def key() -> str:
     raise SystemExit("нет ключа CLI_CLAUDE в .env")
 
 
-async def ask(prompt: str, *, timeout: float = 1800) -> tuple[str, float]:
-    """Спросить агента. Только потоком: нестримовый режим панели врёт."""
-    payload = {
+def _payload(prompt: str, session: str = "") -> dict:
+    """Тело запроса; с `session` — продолжение того же разговора."""
+    body = {
         "message": prompt,
         "stream": True,
         "provider": "claude",
         "projectPath": "/home/jarvis/author",
         "model": "opus",
     }
+    if session:
+        body["sessionId"] = session
+    return body
+
+
+async def _collect(
+    payload: dict, *, timeout: float, session: asyncio.Future[str] | None = None
+) -> str:
+    """Прочитать поток ответа целиком. Только потоком: нестримовый режим врёт.
+
+    :param session: сюда кладётся идентификатор сессии, как только он придёт, —
+        по нему в **тот же** разговор можно дослать сообщение, пока агент думает.
+    """
     chunks: list[str] = []
-    started = time.perf_counter()
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream(
             "POST",
@@ -117,9 +144,45 @@ async def ask(prompt: str, *, timeout: float = 1800) -> tuple[str, float]:
                     event = json.loads(line[6:])
                 except json.JSONDecodeError:
                     continue
+                found = event.get("sessionId")
+                if session is not None and isinstance(found, str) and not session.done():
+                    session.set_result(found)
                 if (event.get("kind") or event.get("type")) == "text":
                     chunks.append(str(event.get("content") or ""))
-    return "\n".join(chunk for chunk in chunks if chunk), time.perf_counter() - started
+    return "\n".join(chunk for chunk in chunks if chunk)
+
+
+async def ask(prompt: str, *, timeout: float = 1800) -> tuple[str, float]:
+    """Спросить агента и дождаться ответа, сколько бы он ни думал."""
+    started = time.perf_counter()
+    text = await _collect(_payload(prompt), timeout=timeout)
+    return text, time.perf_counter() - started
+
+
+async def ask_hurry(
+    prompt: str, *, after: float = HURRY_S, timeout: float = 1800
+) -> tuple[str, float, bool]:
+    """То же, но затянувшегося агента подгоняют: «отвечай тем, что есть».
+
+    :return: ответ, сколько заняло, подгоняли ли. Ответ берётся у подгонялки:
+        она приходит в ту же сессию, то есть агент отвечает, помня всё, что
+        успел выяснить.
+    """
+    started = time.perf_counter()
+    session: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    first = asyncio.create_task(_collect(_payload(prompt), timeout=timeout, session=session))
+    try:
+        text = await asyncio.wait_for(asyncio.shield(first), timeout=after)
+        return text, time.perf_counter() - started, False
+    except TimeoutError:
+        pass
+
+    if not session.done():
+        first.cancel()
+        return "", time.perf_counter() - started, True
+    hurried = await _collect(_payload(NUDGE, session.result()), timeout=timeout)
+    first.cancel()
+    return hurried, time.perf_counter() - started, True
 
 
 def picked(count: int) -> list[dict]:
@@ -154,16 +217,22 @@ async def prepare(count: int) -> None:
     print(f"--- подготовка, {took:.1f} с ---\n{text[:1500]}")
 
 
-async def measure() -> None:
+async def measure(hurry: bool = False, *, after: float = HURRY_S) -> None:
     """Фаза Б: спрашиваем о каждом снимке в своей сессии и считаем промах."""
     items = json.loads(PICKED.read_text(encoding="utf-8"))
-    rows: list[dict] = json.loads(OUT.read_text(encoding="utf-8")) if OUT.exists() else []
+    out = HURRIED.with_name(f"place_agent_hurry_{int(after)}.json") if hurry else OUT
+    rows: list[dict] = json.loads(out.read_text(encoding="utf-8")) if out.exists() else []
     done = {row["n"] for row in rows}
     for number, item in enumerate(items, 1):
         if number in done:
             continue
+        question = ASK.format(place=PLACE, name=f"{number:02d}.jpg")
+        nudged = False
         try:
-            text, took = await ask(ASK.format(place=PLACE, name=f"{number:02d}.jpg"))
+            if hurry:
+                text, took, nudged = await ask_hurry(question, after=after)
+            else:
+                text, took = await ask(question)
         except Exception as exc:  # noqa: BLE001 — поток рвётся на долгих расследованиях
             print(f"{number:02d} оборвалось: {type(exc).__name__}", flush=True)
             continue
@@ -172,6 +241,7 @@ async def measure() -> None:
             "n": number,
             "city": item["city"],
             "took_s": round(took, 1),
+            "nudged": nudged,
             "place": said.group(1).strip() if said else "",
             "sure": sure.group(1).strip() if sure else "",
             "answer": text[-400:],
@@ -181,10 +251,11 @@ async def measure() -> None:
             row["miss_km"] = round(miss_km(item["latitude"], item["longitude"], lat, lon), 2)
         rows.append(row)
         rows.sort(key=lambda item: item["n"])
-        OUT.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        out.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
         print(
             f"{number:02d} правда {row['city']:12} сказал {row['place'][:34]:36} "
-            f"промах {row.get('miss_km', '—'):>8} км  {row['took_s']:6} с",
+            f"промах {row.get('miss_km', '—'):>8} км  {row['took_s']:6} с"
+            f"{' (подгонял)' if nudged else ''}",
             flush=True,
         )
 
@@ -195,16 +266,19 @@ async def measure() -> None:
             f"\nОтветов с точкой: {len(hits)}/{len(rows)}; "
             f"медиана промаха {hits[len(hits) // 2]} км; "
             f"до 100 м: {sum(1 for hit in hits if hit <= 0.1)}; "
-            f"медиана времени {times[len(times) // 2]} с, худшее {times[-1]} с"
+            f"медиана времени {times[len(times) // 2]} с, худшее {times[-1]} с; "
+            f"подгоняли {sum(1 for row in rows if row.get('nudged'))}"
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", action="store_true", help="фаза А: подготовить набор у агента")
+    parser.add_argument("--hurry", action="store_true", help="подгонять затянувшегося агента")
+    parser.add_argument("--after", type=float, default=HURRY_S, help="через сколько секунд подгонять")
     parser.add_argument("--count", type=int, default=10, help="сколько снимков")
     args = parser.parse_args()
-    asyncio.run(prepare(args.count) if args.prepare else measure())
+    asyncio.run(prepare(args.count) if args.prepare else measure(args.hurry, after=args.after))
 
 
 if __name__ == "__main__":
