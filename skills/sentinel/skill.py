@@ -24,8 +24,10 @@ import ctypes
 import os
 import shutil
 import time
+from collections.abc import Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 
 from jarvis.core.attention import LOW, NORMAL, URGENT
@@ -36,6 +38,9 @@ from jarvis.core.tts.normalize import plural_form
 
 #: Недокачанные файлы браузеров и качалок: о таких рано говорить «загрузилось».
 PARTIAL = (".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload", ".!ut")
+#: Насколько свежей должна быть правка файла, чтобы считать его только что
+#: скачанным, сек. Перекладывание файла туда-сюда время правки не меняет.
+FRESH_S = 120.0
 PERCENT = ("процент", "процента", "процентов")
 GIGABYTE = ("гигабайт", "гигабайта", "гигабайт")
 #: Сколько секунд придержанное замечание стража остаётся правдой (16.09.2026:
@@ -119,13 +124,20 @@ def downloads_dir() -> Path | None:
     return None
 
 
-def scan(folder: Path) -> dict[str, int]:
-    """Файлы папки загрузок: имя → размер. Подпапки не смотрим."""
-    found: dict[str, int] = {}
+def scan(folder: Path, ignore: Sequence[str] = ()) -> dict[str, tuple[int, float]]:
+    """Файлы папки загрузок: имя → (размер, время правки). Подпапки не смотрим.
+
+    :param ignore: маски имён, которые пропускать совсем (`fnmatch`).
+    """
+    found: dict[str, tuple[int, float]] = {}
     try:
         for entry in os.scandir(folder):
-            if entry.is_file():
-                found[entry.name] = entry.stat().st_size
+            if not entry.is_file():
+                continue
+            if any(fnmatch(entry.name.lower(), mask) for mask in ignore):
+                continue
+            stat = entry.stat()
+            found[entry.name] = (stat.st_size, stat.st_mtime)
     except OSError:
         return {}
     return found
@@ -198,19 +210,28 @@ class DownloadWatch:
     """
 
     known: set[str] | None = None
-    sizes: dict[str, int] = field(default_factory=dict)
+    sizes: dict[str, tuple[int, float]] = field(default_factory=dict)
+    #: Насколько свежей должна быть правка файла, чтобы это считалось загрузкой.
+    fresh_s: float = FRESH_S
 
-    def check(self, files: dict[str, int]) -> list[str]:
+    def check(self, files: dict[str, tuple[int, float]], now: float | None = None) -> list[str]:
+        moment = time.time() if now is None else now
         if self.known is None:
             self.known = set(files)
             self.sizes = dict(files)
             return []
         finished = [
-            name for name, size in files.items()
+            name for name, (size, changed) in files.items()
             if name not in self.known
             and not name.lower().endswith(PARTIAL)
-            and self.sizes.get(name) == size
+            and self.sizes.get(name, (None, 0.0))[0] == size
             and size > 0
+            # Файл, который лежит тут давно, не «только что скачался», даже если
+            # в списке он новый: программы перекладывают файлы туда-обратно, и
+            # 21.09.2026 один и тот же .mrpack объявлялся загруженным трижды —
+            # в 17:12, 17:13 и 18:15. Время правки при переносе сохраняется, а
+            # при настоящей загрузке оно свежее.
+            and moment - changed <= self.fresh_s
         ]
         self.known.update(finished)
         # Удалённые забываем: скачали тот же файл заново — снова скажем.
@@ -273,7 +294,7 @@ class SentinelSkill(Skill):
     meta = SkillMeta(
         name="sentinel",
         description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
-        version="0.1.5",
+        version="0.1.6",
         platforms=("windows",),
         spoken=("страж", "слежение", "sentinel"),
     )
@@ -289,6 +310,10 @@ class SentinelSkill(Skill):
         #: Загрузки смотрятся чаще прочего: о готовом файле хотят слышать сразу, а
         #: не через полминуты (просьба владельца 17.09.2026). Проход — список одной папки.
         self._downloads_every = max(1.0, float(setting("downloads_every_s", 2)))
+        #: Маски имён, о которых не сообщать вовсе (нижний регистр, `fnmatch`).
+        self._ignore = tuple(
+            str(mask).lower() for mask in (setting("downloads_ignore", []) or ())
+        )
         #: Докачавшееся, о чём ещё не сказали (пауза между репликами), и с какого момента.
         self._unsaid: list[str] = []
         self._unsaid_since = 0.0
@@ -367,7 +392,7 @@ class SentinelSkill(Skill):
     async def _check_downloads(self, folder: Path) -> None:
         if self._downloads is None:
             return
-        finished = self._downloads.check(await asyncio.to_thread(scan, folder))
+        finished = self._downloads.check(await asyncio.to_thread(scan, folder, self._ignore))
         now = time.monotonic()
         if finished:
             if not self._unsaid:

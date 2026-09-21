@@ -59,14 +59,42 @@ def test_cpu_speaks_after_the_streak_and_once_until_it_calms_down() -> None:
     assert watch.check(0.95, 22 * 60) is None, "новая серия начинается с нуля"
 
 
+def _folder(now: float, **files: int) -> dict[str, tuple[int, float]]:
+    """Папка «Загрузки»: имя → размер и свежее время правки."""
+    return {name.replace("__", "."): (size, now) for name, size in files.items()}
+
+
 def test_downloads_skip_existing_partial_and_growing_files() -> None:
     watch = sentinel.DownloadWatch()
-    assert watch.check({"old.pdf": 10}) == [], "что лежало до запуска — не новость"
-    assert watch.check({"old.pdf": 10, "movie.mkv.crdownload": 5}) == []
-    assert watch.check({"old.pdf": 10, "movie.mkv": 500}) == [], "размер ещё не проверен дважды"
-    assert watch.check({"old.pdf": 10, "movie.mkv": 800}) == [], "файл ещё растёт"
-    assert watch.check({"old.pdf": 10, "movie.mkv": 800}) == ["movie.mkv"]
-    assert watch.check({"old.pdf": 10, "movie.mkv": 800}) == [], "о готовом — один раз"
+    now = 1_000_000.0
+    assert watch.check(_folder(now, old__pdf=10), now) == [], "что лежало до запуска — не новость"
+    assert watch.check(_folder(now, old__pdf=10, movie__mkv__crdownload=5), now) == []
+    assert watch.check(_folder(now, old__pdf=10, movie__mkv=500), now) == [], "размер ещё не проверен дважды"
+    assert watch.check(_folder(now, old__pdf=10, movie__mkv=800), now) == [], "файл ещё растёт"
+    assert watch.check(_folder(now, old__pdf=10, movie__mkv=800), now) == ["movie.mkv"]
+    assert watch.check(_folder(now, old__pdf=10, movie__mkv=800), now) == [], "о готовом — один раз"
+
+
+def test_a_file_put_back_is_not_a_new_download() -> None:
+    """21.09.2026: один и тот же .mrpack объявлялся загруженным трижды за час."""
+    watch = sentinel.DownloadWatch()
+    now = 1_000_000.0
+    old = {"pack.mrpack": (6525, now - sentinel.FRESH_S - 1)}
+    assert watch.check(old, now) == []
+    assert watch.check({}, now) == [], "файл унесли — забыли"
+    assert watch.check(old, now) == [], "вернули тот же файл: время правки старое, это не загрузка"
+    assert watch.check(old, now) == []
+    # Размер за эти проходы не менялся, значит устоявшимся он уже считается:
+    # как только время правки стало свежим, это настоящая загрузка.
+    assert watch.check({"pack.mrpack": (6525, now)}, now) == ["pack.mrpack"]
+
+
+def test_ignored_names_are_not_even_seen(tmp_path: Any) -> None:
+    """Просьба владельца 21.09.2026: пусть на что-то не смотрит вовсе."""
+    (tmp_path / "photo_1.jpg").write_bytes(b"x")
+    (tmp_path / "report.pdf").write_bytes(b"y")
+    assert sorted(sentinel.scan(tmp_path)) == ["photo_1.jpg", "report.pdf"]
+    assert sorted(sentinel.scan(tmp_path, ("photo_*.jpg",))) == ["report.pdf"]
 
 
 def test_download_line_does_not_read_file_names() -> None:
@@ -86,6 +114,7 @@ def test_download_line_says_what_arrived() -> None:
 async def test_downloads_are_said_together_when_the_pause_ends_or_never(monkeypatch: Any) -> None:
     """19.09.2026: «фотка скачалась» прозвучала через десять минут, досказанной из придержанного."""
     import logging
+    import time
     from types import SimpleNamespace
 
     decisions = ["drop", "drop", "say"]
@@ -101,14 +130,15 @@ async def test_downloads_are_said_together_when_the_pause_ends_or_never(monkeypa
     )
     skill._downloads = sentinel.DownloadWatch()
     skill._unsaid, skill._unsaid_since, skill._last_said, skill._repeat_s = [], 0.0, {}, 3600.0
-    folder: dict[str, int] = {}
-    monkeypatch.setattr(sentinel, "scan", lambda path: dict(folder))
+    skill._ignore = ()
+    folder: dict[str, tuple[int, float]] = {}
+    monkeypatch.setattr(sentinel, "scan", lambda path, ignore=(): dict(folder))
 
     await skill._check_downloads(Path("."))  # первый проход только запоминает
-    folder["a.jpg"] = 10
+    folder["a.jpg"] = (10, time.time())
     await skill._check_downloads(Path("."))  # размер ещё не устоялся
     await skill._check_downloads(Path("."))  # готово, но пауза — не сказано
-    folder["b.jpg"] = 20
+    folder["b.jpg"] = (20, time.time())
     await skill._check_downloads(Path("."))
     await skill._check_downloads(Path("."))  # вторая готова — обе одной репликой
     assert offered == [
