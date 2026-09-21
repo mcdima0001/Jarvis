@@ -49,6 +49,7 @@ from jarvis.core.router import (
     PlanResolver,
     Resolver,
     Router,
+    SimilarResolver,
     VerbatimResolver,
 )
 from jarvis.core.runtime import BlockingWorker
@@ -581,6 +582,7 @@ def _build_resolvers(
             else None
         ),
         "learned": lambda: learner,
+        "similar": lambda: SimilarResolver(registry),
         "llm": lambda: LLMResolver(
             registry,
             llm,

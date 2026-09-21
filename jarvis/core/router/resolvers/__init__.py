@@ -11,6 +11,7 @@ from .learned import LearnedResolver
 from .llm import LLMResolver
 from .phrase import PhraseResolver
 from .plan import PlanResolver, needs_a_plan
+from .similar import SimilarResolver, misheard
 from .verbatim import VerbatimResolver
 
 __all__ = [
@@ -21,6 +22,8 @@ __all__ = [
     "LLMResolver",
     "PhraseResolver",
     "PlanResolver",
+    "SimilarResolver",
     "VerbatimResolver",
+    "misheard",
     "needs_a_plan",
 ]

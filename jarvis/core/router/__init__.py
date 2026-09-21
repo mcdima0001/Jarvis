@@ -10,6 +10,7 @@ from .resolvers import (
     LLMResolver,
     PhraseResolver,
     PlanResolver,
+    SimilarResolver,
     VerbatimResolver,
 )
 from .router import Router
@@ -22,6 +23,7 @@ __all__ = [
     "LLMResolver",
     "LearnedResolver",
     "PhraseResolver",
+    "SimilarResolver",
     "Resolver",
     "Router",
     "PlanResolver",
