@@ -30,6 +30,7 @@ from jarvis.core.contracts import (
     detect_language,
 )
 from jarvis.core.dialogue import Conversation
+from jarvis.core.faults import Faults
 from jarvis.core.gui import ControlPanel
 from jarvis.core.jobs import Jobs
 from jarvis.core.lifecycle import EARS, VOICE, ServiceRunner
@@ -184,8 +185,12 @@ class JarvisApp:
             name: build_provider(provider_config)
             for name, provider_config in config.llm.providers.items()
         }
+        # Один журнал сбоев на систему, как режимы: сбой случается у модели,
+        # а объясняет его голосом конвейер.
+        faults = Faults()
         llm = LLMService(
             providers=providers,
+            faults=faults,
             profiles=ProfileRegistry(
                 config.llm.profiles,
                 default_task=config.llm.default_task,
@@ -335,6 +340,7 @@ class JarvisApp:
             announcer=announcer,
             meter=meter,
             conversation=conversation,
+            faults=faults,
         )
 
         runner = ServiceRunner()

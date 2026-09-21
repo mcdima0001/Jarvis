@@ -57,6 +57,7 @@ from jarvis.core.contracts import (
 )
 from jarvis.core.dialogue import Conversation
 from jarvis.core.errors import STTError
+from jarvis.core.faults import Faults
 from jarvis.core.meter import Meter
 from jarvis.core.pending import TTL as PENDING_TTL
 from jarvis.core.persona import DONE, FAILED, LISTENING, WORKING, Persona
@@ -172,7 +173,11 @@ class VoicePipeline:
         conversation: "Conversation | None" = None,
         hotwords: Any = None,
         recorder: Any = None,
+        faults: Faults | None = None,
     ) -> None:
+        #: Журнал сбоев обращения к модели: неудача называет причину, а не
+        #: прячется за «не справился» (21.09.2026).
+        self._faults = faults if faults is not None else Faults()
         #: Детектор слов без имени — только замер: пишет в лог, ничего не делает.
         self._hotwords = hotwords
         #: Запись услышанных фраз на диск (`audio.record_dir`); ``None`` — не писать.
@@ -568,6 +573,7 @@ class VoicePipeline:
                 if tail:
                     queue(tail, first)
             except Exception as exc:  # noqa: BLE001 — произнесённое уже не вернуть
+                self._faults.note(exc)
                 logger.error("Ответ модели оборвался (%s): %s", type(exc).__name__, exc)
             finally:
                 ready.put_nowait(None)
@@ -589,7 +595,7 @@ class VoicePipeline:
         await asyncio.gather(writer, return_exceptions=True)
 
         if not said:
-            reply = self._persona.line(FAILED, language)
+            reply = self._excuse(language)
             await self._say(reply, language=language)
             return reply
         reply = " ".join(said)
@@ -693,6 +699,11 @@ class VoicePipeline:
             return found
         return self._language or fallback or "ru"
 
+    def _excuse(self, language: str | None) -> str:
+        """Чем объяснить неудачу: свежим сбоем, если он есть, иначе вежливо."""
+        fault = self._faults.recent()
+        return fault.speech(language) if fault is not None else self._persona.line(FAILED, language)
+
     @property
     def _muted(self) -> bool:
         """Глушить ли сейчас микрофон (говорим сами или ещё звучит хвост)."""
@@ -705,6 +716,12 @@ class VoicePipeline:
         программы» полезнее, чем «Не вышло, сэр».
         """
         if not result.ok:
+            # Причина сбоя важнее и собственного объяснения инструмента, и
+            # вежливого отказа: «кончились деньги на счету» человек починит, а
+            # «не справился» отправит искать поломку в коде.
+            fault = self._faults.recent()
+            if fault is not None:
+                return fault.speech(language)
             return result.error or self._persona.line(FAILED, language)
         if result.value is None:
             return self._persona.line(DONE, language)

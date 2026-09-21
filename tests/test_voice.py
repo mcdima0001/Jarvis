@@ -57,6 +57,7 @@ def _pipeline(
     wake_word: object | None = None,
     modes: object | None = None,
     conversation: object | None = None,
+    faults: object | None = None,
     **wake: object,
 ) -> VoicePipeline:
     """Собрать конвейер с заглушками вместо звука."""
@@ -91,6 +92,7 @@ def _pipeline(
         persona=persona,
         modes=modes,  # type: ignore[arg-type]
         conversation=conversation,  # type: ignore[arg-type]
+        faults=faults,  # type: ignore[arg-type]
     )
 
 

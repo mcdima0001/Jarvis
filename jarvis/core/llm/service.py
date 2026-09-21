@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jarvis.core.contracts import detect_language
 from jarvis.core.errors import LLMError, LLMNotConfigured
+from jarvis.core.faults import Faults
 from jarvis.core.state import BRIEF, Modes
 from jarvis.core.tools import ToolCatalog
 
@@ -148,6 +149,7 @@ class LLMService:
         profiles: ProfileRegistry,
         modes: "Modes | None" = None,
         usage: "UsageLog | None" = None,
+        faults: "Faults | None" = None,
     ) -> None:
         self._providers = dict(providers)
         self._profiles = profiles
@@ -158,6 +160,14 @@ class LLMService:
         #: текста, который ассистент произносит, а производит текст не один
         #: инструмент. Место, через которое проходят все, здесь.
         self._modes = modes
+        #: Журнал последнего сбоя: пустой счёт и отсутствие сети называются
+        #: вслух, а не прячутся за «не справился» (21.09.2026).
+        self._faults = faults if faults is not None else Faults()
+
+    @property
+    def faults(self) -> "Faults":
+        """Последний сбой обращения к модели — чтобы объяснить неудачу вслух."""
+        return self._faults
 
     @property
     def spending(self) -> Spending:
@@ -235,7 +245,16 @@ class LLMService:
         profile, provider, request = self._prepare(
             messages, task=task, tools=tools, tool_choice=tool_choice, max_tokens=max_tokens
         )
-        response = await provider.complete(request)
+        try:
+            response = await provider.complete(request)
+        except LLMError as exc:
+            # Все пути к модели сходятся здесь, поэтому и сбой записывается
+            # здесь: разбору намерения, разговору и плану заводить своё
+            # объяснение не нужно.
+            fault = self._faults.note(exc, provider=str(getattr(provider, "title", "") or provider.name))
+            logger.warning("Модель не ответила (%s): %s", fault.kind, exc)
+            raise
+        self._faults.forget()
         await self._account(profile, response.usage)
         return response
 

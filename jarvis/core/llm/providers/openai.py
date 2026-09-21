@@ -43,9 +43,12 @@ logger = logging.getLogger(__name__)
 #: Что модель вправе отвергнуть и что провайдер умеет поправить сам.
 ADAPTABLE = ("temperature", "reasoning_effort")
 
-#: Код ответа «кончилась квота». OpenAI отвечает 429, как на обычную частоту
-#: запросов, и различаются они только полем `code`.
-INSUFFICIENT_QUOTA = "insufficient_quota"
+#: Чем пустой счёт отличается от обычного «слишком часто»: оба приходят как
+#: 429, и разница только внутри тела отказа. Смотреть надо **и `code`, и
+#: `type`**: 21.09.2026 OpenAI ответил `type: insufficient_quota` при
+#: `code: credit_balance_exhausted`, проверка по одному `code` его не узнала —
+#: и два дня пустой счёт звучал как «не справился, сэр».
+NO_MONEY_MARKS = frozenset({"insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"})
 
 #: Хвост отказа, где модель перечисляет допустимые значения.
 _SUPPORTED = re.compile(r"Supported values are:\s*(.+)", re.IGNORECASE)
@@ -157,7 +160,8 @@ class OpenAIProvider(ChatCompletionsProvider):
         """Пустой счёт и поправимый параметр — свои виды ошибки."""
         detail = _detail(response)
         message = f"OpenAI вернул {response.status_code}: {response.text[:400]}"
-        if response.status_code == 429 and detail.get("code") == INSUFFICIENT_QUOTA:
+        marks = {str(detail.get("code") or ""), str(detail.get("type") or "")}
+        if response.status_code == 429 and marks & NO_MONEY_MARKS:
             return LLMOutOfCredits(
                 f"На счету OpenAI кончились деньги: {detail.get('message', '')}",
                 provider=self.title,
