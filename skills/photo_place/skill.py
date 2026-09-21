@@ -78,17 +78,39 @@ import io
 import math
 import re
 from collections import Counter
+from collections.abc import Coroutine
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from jarvis.core.attention import NORMAL
 from jarvis.core.contracts import ToolResult
 from jarvis.core.errors import LLMNotConfigured, LLMOutOfCredits
 from jarvis.core.llm import Message
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.tools import tool
+
+
+def _agent_module() -> Any:
+    """Свой подмодуль второй глубины.
+
+    Грузится по файлу, а не обычным импортом: скилл загружается не как пакет
+    (`spec_from_file_location`), и относительный импорт внутри него не работает.
+    Тот же приём у `windows/bluetooth.py`, и он же даёт подхват правок при
+    «переподключи модуль».
+    """
+    import importlib.util
+    import sys
+
+    name = "jarvis_skills.photo_place_agent"
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("agent.py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 #: Профиль модели, которая узнаёт место. **Свой, а не общий со зрением**, и
 #: причина измерена 13.09.2026 на двух фотографиях владельца. gpt-5.4-mini, на
@@ -860,6 +882,31 @@ def describe_precision(metres: float | None, language: str = "ru") -> str:
     return ""
 
 
+def _point_of(result: ToolResult) -> tuple[float, float] | None:
+    """Координаты из уже собранного ответа; их может и не быть."""
+    value = result.value if isinstance(result.value, dict) else {}
+    latitude, longitude = value.get("latitude"), value.get("longitude")
+    if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
+        return float(latitude), float(longitude)
+    return None
+
+
+def worth_correcting(
+    said: tuple[float, float] | None, deep: tuple[float, float] | None, apart: float
+) -> bool:
+    """Стоит ли поправлять вслух ответ, который уже произнесён.
+
+    Поправка — речь без вопроса, и она мешает; ради трёхсот метров дёргать
+    человека незачем. Но если первый ответ не нашёлся вовсе или места разошлись
+    дальше `apart`, промолчать хуже: владелец уже запомнил неверное.
+    """
+    if deep is None:
+        return False
+    if said is None:
+        return True
+    return metres_between(said, deep) > apart
+
+
 def metres_between(first: tuple[float, float], second: tuple[float, float]) -> float:
     """Расстояние между точками по большому кругу, метров."""
     radius = 6_371_000.0
@@ -1255,15 +1302,34 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.5.0",
+        version="0.6.0",
         spoken=("место по фото", "где снято", "photo place"),
     )
 
     async def on_setup(self) -> None:
-        """Приготовить клиент геокодера и очередь к нему."""
+        """Приготовить клиент геокодера, очередь к нему и вторую глубину."""
         self._client: httpx.AsyncClient | None = None
         self._gate = asyncio.Lock()
         self._last_call = 0.0
+        setting = self.context.setting
+        deep = _agent_module()
+        #: Вторая глубина — агент панели. Отвечает точнее (медиана промаха 60 м
+        #: против 2 км), но думает минутами, поэтому идёт наперегонки с моделью.
+        self._agent = deep.PanelAgent(
+            url=str(setting("agent_url", "")),
+            key=str(setting("agent_key", "")),
+            model=str(setting("agent_model", "opus")),
+            workdir=str(setting("agent_workdir", "/home/jarvis/author")),
+            host=str(setting("tailscale_host", "")),
+            port=int(setting("handoff_port", 8799)),
+        ) if bool(setting("agent", True)) else None
+        #: Сколько ждать агента, прежде чем ответить тем, что есть.
+        self._agent_wait = float(setting("agent_wait_s", 25))
+        #: Сколько агент ещё думает в фоне после того, как ответ уже сказан.
+        self._agent_late = float(setting("agent_late_s", 900))
+        #: На сколько метров ответ агента должен разойтись со сказанным, чтобы
+        #: поправлять вслух: «в трёхстах метрах» никому не интересно.
+        self._agent_apart = float(setting("agent_correct_m", 500))
 
     async def on_stop(self) -> None:
         """Закрыть соединения."""
@@ -1388,6 +1454,119 @@ class PhotoPlaceSkill(Skill):
             )
         return HealthStatus.healthy()
 
+    # --- две глубины ---------------------------------------------------------
+
+    def _deep(self) -> Any:
+        """Вторая глубина, если она настроена и своя сеть на месте."""
+        # `getattr`, а не поле: скилл обязан работать и до `on_setup` — так его
+        # поднимают тесты и так же его наследуют, подменяя части.
+        agent = getattr(self, "_agent", None)
+        return agent if agent is not None and agent.ready else None
+
+    def _deep_answer(self, verdict: Any, code: str) -> ToolResult:
+        """Ответ второй глубины — тот же вид, что и у обычного пути."""
+        payload: dict[str, Any] = {
+            "place": verdict.place,
+            "precision": verdict.precision,
+            "depth": "agent",
+            "seconds": verdict.seconds,
+        }
+        if verdict.point is not None:
+            payload["latitude"], payload["longitude"] = verdict.point
+            payload["map"] = map_url(*verdict.point)
+        # Реплика одна и на том языке, на котором спросили: агента об этом же
+        # и просили. Собирать вторую на другом языке не из чего — переводить
+        # ответ значило бы звать модель ещё раз ради слова «здание».
+        tail = (" Точность — " if code == "ru" else " Accuracy: ") + verdict.precision
+        line = f"{verdict.place}." + (f"{tail}." if verdict.precision else "")
+        return ToolResult.success(payload, speech={code: line})
+
+    async def _race(
+        self,
+        image: bytes,
+        quick: "Coroutine[Any, Any, ToolResult]",
+        code: str,
+        hint: str,
+        *,
+        kind: str = "jpg",
+    ) -> ToolResult:
+        """Обе глубины разом: чей ответ успел, тем и отвечаем.
+
+        Первая глубина (зрячая модель) отвечает за секунды и промахивается на
+        километры, вторая (агент панели) думает минутами и попадает в здание.
+        Поэтому запускаются обе сразу: ждём вторую `agent_wait_s`, а не дождались
+        — говорим то, что нашла первая, и **досказываем** позже, если вторая
+        разойдётся с уже сказанным (замысел владельца 21.09.2026).
+        """
+        agent = self._deep()
+        if agent is None:
+            return await quick
+        deep = asyncio.create_task(
+            agent.place(image, hint=hint, language=code, budget=self._agent_wait * 2,
+                        timeout=max(self._agent_late, self._agent_wait), kind=kind),
+            name="photo-place-deep",
+        )
+        fast = asyncio.create_task(quick, name="photo-place-fast")
+        await asyncio.wait({deep, fast}, timeout=self._agent_wait)
+
+        if deep.done() and not deep.cancelled():
+            verdict = deep.exception() is None and deep.result()
+            if verdict and getattr(verdict, "sure", False):
+                fast.cancel()
+                self.log.info("Место назвал агент за %.0f с: %s", verdict.seconds, verdict.place)
+                return self._deep_answer(verdict, code)
+
+        result = await fast
+        if deep.done():
+            return result
+        # Агент думает дальше: ответ уже сказан, но если он разойдётся с
+        # названным местом, это стоит договорить.
+        said = _point_of(result)
+        self.context.scope.spawn(self._say_later(deep, said, code), name="photo-place-late")
+        if result.ok:
+            return result
+        # Первая глубина не смогла вовсе (пустой счёт, сеть) — но вторая ещё
+        # работает, и обещание доложить честнее, чем жалоба на чужой счёт.
+        self.log.info("Первая глубина не смогла (%s) — жду вторую", result.error)
+        return ToolResult.success(
+            {"pending": True, "depth": "agent"},
+            speech={
+                "ru": "Смотрю внимательнее — доложу, как разберусь.",
+                "en": "I am taking a closer look and will report back.",
+            },
+        )
+
+    async def _say_later(
+        self, deep: "asyncio.Task[Any]", said: tuple[float, float] | None, code: str
+    ) -> None:
+        """Дождаться вторую глубину и, если она спорит со сказанным, поправить вслух."""
+        try:
+            verdict = await asyncio.wait_for(deep, timeout=self._agent_late)
+        except (TimeoutError, asyncio.CancelledError):
+            deep.cancel()
+            return
+        except Exception as exc:  # noqa: BLE001 — чужая служба, своя работа важнее
+            self.log.warning("Вторая глубина не ответила: %s", exc)
+            return
+        if verdict is None or not verdict.sure:
+            return
+        if not worth_correcting(said, verdict.point, self._agent_apart):
+            self.log.info("Агент согласен с уже сказанным: %s", verdict.place)
+            return
+        announcer = getattr(self.context, "announcer", None)
+        if announcer is None:
+            return
+        head = "Уточняю по фотографии" if code == "ru" else "A correction about that photo"
+        decision = announcer.offer(
+            f"{head}: {verdict.place}.",
+            importance=NORMAL,
+            language=code,
+            expires_s=self._agent_late,
+        )
+        self.log.info(
+            "Вторая глубина за %.0f с: %s → %s", verdict.seconds, verdict.place, decision
+        )
+
     # --- откуда берём картинку ---------------------------------------------
 
     async def _by_screen(self, code: str, hint: str) -> ToolResult:
@@ -1405,12 +1584,38 @@ class PhotoPlaceSkill(Skill):
                     "en": "I cannot see the screen: the vision module is missing.",
                 },
             )
-        looked = await self.tools.invoke(
-            "screen.look", {"question": self._question(code, hint)}
-        )
-        if not looked.ok:
-            return looked
-        return await self._answer(str(looked.value or ""), code)
+        agent = self._deep()
+        if agent is None or not self.tools.has("screen.snapshot"):
+            looked = await self.tools.invoke(
+                "screen.look", {"question": self._question(code, hint)}
+            )
+            if not looked.ok:
+                return looked
+            return await self._answer(str(looked.value or ""), code)
+
+        # Со второй глубиной снимок нужен обеим, и делается он **один раз**:
+        # два захвата подряд — это два разных экрана, если что-то моргнуло.
+        shot = await self.tools.invoke("screen.snapshot", {})
+        value = shot.value if isinstance(shot.value, dict) else {}
+        path = Path(str(value.get("path") or "")) if shot.ok else None
+        if path is None or not path.exists():
+            looked = await self.tools.invoke(
+                "screen.look", {"question": self._question(code, hint)}
+            )
+            if not looked.ok:
+                return looked
+            return await self._answer(str(looked.value or ""), code)
+        try:
+            data = await asyncio.to_thread(path.read_bytes)
+            image, _ = await asyncio.to_thread(picture_for_model, path)
+            return await self._race(
+                data, self._quick(image, code, hint), code, hint,
+                kind=path.suffix.lstrip(".") or "png",
+            )
+        finally:
+            # Снимок экрана на диске не копим: владелец разрешил отправить его
+            # на свой сервер, но это не повод оставлять его лежать.
+            await asyncio.to_thread(path.unlink, True)
 
     async def _by_file(self, path: str, code: str, hint: str) -> ToolResult:
         """Разобрать файл: сперва координаты, если они есть, потом вид."""
@@ -1438,6 +1643,16 @@ class PhotoPlaceSkill(Skill):
                     "en": "I could not open that photo.",
                 },
             )
+        return await self._race(
+            await asyncio.to_thread(photo.read_bytes),
+            self._quick(image, code, hint),
+            code,
+            hint,
+            kind=photo.suffix.lstrip(".") or "jpg",
+        )
+
+    async def _quick(self, image: str, code: str, hint: str) -> ToolResult:
+        """Первая глубина: зрячая модель и разбор её версий по лестнице."""
         try:
             said = await self._ask_model(image, code, hint)
         except LLMOutOfCredits as empty:
