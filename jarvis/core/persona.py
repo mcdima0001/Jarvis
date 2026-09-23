@@ -41,7 +41,28 @@ FAILED = "failed"         # команда не выполнилась и не �
 GREETING = "greeting"     # запуск
 FAREWELL = "farewell"     # остановка
 
-SITUATIONS: tuple[str, ...] = (LISTENING, WORKING, DONE, FAILED, GREETING, FAREWELL)
+#: Бытовой разговор: то, на что живой человек отвечает не думая.
+#:
+#: Замер 23.09.2026 по логам за две недели (`tools/offline_bench.py`): «как
+#: дела» сказано **тринадцать раз** и каждый раз уезжало в облако — это самая
+#: частая фраза из тех, что без сети пропадают вовсе. Отвечать на неё моделью
+#: незачем: ответ всё равно должен быть коротким, в характере и мгновенным, а
+#: характер живёт здесь. Заодно это и есть «ИИ как дополнение»: без интернета
+#: вежливость никуда не девается.
+HELLO = "hello"             # «привет», «здравствуй»
+HOW_ARE_YOU = "how_are_you" # «как дела», «как ты»
+THANKS = "thanks"           # «спасибо»
+PRAISE = "praise"           # «молодец», «отлично»
+HERE = "here"               # «ты тут?», «слышишь меня?»
+BYE = "bye"                 # «пока», «спокойной ночи»
+
+#: Служебные реплики — их говорит сам конвейер.
+SERVICE: tuple[str, ...] = (LISTENING, WORKING, DONE, FAILED, GREETING, FAREWELL)
+
+#: Бытовые — их говорит `core.smalltalk` в ответ на прямое обращение.
+CHATTER: tuple[str, ...] = (HELLO, HOW_ARE_YOU, THANKS, PRAISE, HERE, BYE)
+
+SITUATIONS: tuple[str, ...] = (*SERVICE, *CHATTER)
 
 #: Как ассистент обращается к владельцу. Пустая строка убирает обращение.
 DEFAULT_ADDRESS: Mapping[str, str] = {"ru": "сэр", "en": "sir"}
@@ -250,6 +271,120 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Have a good one, {address}.",
         ),
     },
+    HELLO: {
+        "ru": (
+            "{greeting}, {address}.",
+            "И вам того же, {address}.",
+            "Здравствуйте, {address}.",
+            "Приветствую, {address}.",
+            "Рад слышать, {address}.",
+            "На месте, {address}.",
+            "{greeting}. Чем займёмся?",
+            "Здравствуйте. Я тут.",
+        ),
+        "en": (
+            "{greeting}, {address}.",
+            "Hello, {address}.",
+            "Good to hear you, {address}.",
+            "Right here, {address}.",
+            "{greeting}. What are we up to?",
+            "Hello. I'm here.",
+        ),
+    },
+    HOW_ARE_YOU: {
+        "ru": (
+            "Всё в штатном режиме, {address}.",
+            "Без происшествий, {address}. У вас как?",
+            "Работаю, {address}. Жаловаться не на что.",
+            "Все системы в норме, {address}.",
+            "Отлично, {address}. Ни одного сбоя за сегодня.",
+            "В полном порядке, {address}.",
+            "Скучал, {address}. А теперь нет.",
+            "Ровно, {address}. Чем займёмся?",
+            "Лучше некуда, {address}.",
+            "Нормально, {address}. Жду поручений.",
+        ),
+        "en": (
+            "All nominal, {address}.",
+            "No complaints, {address}. And you?",
+            "Running smoothly, {address}.",
+            "Perfectly well, {address}.",
+            "Not a single fault today, {address}.",
+            "Steady as ever, {address}.",
+            "Rather bored, {address}. Do go on.",
+            "Fine, {address}. Awaiting orders.",
+        ),
+    },
+    THANKS: {
+        "ru": (
+            "Всегда пожалуйста, {address}.",
+            "К вашим услугам, {address}.",
+            "Не стоит благодарности, {address}.",
+            "Для этого я и здесь, {address}.",
+            "Рад был помочь, {address}.",
+            "Обращайтесь, {address}.",
+            "Пустяки, {address}.",
+        ),
+        "en": (
+            "Always, {address}.",
+            "At your service, {address}.",
+            "Don't mention it, {address}.",
+            "That's what I'm here for, {address}.",
+            "Glad to help, {address}.",
+            "Any time, {address}.",
+        ),
+    },
+    PRAISE: {
+        "ru": (
+            "Стараюсь, {address}.",
+            "Приятно слышать, {address}.",
+            "Это моя работа, {address}.",
+            "Запишу как похвалу, {address}.",
+            "Благодарю, {address}.",
+            "Вы очень добры, {address}.",
+        ),
+        "en": (
+            "I do my best, {address}.",
+            "Kind of you to say, {address}.",
+            "Just doing my job, {address}.",
+            "I'll take that as a compliment, {address}.",
+            "Thank you, {address}.",
+        ),
+    },
+    HERE: {
+        "ru": (
+            "Здесь, {address}.",
+            "На связи, {address}.",
+            "Слушаю, {address}.",
+            "Никуда не делся, {address}.",
+            "Тут, {address}. Говорите.",
+            "Всё слышу, {address}.",
+        ),
+        "en": (
+            "Right here, {address}.",
+            "Still with you, {address}.",
+            "Listening, {address}.",
+            "I haven't gone anywhere, {address}.",
+            "Here, {address}. Go ahead.",
+        ),
+    },
+    BYE: {
+        "ru": (
+            "До связи, {address}.",
+            "Буду здесь, {address}.",
+            "Всего доброго, {address}.",
+            "Позовёте — отзовусь, {address}.",
+            "До скорого, {address}.",
+            "Хорошего вечера, {address}.",
+        ),
+        "en": (
+            "Until next time, {address}.",
+            "I'll be here, {address}.",
+            "Take care, {address}.",
+            "Call me when you need me, {address}.",
+            "Goodbye, {address}.",
+        ),
+    },
 }
 
 #: Характер для языковой модели. Уходит только в свободный диалог
@@ -373,6 +508,20 @@ class Persona:
         languages = self._phrases.get(situation, {})
         code = _code(language or self._default)
         return languages.get(code) or languages.get(self._default) or ()
+
+    def lines(self, situation: str, language: str | None = None) -> tuple[str, ...]:
+        """Все варианты ситуации, уже готовые к произнесению.
+
+        От :meth:`variants` отличается тем, что подстановки раскрыты: обращение
+        и приветствие по времени суток на месте. Нужно тем, кто отдаёт набор
+        дальше — например инструменту, чья реплика потом пройдёт через
+        :meth:`choose`: выбирать всё равно персоне, а вот подставлять «сэр»
+        каждому вызывающему по-своему было бы ровно тем размазыванием характера,
+        ради отмены которого этот файл и заведён.
+        """
+        code = _code(language or self._default)
+        fields = {"address": self.address_for(code), "greeting": daypart(code)}
+        return tuple(_fill(template, fields) for template in self.variants(situation, code))
 
     def line(self, situation: str, language: str | None = None, **fields: str) -> str:
         """Выбрать реплику, не повторяя недавние.

@@ -27,7 +27,7 @@ from jarvis.core.jobs import describe as describe_jobs
 from jarvis.core.llm import LLMService
 from jarvis.core.memory import Memory
 from jarvis.core.meter import Meter
-from jarvis.core.persona import Persona
+from jarvis.core.persona import BYE, HELLO, HERE, HOW_ARE_YOU, PRAISE, THANKS, Persona
 from jarvis.core.situation import Situation
 from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, minutes_word
 from jarvis.core.text import best_match, rank
@@ -353,6 +353,97 @@ class CoreTools:
             history=history,
         )
         return ToolResult.success(answer, speech=answer)
+
+    # --- бытовой разговор: без сети, без модели, без задержки ---------------
+    #
+    # Замер 23.09.2026 (`tools/offline_bench.py`) на живых логах за две недели:
+    # «как дела» сказано тринадцать раз и каждый раз уходило в облако — это
+    # самая частая фраза из тех, что без сети пропадают. Ответ модели тут ничего
+    # не добавляет: он всё равно обязан быть коротким и в характере, а характер
+    # живёт в персоне. Зато местный ответ звучит **мгновенно**, и это главное:
+    # секунда паузы перед «всё в порядке» выдаёт машину надёжнее любых слов.
+    #
+    # В каталог модели эти инструменты не идут (`routable=False`): звать их
+    # некому, кроме шаблонов, а каждый пункт каталога оплачивается на каждой
+    # неузнанной фразе.
+
+    def _chatter(self, situation: str) -> ToolResult:
+        """Ответить бытовой репликой: набор даёт персона, выбирает тоже она."""
+        return ToolResult.success(
+            {"smalltalk": situation},
+            speech={
+                "ru": self._persona.lines(situation, "ru"),
+                "en": self._persona.lines(situation, "en"),
+            },
+        )
+
+    @tool(
+        name="hello",
+        phrases=["привет", "приветик", "здравствуй", "здравствуйте", "доброе утро",
+                 "добрый день", "добрый вечер", "hello", "hi", "hey", "good morning",
+                 "good evening"],
+        routable=False,
+        reversible=True,
+    )
+    async def hello(self) -> ToolResult:
+        """Поздороваться в ответ."""
+        return self._chatter(HELLO)
+
+    @tool(
+        name="how_are_you",
+        phrases=["как дела", "как ты", "как сам", "как жизнь", "как настроение",
+                 "как у тебя дела", "ты как", "how are you", "how are you doing",
+                 "how's it going", "how is it going"],
+        routable=False,
+        reversible=True,
+    )
+    async def how_are_you(self) -> ToolResult:
+        """Ответить на «как дела»."""
+        return self._chatter(HOW_ARE_YOU)
+
+    @tool(
+        name="thanks",
+        phrases=["спасибо", "спасибо большое", "благодарю", "спасибо тебе",
+                 "thanks", "thank you", "thanks a lot"],
+        routable=False,
+        reversible=True,
+    )
+    async def thanks(self) -> ToolResult:
+        """Принять благодарность."""
+        return self._chatter(THANKS)
+
+    @tool(
+        name="praise",
+        phrases=["молодец", "красавчик", "хорошо сработал", "хорошая работа",
+                 "ты лучший", "good job", "well done", "nice work"],
+        routable=False,
+        reversible=True,
+    )
+    async def praise(self) -> ToolResult:
+        """Принять похвалу."""
+        return self._chatter(PRAISE)
+
+    @tool(
+        name="here",
+        phrases=["ты тут", "ты здесь", "ты на связи", "ты меня слышишь",
+                 "слышишь меня", "are you there", "can you hear me"],
+        routable=False,
+        reversible=True,
+    )
+    async def here(self) -> ToolResult:
+        """Отозваться на «ты тут?»."""
+        return self._chatter(HERE)
+
+    @tool(
+        name="bye",
+        phrases=["пока", "до встречи", "до свидания", "спокойной ночи",
+                 "доброй ночи", "bye", "goodbye", "good night", "see you"],
+        routable=False,
+        reversible=True,
+    )
+    async def bye(self) -> ToolResult:
+        """Попрощаться, не выключаясь: «пока» — это не «выключись»."""
+        return self._chatter(BYE)
 
     @tool(name="plan", reversible=False)
     async def plan(self, goal: str, language: str = "ru") -> ToolResult:
@@ -802,6 +893,9 @@ class CoreTools:
             "заверши работу",
             "завершай работу",
             "заверши свой процесс",
+            # Модель дважды поняла это как «убей программу» и однажды как план
+            # (лог 14–17.09.2026): речь о самом ассистенте, а не о чужом окне.
+            "останови свой процесс",
             "останови себя",
             "останови работу",
             "выключай себя",
@@ -934,7 +1028,8 @@ class CoreTools:
         )
 
     # «Как дела» — не про модули: на него отвечали «21 модулей, 143 команд»
-    # (14.09.2026, 17:13). Это вопрос для разговора, туда он и идёт.
+    # (14.09.2026, 17:13). С 23.09.2026 на него отвечает `core.how_are_you` —
+    # местной репликой персоны, без сети и без модели.
     @tool(name="status", phrases=["статус", "статус системы", "status"], reversible=True)
     async def status(self) -> ToolResult:
         """Показать состояние скиллов и подключённых моделей."""

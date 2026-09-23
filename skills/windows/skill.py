@@ -893,6 +893,29 @@ def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт то
     return cast(interface, POINTER(IAudioEndpointVolume))
 
 
+#: Модуль про паузу видео — рядом со скиллом. Загружается по пути и один раз на
+#: жизнь скилла: звать его приходится на каждой реплике, а «переподключи модуль
+#: windows» перечитывает и его вместе со скиллом.
+_MEDIA: Any = None
+
+
+def media() -> Any:
+    """Соседний модуль `media.py`: скилл грузится по файлу, без пакета."""
+    global _MEDIA
+    if _MEDIA is None:
+        import importlib.util
+        import sys
+
+        name = "jarvis_skills.windows_media"
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("media.py"))
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        _MEDIA = module
+    return _MEDIA
+
+
 # --- приглушение чужого звука ------------------------------------------------
 #
 # Микрофон у владельца встроенный, а музыка играет через колонку с сабом и
@@ -909,6 +932,11 @@ class SoundSession:
     pid: int
     name: str
     volume: float
+    #: Идёт ли звук прямо сейчас. Открытый, но поставленный на паузу плеер
+    #: Windows показывает неактивной сессией — по этому и отличаем «играет» от
+    #: «просто запущен». Нужно паузе: остановленное нами потом продолжится, а
+    #: остановленное владельцем — нет.
+    playing: bool = True
 
 
 def plan_ducking(
@@ -1047,7 +1075,11 @@ def sound_sessions() -> list[tuple[Any, SoundSession]]:
             level = float(volume.GetMasterVolume())
         except Exception:  # noqa: BLE001 — COM бросает что угодно
             continue
-        found.append((session, SoundSession(pid=pid, name=name, volume=level)))
+        # AudioSessionState: 1 — звук идёт, 0 — сессия есть, но молчит.
+        playing = int(getattr(session, "State", 1) or 0) == 1
+        found.append(
+            (session, SoundSession(pid=pid, name=name, volume=level, playing=playing))
+        )
     return found
 
 
@@ -1095,7 +1127,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.4.0",
+        version="0.5.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1151,6 +1183,24 @@ class WindowsSkill(Skill):
         #: Сколько раз ассистент начинал говорить. По нему видно, что за паузу
         #: перед возвратом громкости зазвучала новая реплика.
         self._speech_count = 0
+        #: Видео на время реплики останавливается, а не приглушается (просьба
+        #: владельца 23.09.2026): из музыки приглушение не крадёт ничего, а из
+        #: фильма крадёт кусок, и его потом отматывают руками.
+        self._pause_video = bool(ducking.get("pause_video", True))
+        self._players = tuple(
+            str(name).lower() for name in ducking.get("video_players", ()) if str(name).strip()
+        ) or media().VIDEO_PLAYERS
+        #: Кого остановили: вернуть к игре надо ровно их и никого больше.
+        self._paused: tuple[int, ...] = ()
+        #: VLC слушает только свой веб-интерфейс (замер 23.09.2026) — если
+        #: владелец его включил, останавливаем VLC через него.
+        vlc = dict(ducking.get("vlc_http", {}))
+        self._vlc = media().Vlc(
+            url=str(vlc.get("url", "http://127.0.0.1:8080")),
+            password=str(vlc.get("password", "") or ""),
+        )
+        #: Остановлен ли VLC по HTTP — его возвращать тем же путём.
+        self._vlc_paused = False
 
         if not bool(ducking.get("enabled", True)):
             self.log.debug("Приглушение звука выключено в конфиге")
@@ -1182,6 +1232,7 @@ class WindowsSkill(Skill):
         """
         self._speech_count += 1
         await self._duck()
+        await self._hold_video()
 
     async def _on_wake_word(self, event: Event) -> None:
         """Позвали по имени — убавить всё чужое и ждать команду."""
@@ -1226,6 +1277,50 @@ class WindowsSkill(Skill):
             self.log.debug("Снова говорю — громкость пока не возвращаю")
             return
         await self._restore()
+
+    async def _hold_video(self) -> None:
+        """Остановить видео на время реплики.
+
+        Приглушение при этом не отменяется: если плеер команду не понял (а
+        понимают её не все), останется хотя бы тихий звук — ровно то, что было
+        до 23.09.2026. Ставить паузу на одном лишь имени ассистента незачем:
+        владелец говорит поверх фильма сам, а перебивает его ответ.
+        """
+        if not self._pause_video or self._paused:
+            return
+        try:
+            sessions = [described for _, described in sound_sessions()]
+        except Exception as exc:  # noqa: BLE001 — нет pycaw или COM не в духе
+            self.log.debug("Не посмотрел, играет ли видео: %s", exc)
+            return
+        found = media().plan_pausing(sessions, own_pids={os.getpid()}, players=self._players)
+        if not found:
+            return
+        if self._vlc.ready and any(
+            media().is_video_player(s.name, ("vlc",)) for s in sessions if s.pid in found
+        ):
+            # VLC обычным сообщением не останавливается — только своим HTTP.
+            self._vlc_paused = await asyncio.to_thread(self._vlc.pause)
+        sent = await asyncio.to_thread(media().pause, set(found))
+        if not sent and not self._vlc_paused:
+            # Окон нет — команде некуда прийти. Молча забыть нельзя: иначе на
+            # «возврате» мы решим, что снимаем с паузы то, что сами не ставили.
+            self.log.debug("Видео нашёл, а окна нет — паузу не ставлю")
+            return
+        self._paused = found
+        names = ", ".join(sorted({s.name for s in sessions if s.pid in found}))
+        self.log.info("Ставлю видео на паузу на время реплики: %s", names)
+
+    async def _release_video(self) -> None:
+        """Вернуть видео к игре. Возвращаем ровно то, что сами остановили."""
+        if not self._paused and not self._vlc_paused:
+            return
+        paused, self._paused = self._paused, ()
+        if self._vlc_paused:
+            self._vlc_paused = False
+            await asyncio.to_thread(self._vlc.play)
+        sent = await asyncio.to_thread(media().play, set(paused))
+        self.log.debug("Видео снял с паузы: %d окон", sent)
 
     async def _duck(self) -> None:
         """Убавить громкость всем, кроме себя."""
@@ -1375,6 +1470,9 @@ class WindowsSkill(Skill):
             self._duck_timer.cancel()
             self._duck_timer = None
         self._awaiting_command = False
+        # Пауза снимается первой и безусловно: остановленное навсегда видео —
+        # худший исход из всех возможных, хуже навсегда приглушённой музыки.
+        await self._release_video()
         saved = dict(self._ducked)
         if not saved:
             return

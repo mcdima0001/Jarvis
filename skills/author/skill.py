@@ -711,7 +711,8 @@ class AuthorSkill(Skill):
         except OSError:
             pass
 
-    @tool(phrases=["какие черновики", "что написано", "what drafts"], reversible=True)
+    @tool(phrases=["какие черновики", "что написано", "что в черновиках",
+                   "что там в черновиках", "what drafts"], reversible=True)
     async def drafts(self) -> ToolResult:
         """Показать скиллы, написанные и ждущие одобрения."""
         names = draft_names(self._root)
