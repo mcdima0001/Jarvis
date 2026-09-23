@@ -947,22 +947,36 @@ def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт то
 #: жизнь скилла: звать его приходится на каждой реплике, а «переподключи модуль
 #: windows» перечитывает и его вместе со скиллом.
 _MEDIA: Any = None
+#: То же для модуля про питание и память.
+_POWER: Any = None
+
+
+def power() -> Any:
+    """Соседний модуль `power.py`: питание, память, клавиши."""
+    global _POWER
+    if _POWER is None:
+        _POWER = _sibling("power.py", "jarvis_skills.windows_power")
+    return _POWER
+
+
+def _sibling(filename: str, name: str) -> Any:
+    """Загрузить модуль рядом со скиллом: скилл грузится по файлу, без пакета."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def media() -> Any:
     """Соседний модуль `media.py`: скилл грузится по файлу, без пакета."""
     global _MEDIA
     if _MEDIA is None:
-        import importlib.util
-        import sys
-
-        name = "jarvis_skills.windows_media"
-        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("media.py"))
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-        _MEDIA = module
+        _MEDIA = _sibling("media.py", "jarvis_skills.windows_media")
     return _MEDIA
 
 
@@ -1177,7 +1191,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.6.0",
+        version="0.7.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1207,6 +1221,8 @@ class WindowsSkill(Skill):
         #: процессом, который сейчас в фокусе, честно встаёт позади.
         self._focus_launched = bool(self.context.setting("focus_launched", True))
         self._focus_wait = float(self.context.setting("focus_wait_s", FOCUS_WAIT_S))
+        #: Какая схема питания была до того, как мы её сменили.
+        self._plan_before = ""
         self._rebuild()
         self._setup_ducking()
 
@@ -1962,6 +1978,121 @@ class WindowsSkill(Skill):
             )
             return
         self.log.debug("Новое окно %s за %.0f с не появилось", name, self._focus_wait)
+
+    # --- питание, память, клавиши ------------------------------------------
+    #
+    # Появились ради игрового режима (23.09.2026), но самого «игрового режима»
+    # как подсистемы нет и не нужно: он собирается протоколом из этих же шагов.
+
+    @tool(
+        phrases=["схема питания {mode}", "поставь питание {mode}",
+                 "режим питания {mode}", "power plan {mode}"],
+        reversible=False,
+    )
+    async def set_power_plan(self, mode: str = "") -> ToolResult:
+        """Переключить схему электропитания: производительность, баланс, экономия.
+
+        Прежняя запоминается, и «верни схему питания» возвращает именно её, а не
+        «сбалансированную» наугад: у человека схема бывает своя.
+
+        :param mode: как её называют вслух — «производительность», «экономия».
+        """
+        wanted = power().PLAN_WORDS.get(mode.strip().lower(), "")
+        if not wanted:
+            known = ", ".join(sorted(set(power().PLAN_WORDS.values())))
+            return ToolResult.failure(
+                f"неизвестная схема питания {mode!r}; знаю: {known}",
+                speech={"ru": f"Не знаю схему питания «{mode}».",
+                        "en": f"I don't know the power plan {mode}."},
+            )
+        was = await asyncio.to_thread(power().power_plan, power().POWER_PLANS[wanted])
+        if not was:
+            return ToolResult.failure(
+                "powercfg не ответил",
+                speech={"ru": "Не получилось сменить схему питания.",
+                        "en": "Couldn't change the power plan."},
+            )
+        if power().POWER_PLANS[wanted] != was:
+            # Запоминаем только настоящую прежнюю: два переключения подряд не
+            # должны стереть то, к чему возвращаться.
+            self._plan_before = was
+        self.log.info("Схема питания: %s (была %s)", wanted, was)
+        return ToolResult.success(
+            {"plan": wanted, "was": was},
+            speech={"ru": (f"Питание — {mode}.", f"Схема питания: {mode}."),
+                    "en": (f"Power plan: {mode}.",)},
+        )
+
+    @tool(
+        phrases=["верни схему питания", "верни питание", "схема питания как была",
+                 "restore power plan"],
+        reversible=False,
+    )
+    async def restore_power_plan(self) -> ToolResult:
+        """Вернуть ту схему питания, что была до переключения."""
+        if not self._plan_before:
+            return ToolResult.success(
+                {},
+                speech={"ru": "Схему питания я не менял.", "en": "I haven't changed the power plan."},
+            )
+        await asyncio.to_thread(power().power_plan, self._plan_before)
+        self.log.info("Схема питания возвращена: %s", self._plan_before)
+        self._plan_before = ""
+        return ToolResult.success(
+            {"restored": True},
+            speech={"ru": ("Питание как было.", "Схему питания вернул."),
+                    "en": ("Power plan restored.",)},
+        )
+
+    @tool(
+        phrases=["что ест память", "кто ест память", "кто ест озу",
+                 "что занимает память", "what eats memory", "memory hogs"],
+        reversible=True,
+    )
+    async def memory_hogs(self, top: int = 3) -> ToolResult:
+        """Сказать, какие программы держат больше всего памяти.
+
+        Рядом с `hogs` про процессор и по той же причине: «ноутбук тормозит» —
+        это чаще про память, чем про такты (замер 23.09.2026: у Jarvis 0.6%
+        процессора и два гигабайта памяти).
+
+        :param top: сколько программ назвать.
+        """
+        sizes = await asyncio.to_thread(power().memory_of, None)
+        if not sizes:
+            return ToolResult.failure(
+                "psutil недоступен — память не посчитать",
+                speech={"ru": "Не смог посмотреть память.", "en": "Couldn't check memory."},
+            )
+        names = dict(self.context.setting("spoken_programs", {}) or {})
+        best = sorted(sizes.items(), key=lambda item: -item[1])[: max(1, top)]
+        said = ", ".join(
+            f"{power().spoken_name(name, names)} {size:.1f}" for name, size in best
+        )
+        return ToolResult.success(
+            dict(best),
+            speech={"ru": f"Память держат: {said} гигабайт.",
+                    "en": f"Memory: {said} gigabytes."},
+        )
+
+    @tool(routable=False, reversible=False)
+    async def press_keys(self, combination: str) -> ToolResult:
+        """Нажать сочетание клавиш за человека — например, включить OSD.
+
+        В каталог модели не идёт намеренно: это не команда, а рычаг для шага
+        протокола. У Afterburner и RTSS своей ручки для OSD нет (общая память,
+        из которой мы читаем графики, только на чтение), зато есть горячая
+        клавиша — её и нажимаем.
+
+        :param combination: например «ctrl+alt+o».
+        """
+        if not await asyncio.to_thread(power().press, combination):
+            return ToolResult.failure(
+                f"не разобрал сочетание {combination!r}",
+                speech={"ru": "Не понял, какие клавиши нажать.", "en": "I didn't get the hotkey."},
+            )
+        self.log.info("Нажал %s", combination)
+        return ToolResult.success({"pressed": combination})
 
     @tool(phrases=["заблокируй компьютер", "заблокируй пк", "заблокируй экран",
                    "заблокируй ноутбук", "заблокируй комп", "заблокируй",

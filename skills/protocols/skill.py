@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from jarvis.core.contracts import ToolResult, Utterance
@@ -36,31 +37,78 @@ PAUSE_S = 0.5
 OWN_PREFIX = "protocols."
 #: Сколько шагов в протоколе — предел здравого смысла и защита от опечатки в YAML.
 MAX_STEPS = 20
+#: Как часто смотреть, не появился ли повод (запущенная игра, например).
+WATCH_EVERY_S = 3.0
 
 
-def parse_protocols(raw: object) -> dict[str, list[str | dict[str, Any]]]:
-    """Прочитать протоколы из настроек: имя → шаги.
+def parse_steps(raw: object) -> list[str | dict[str, Any]]:
+    """Шаги протокола: строки-фразы и записи ``{tool, args}``.
 
-    Шаг — строка-фраза или словарь ``{tool, args}``. Всё прочее отбрасывается:
-    сломанный шаг в YAML не должен ронять загрузку скилла.
+    Сломанный шаг отбрасывается молча: опечатка в YAML не должна ронять
+    загрузку скилла и уносить с собой остальные протоколы.
+    """
+    if not isinstance(raw, Sequence) or isinstance(raw, str):
+        return []
+    clean: list[str | dict[str, Any]] = []
+    for step in list(raw)[:MAX_STEPS]:
+        if isinstance(step, str) and step.strip():
+            clean.append(step.strip())
+        elif isinstance(step, Mapping) and str(step.get("tool", "")).strip():
+            args = step.get("args")
+            clean.append({
+                "tool": str(step["tool"]).strip(),
+                "args": dict(args) if isinstance(args, Mapping) else {},
+            })
+    return clean
+
+
+def parse_protocols(raw: object) -> dict[str, "Protocol"]:
+    """Прочитать протоколы из настроек: имя → протокол.
+
+    Записывается протокол двумя способами. Короткий — просто список шагов, как
+    было с самого начала. Полный — со словом «когда»: шаги, которые запускаются
+    сами, и шаги «после», которые вернут всё обратно.
     """
     if not isinstance(raw, Mapping):
         return {}
-    found: dict[str, list[str | dict[str, Any]]] = {}
-    for name, steps in raw.items():
-        if not isinstance(steps, Sequence) or isinstance(steps, str):
-            continue
-        clean: list[str | dict[str, Any]] = []
-        for step in list(steps)[:MAX_STEPS]:
-            if isinstance(step, str) and step.strip():
-                clean.append(step.strip())
-            elif isinstance(step, Mapping) and str(step.get("tool", "")).strip():
-                args = step.get("args")
-                clean.append({"tool": str(step["tool"]).strip(), "args": dict(args) if isinstance(args, Mapping) else {}})
+    found: dict[str, Protocol] = {}
+    for name, body in raw.items():
         key = " ".join(str(name).split()).lower().strip("«»\"' ")
-        if key and clean:
-            found[key] = clean
+        if not key:
+            continue
+        if isinstance(body, Mapping):
+            steps = parse_steps(body.get("steps"))
+            after = parse_steps(body.get("after"))
+            when = body.get("when")
+            watch = tuple(
+                str(item).lower() for item in (when or {}).get("process", ())
+                if isinstance(when, Mapping) and str(item).strip()
+            )
+        else:
+            steps, after, watch = parse_steps(body), [], ()
+        if steps or after:
+            found[key] = Protocol(name=key, steps=steps, after=after, processes=watch)
     return found
+
+
+@dataclass(frozen=True, slots=True)
+class Protocol:
+    """Протокол: что сделать, чем это отменить и по какому поводу запускать.
+
+    Повод — имена процессов (`when.process`). Именно они, а не полноэкранное
+    окно: полный экран — признак обманчивый, так же выглядит фильм, и протокол
+    срабатывал бы посреди кино.
+    """
+
+    name: str
+    steps: list[str | dict[str, Any]]
+    after: list[str | dict[str, Any]]
+    processes: tuple[str, ...] = ()
+
+    @property
+    def watched(self) -> bool:
+        """Запускается ли сам."""
+        return bool(self.processes)
 
 
 def step_label(step: str | Mapping[str, Any]) -> str:
@@ -74,7 +122,7 @@ class ProtocolsSkill(Skill):
     meta = SkillMeta(
         name="protocols",
         description="Протоколы: одна фраза — набор действий",
-        version="0.1.0",
+        version="0.2.0",
         spoken=("протоколы", "protocols"),
     )
 
@@ -86,11 +134,79 @@ class ProtocolsSkill(Skill):
         # и их шаблоны должны быть видны, когда протокол запускают, а не когда
         # этот скилл поднялся.
         self._phrases = PhraseResolver(self.tools)
+        #: Как часто смотреть, не появился ли повод, и смотреть ли вообще.
+        self._every = max(1.0, float(self.context.setting("watch_every_s", WATCH_EVERY_S)))
+        self._watch = bool(self.context.setting("watch", True))
+        #: Какой протокол сейчас «идёт» и из-за какого процесса.
+        self._active: dict[str, str] = {}
         self.log.info("Протоколов: %d (%s)", len(self._protocols), ", ".join(self._protocols) or "пусто")
+
+    async def on_start(self) -> None:
+        """Начать смотреть за теми протоколами, у которых есть повод."""
+        watched = [item for item in self._protocols.values() if item.watched]
+        if watched and self._watch:
+            self.context.scope.spawn(self._watching(watched), name="protocols-watch")
+            self.log.info(
+                "Слежу за поводами: %s", ", ".join(f"{item.name} ({len(item.processes)})" for item in watched)
+            )
 
     async def health(self) -> HealthStatus:
         """Протоколов может и не быть — это не поломка."""
         return HealthStatus.healthy()
+
+    # --- протокол, который запускается сам ---------------------------------
+
+    async def _watching(self, watched: list[Protocol]) -> None:
+        """Раз в несколько секунд смотреть, не появился ли повод.
+
+        Список процессов стоит миллисекунды, а заметить запуск игры хочется до
+        того, как загрузится уровень.
+        """
+        running = self._processes()
+        if running is None:
+            self.log.warning("Нет psutil — протоколы по поводу работать не будут")
+            return
+        while True:
+            await asyncio.sleep(self._every)
+            try:
+                await self._look(watched, running)
+            except Exception:  # noqa: BLE001 — наблюдатель не должен падать молча
+                self.log.exception("Проверка повода сорвалась")
+
+    async def _look(self, watched: list[Protocol], running: Any) -> None:
+        """Одна проверка: повод появился или пропал."""
+        for item in watched:
+            found = await asyncio.to_thread(running, item.processes)
+            was = self._active.get(item.name, "")
+            if found and not was:
+                self._active[item.name] = sorted(found)[0]
+                self.log.info("Повод для «%s»: %s", item.name, self._active[item.name])
+                await self._carry_out(item.name, item.steps)
+            elif was and was not in found:
+                self._active.pop(item.name, None)
+                self.log.info("Повод для «%s» пропал: %s закрылся", item.name, was)
+                if item.after:
+                    await self._carry_out(f"{item.name} (отбой)", item.after)
+
+    def _processes(self) -> Any:
+        """Чем смотреть за процессами. Живёт в скилле `windows` — Windows-only."""
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "windows" / "power.py"
+        if not path.exists():
+            return None
+        name = "jarvis_skills.windows_power"
+        module = sys.modules.get(name)
+        if module is None:
+            spec = importlib.util.spec_from_file_location(name, path)
+            if spec is None or spec.loader is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
+        return getattr(module, "running", None)
 
     @tool(
         phrases=["протокол {name}", "запусти протокол {name}", "включи протокол {name}",
@@ -114,7 +230,10 @@ class ProtocolsSkill(Skill):
                 },
             )
 
-        steps = self._protocols[found]
+        return await self._carry_out(found, self._protocols[found].steps)
+
+    async def _carry_out(self, found: str, steps: list[Any]) -> ToolResult:
+        """Выполнить шаги по очереди и доложить, что не вышло."""
         done: list[str] = []
         failed: list[str] = []
         for index, step in enumerate(steps):

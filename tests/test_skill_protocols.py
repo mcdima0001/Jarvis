@@ -84,7 +84,29 @@ def test_broken_steps_are_dropped_not_fatal() -> None:
         "пусто": [],
         "строка": "открой телеграм",
     })
-    assert found == {"работа": ["открой телеграм", {"tool": "studio.volume", "args": {"level": 30}}]}
+    assert list(found) == ["работа"]
+    assert found["работа"].steps == ["открой телеграм", {"tool": "studio.volume", "args": {"level": 30}}]
+    assert not found["работа"].watched, "без «когда» протокол запускают голосом"
+
+
+def test_a_protocol_can_say_when_it_starts_itself() -> None:
+    """Повод — запущенная программа: «игру запустил» и есть команда (23.09.2026)."""
+    found = protocols.parse_protocols({
+        "игра": {
+            "when": {"process": ["javaw.exe", "PrismLauncher.exe"]},
+            "steps": ["тихий режим", "схема питания производительность"],
+            "after": ["как обычно", "верни схему питания"],
+        },
+    })
+    game = found["игра"]
+    assert game.watched and game.processes == ("javaw.exe", "prismlauncher.exe")
+    assert game.steps[0] == "тихий режим"
+    assert game.after[-1] == "верни схему питания"
+
+
+def test_a_trigger_without_steps_is_not_a_protocol() -> None:
+    """Пустой протокол с поводом — это опечатка, а не «ничего не делать»."""
+    assert protocols.parse_protocols({"пусто": {"when": {"process": ["game.exe"]}}}) == {}
 
 
 async def test_protocol_runs_phrases_and_tools_in_order() -> None:
@@ -120,3 +142,31 @@ async def test_unknown_protocol_says_what_exists(settings: dict[str, Any], expec
     skill, _, registry = await _skill(settings)
     result = await registry.invoke("protocols.run", {"name": "отпуск"})
     assert not result.ok and (result.speech_for("ru") or "").startswith(expected)
+
+
+async def test_a_watched_protocol_runs_itself_and_unwinds_afterwards() -> None:
+    """Игру запустили — шаги пошли; игру закрыли — пошли шаги «после»."""
+    skill, studio, registry = await _skill({
+        "pause_s": 0,
+        "protocols": {
+            "игра": {
+                "when": {"process": ["javaw.exe"]},
+                "steps": [{"tool": "studio.volume", "args": {"level": 10}}],
+                "after": [{"tool": "studio.volume", "args": {"level": 50}}],
+            },
+        },
+    })
+    game = skill._protocols["игра"]
+    running = {"javaw.exe"}
+
+    seen = lambda names: {name for name in names if name in running}  # noqa: E731
+
+    await skill._look([game], seen)
+    assert studio.calls == [("volume", {"level": 10})], "игра началась — шаги выполнились"
+
+    await skill._look([game], seen)
+    assert len(studio.calls) == 1, "пока игра идёт, протокол не перезапускается"
+
+    running.clear()
+    await skill._look([game], seen)
+    assert studio.calls[-1] == ("volume", {"level": 50}), "игра закрылась — вернули как было"
