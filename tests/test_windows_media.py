@@ -99,6 +99,14 @@ def test_vlc_pause_is_believed_only_when_vlc_says_it_paused(monkeypatch) -> None
     assert not vlc.pause(), "не ответил — значит не остановлен"
 
 
+def test_a_file_named_paused_does_not_fool_us(monkeypatch) -> None:
+    """Разбираем поле, а не ищем слово: в названии файла бывает что угодно."""
+    vlc = media.Vlc(password="secret")
+    answer = "<root><state>playing</state><info name='filename'>paused.mkv</info></root>"
+    monkeypatch.setattr(vlc, "_ask", lambda command="": answer)
+    assert not vlc.pause(), "VLC ответил, что всё ещё играет"
+
+
 def test_vlc_state_is_read_from_its_answer(monkeypatch) -> None:
     vlc = media.Vlc(password="secret")
     monkeypatch.setattr(vlc, "_ask", lambda command="": "<root><state>playing</state></root>")

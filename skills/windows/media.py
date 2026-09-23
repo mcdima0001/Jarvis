@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Container, Iterable, Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,11 @@ class Vlc:
         self._url = url.rstrip("/")
         self._password = password
         self._timeout = timeout
+        #: Соединение держим одно. Замер 23.09.2026: запрос по готовому
+        #: соединению идёт 0.05 с, а с созданием клиента на каждый раз — целую
+        #: секунду. Пауза ставится посреди начинающейся реплики, и секунда тут
+        #: — это ровно тот кусок фильма, ради которого всё и затевалось.
+        self._client: Any | None = None
 
     @property
     def ready(self) -> bool:
@@ -178,30 +184,49 @@ class Vlc:
         import httpx
 
         try:
-            response = httpx.get(
+            if self._client is None:
+                # trust_env=False: локальному VLC системный прокси не нужен, а
+                # разбор переменных окружения стоит времени на каждом клиенте.
+                self._client = httpx.Client(
+                    auth=("", self._password), timeout=self._timeout, trust_env=False
+                )
+            response = self._client.get(
                 f"{self._url}/requests/status.xml",
                 params={"command": command} if command else None,
-                auth=("", self._password),
-                timeout=self._timeout,
             )
             response.raise_for_status()
         except Exception as exc:  # noqa: BLE001 — чужая служба, своя работа важнее
             logger.debug("VLC не ответил по HTTP: %s: %s", type(exc).__name__, exc)
+            self.close()
             return ""
         return response.text
 
-    def state(self) -> str:
-        """«playing», «paused», «stopped» или пусто, если не достучались."""
-        text = self._ask()
+    def close(self) -> None:
+        """Отпустить соединение: следующий запрос откроет новое."""
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 — закрываем на всякий случай
+                pass
+
+    @staticmethod
+    def _state_of(text: str) -> str:
+        """Состояние из ответа VLC. Разбираем поле, а не ищем слово в тексте:
+        название файла вполне может содержать «paused»."""
         start = text.find("<state>")
         if start < 0:
             return ""
         return text[start + 7 : text.find("</state>", start)].strip()
 
+    def state(self) -> str:
+        """«playing», «paused», «stopped» или пусто, если не достучались."""
+        return self._state_of(self._ask())
+
     def pause(self) -> bool:
         """Остановить. ``False`` — не вышло, пусть работает прежний способ."""
-        return self.ready and "paused" in self._ask("pl_forcepause")
+        return self.ready and self._state_of(self._ask("pl_forcepause")) == "paused"
 
     def play(self) -> bool:
         """Продолжить."""
-        return self.ready and "playing" in self._ask("pl_forceresume")
+        return self.ready and self._state_of(self._ask("pl_forceresume")) == "playing"
