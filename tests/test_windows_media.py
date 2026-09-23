@@ -127,3 +127,20 @@ def test_a_new_window_is_the_one_that_was_not_there_before() -> None:
              if handle not in before and title}
     assert fresh == {33: "Prism Launcher"}
     assert skill.FOCUS_WAIT_S >= 5, "лаунчеры рисуют окно не сразу"
+
+
+# --- оверлей RivaTuner -------------------------------------------------------
+
+
+def test_no_rivatuner_is_not_a_crash(tmp_path) -> None:
+    """RTSS стоит не у всех, а скилл обязан работать и без него."""
+    osd = _load("osd")
+    missing = tmp_path / "RTSSHooks64.dll"
+    assert osd.visible(missing) is None
+    assert not osd.show(True, missing)
+
+
+def test_the_overlay_bit_is_the_lowest_one() -> None:
+    """Проверено на живой машине владельца: флаги 0x0 → 0x1 включают оверлей."""
+    osd = _load("osd")
+    assert osd.OSD_VISIBLE == 0x1

@@ -949,6 +949,16 @@ def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт то
 _MEDIA: Any = None
 #: То же для модуля про питание и память.
 _POWER: Any = None
+#: И для оверлея RivaTuner.
+_OSD: Any = None
+
+
+def osd() -> Any:
+    """Соседний модуль `osd.py`: оверлей RivaTuner."""
+    global _OSD
+    if _OSD is None:
+        _OSD = _sibling("osd.py", "jarvis_skills.windows_osd")
+    return _OSD
 
 
 def power() -> Any:
@@ -1191,7 +1201,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.7.0",
+        version="0.8.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -2073,6 +2083,52 @@ class WindowsSkill(Skill):
             dict(best),
             speech={"ru": f"Память держат: {said} гигабайт.",
                     "en": f"Memory: {said} gigabytes."},
+        )
+
+    @tool(
+        phrases=["включи оверлей", "покажи оверлей", "покажи счётчик кадров",
+                 "покажи фпс", "show overlay", "show fps"],
+        reversible=True,
+    )
+    async def overlay_on(self) -> ToolResult:
+        """Показать оверлей RivaTuner — тот самый счётчик кадров поверх игры."""
+        return await self._overlay(True)
+
+    @tool(
+        phrases=["выключи оверлей", "убери оверлей", "убери счётчик кадров",
+                 "убери фпс", "hide overlay", "hide fps"],
+        reversible=True,
+    )
+    async def overlay_off(self) -> ToolResult:
+        """Убрать оверлей RivaTuner."""
+        return await self._overlay(False)
+
+    async def _overlay(self, on: bool) -> ToolResult:
+        """Задать видимость оверлея — именно задать, а не переключить.
+
+        Переключатель рассинхронизируется на первой же осечке: не дошло — и
+        дальше «включи» начинает выключать. Поэтому состояние читается.
+        """
+        path = str(self.context.setting("rtss_dll", "") or "")
+        where = Path(path) if path else osd().RTSS_DLL
+        if osd().visible(where) is None:
+            return ToolResult.failure(
+                "RivaTuner не найден или не запущен",
+                speech={"ru": "Не нашёл RivaTuner — оверлеем управлять нечем.",
+                        "en": "I couldn't find RivaTuner."},
+            )
+        if not await asyncio.to_thread(osd().show, on, where):
+            return ToolResult.failure(
+                "RTSS не принял команду",
+                speech={"ru": "Оверлей не переключился.", "en": "The overlay didn't switch."},
+            )
+        self.log.info("Оверлей %s", "включён" if on else "выключен")
+        return ToolResult.success(
+            {"overlay": on},
+            speech={
+                "ru": ("Оверлей включён.", "Показал счётчик.") if on else ("Оверлей убрал.", "Счётчик спрятал."),
+                "en": ("Overlay on.",) if on else ("Overlay off.",),
+            },
         )
 
     @tool(routable=False, reversible=False)
