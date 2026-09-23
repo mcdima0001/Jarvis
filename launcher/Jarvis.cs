@@ -48,10 +48,22 @@ internal static class Launcher
             arguments.Append(' ').Append(Quote(arg));
         }
 
-        ProcessStartInfo info = new ProcessStartInfo(python, arguments.ToString());
+        // В диспетчере задач процесс подписан «Python», и владелец просил
+        // называть его Джарвисом (23.09.2026). Рядом с проектом лежит копия
+        // интерпретатора с переписанным описанием — `JarvisHost.exe`, её и
+        // запускаем. Стандартную библиотеку она ищет рядом с собой, поэтому ей
+        // нужен PYTHONHOME: папку мы и так знаем — нашли настоящий pythonw.
+        string host = Path.Combine(root, "JarvisHost.exe");
+        bool renamed = File.Exists(host);
+
+        ProcessStartInfo info = new ProcessStartInfo(renamed ? host : python, arguments.ToString());
         info.WorkingDirectory = root;
         info.UseShellExecute = false;
         info.CreateNoWindow = true;
+        if (renamed)
+        {
+            info.EnvironmentVariables["PYTHONHOME"] = Path.GetDirectoryName(python);
+        }
         try
         {
             Process.Start(info);

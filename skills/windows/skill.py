@@ -659,6 +659,12 @@ _WM_CLOSE = 0x0010
 #: ShowWindow: развернуть свёрнутое окно, не трогая уже развёрнутое.
 _SW_RESTORE = 9
 
+#: Как часто заглядывать, не появилось ли окно запущенной программы.
+FOCUS_STEP_S = 0.3
+#: Сколько всего его ждать. Лаунчеры (Prism, Steam) рисуют окно не сразу, а
+#: висеть дольше незачем: через десять секунд человек уже сам щёлкнул мышкой.
+FOCUS_WAIT_S = 10.0
+
 
 def enum_windows() -> list[tuple[int, str]]:
     """Видимые окна системы: номер процесса и заголовок.
@@ -831,7 +837,6 @@ def raise_window(title: str) -> bool:
     from ctypes import wintypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     target: int | None = None
 
@@ -854,8 +859,24 @@ def raise_window(title: str) -> bool:
     if target is None:
         return False
 
-    user32.ShowWindow(target, _SW_RESTORE)
-    if user32.SetForegroundWindow(target):
+    return bring_to_front(target)
+
+
+def bring_to_front(handle: int) -> bool:
+    """Поднять окно с этим номером на передний план.
+
+    Windows не даёт программе перехватывать фокус просто так — иначе окна
+    дрались бы за него. Обходной приём стандартный: на время вызова свой поток
+    ввода привязывается к потоку того окна, что сейчас впереди, и запрет
+    снимается. Прав администратора это не требует и не заменяет.
+    """
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    user32.ShowWindow(handle, _SW_RESTORE)
+    if user32.SetForegroundWindow(handle):
         return True
 
     foreground = user32.GetForegroundWindow()
@@ -863,10 +884,39 @@ def raise_window(title: str) -> bool:
     ours = kernel32.GetCurrentThreadId()
     user32.AttachThreadInput(ours, theirs, True)
     try:
-        user32.BringWindowToTop(target)
-        return bool(user32.SetForegroundWindow(target))
+        user32.BringWindowToTop(handle)
+        return bool(user32.SetForegroundWindow(handle))
     finally:
         user32.AttachThreadInput(ours, theirs, False)
+
+
+def window_handles() -> dict[int, str]:
+    """Видимые подписанные окна: номер окна -> заголовок.
+
+    Нужно, чтобы поймать **новое** окно: у только что запущенной программы
+    заголовок заранее неизвестен, а вот то, что его не было секунду назад, —
+    признак надёжный.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found: dict[int, str] = {}
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(handle: int, _: int) -> bool:
+        if not user32.IsWindowVisible(handle):
+            return True
+        length = user32.GetWindowTextLengthW(handle)
+        if length <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(handle, buffer, length + 1)
+        found[int(handle)] = buffer.value
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
 
 
 def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт только в pycaw
@@ -1127,7 +1177,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.5.1",
+        version="0.6.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1152,6 +1202,11 @@ class WindowsSkill(Skill):
             },
         }
         self._catalog: dict[str, str] = {}
+        #: Выводить ли запущенную программу вперёд (просьба владельца
+        #: 23.09.2026). Windows сама этого не делает: окно, открытое не тем
+        #: процессом, который сейчас в фокусе, честно встаёт позади.
+        self._focus_launched = bool(self.context.setting("focus_launched", True))
+        self._focus_wait = float(self.context.setting("focus_wait_s", FOCUS_WAIT_S))
         self._rebuild()
         self._setup_ducking()
 
@@ -1841,6 +1896,9 @@ class WindowsSkill(Skill):
             )
 
         name, target = found
+        # Какие окна были до запуска: новое окно ищется вычитанием (просьба
+        # владельца 23.09.2026 — «чтобы запущенное сразу было в фокусе»).
+        before = set(window_handles()) if self._focus_launched else set()
         try:
             # Ни shell=True, ни строки-команды: только конкретный путь или URI,
             # который мы сами нашли в каталоге.
@@ -1856,6 +1914,14 @@ class WindowsSkill(Skill):
             )
 
         self.log.info("Запущено%s: %s (%s)", " с правами администратора" if elevated else "", name, target)
+        if self._focus_launched and not self.context.modes.active("quiet"):
+            # Фоном, а не здесь: программа поднимается секундами, а «Запускаю
+            # Steam» должно прозвучать сразу — молчащий ассистент неотличим от
+            # зависшего, и команду повторяют.
+            #
+            # В тихом режиме в фокус не лезем вовсе: вырвать человека из
+            # полноэкранной игры хуже, чем оставить окно позади.
+            self.context.scope.spawn(self._focus_new(name, before), name="windows-focus")
         if elevated:
             return ToolResult.success(
                 {"program": name, "target": target, "elevated": True},
@@ -1869,6 +1935,33 @@ class WindowsSkill(Skill):
                 "en": (f"Launching {name}.", f"Starting {name}.", f"{name}, coming up."),
             },
         )
+
+    async def _focus_new(self, name: str, before: set[int]) -> None:
+        """Дождаться окна запущенной программы и вывести его вперёд.
+
+        Заголовок заранее неизвестен — у одной и той же программы он меняется
+        от открытого файла, — поэтому ищем **новое** окно: то, которого секунду
+        назад не было. Ждём с запасом: лаунчеры и тяжёлые программы рисуют окно
+        далеко не сразу.
+
+        Ошибиться тут можно только в одну сторону — поднять чужое окно,
+        открывшееся в ту же секунду. Поэтому берём **первое** новое и на этом
+        останавливаемся, а не гоняемся за каждым следующим.
+        """
+        deadline = time.monotonic() + self._focus_wait
+        while time.monotonic() < deadline:
+            await asyncio.sleep(FOCUS_STEP_S)
+            fresh = {handle: title for handle, title in window_handles().items()
+                     if handle not in before and title}
+            if not fresh:
+                continue
+            handle, title = next(iter(fresh.items()))
+            raised = await asyncio.to_thread(bring_to_front, handle)
+            self.log.info(
+                "Окно %r %s", title, "вывел вперёд" if raised else "поднять не дала Windows"
+            )
+            return
+        self.log.debug("Новое окно %s за %.0f с не появилось", name, self._focus_wait)
 
     @tool(phrases=["заблокируй компьютер", "заблокируй пк", "заблокируй экран",
                    "заблокируй ноутбук", "заблокируй комп", "заблокируй",

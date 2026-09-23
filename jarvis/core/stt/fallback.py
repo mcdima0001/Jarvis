@@ -113,6 +113,20 @@ class FallbackSTT:
         await self._backup.start()
         self._backup_ready = True
 
+    async def release_backup(self) -> bool:
+        """Отпустить местную модель: она держит память до конца сеанса.
+
+        Нужно тихому режиму (`core/thrift.py`): в игре полгигабайта, которые
+        ждут следующего обрыва связи, — плохая сделка. Поднимется снова сама,
+        той же ленью, ценой одной фразы.
+        """
+        if not self._backup_ready:
+            return False
+        await self._backup.stop()
+        self._backup_ready = False
+        logger.info("Местное распознавание отпущено — память вернулась машине")
+        return True
+
     def open_stream(self, *, sample_rate: int = 16000) -> STTStream | None:
         """Поток — только у основного и только пока он не в блокировке после отказа.
 

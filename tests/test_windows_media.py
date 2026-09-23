@@ -113,3 +113,17 @@ def test_vlc_state_is_read_from_its_answer(monkeypatch) -> None:
     assert vlc.state() == "playing"
     monkeypatch.setattr(vlc, "_ask", lambda command="": "")
     assert vlc.state() == ""
+
+
+# --- фокус запущенной программы ----------------------------------------------
+
+
+def test_a_new_window_is_the_one_that_was_not_there_before() -> None:
+    """Заголовок запущенной программы заранее неизвестен, а новизна окна — нет."""
+    skill = _load("skill")
+    before = {11: "Minecraft", 22: "Проводник"}
+    now = {11: "Minecraft", 22: "Проводник", 33: "Prism Launcher"}
+    fresh = {handle: title for handle, title in now.items()
+             if handle not in before and title}
+    assert fresh == {33: "Prism Launcher"}
+    assert skill.FOCUS_WAIT_S >= 5, "лаунчеры рисуют окно не сразу"

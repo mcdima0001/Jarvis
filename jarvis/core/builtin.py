@@ -29,8 +29,9 @@ from jarvis.core.memory import Memory
 from jarvis.core.meter import Meter
 from jarvis.core.persona import BYE, HELLO, HERE, HOW_ARE_YOU, PRAISE, THANKS, Persona
 from jarvis.core.situation import Situation
-from jarvis.core.state import BRIEF, DEAF, WAKE_PHRASES, Modes, minutes_word
+from jarvis.core.state import BRIEF, DEAF, QUIET, WAKE_PHRASES, Modes, minutes_word
 from jarvis.core.text import best_match, rank
+from jarvis.core.thrift import own_memory, release_recognizer, set_priority
 from jarvis.core.tools import ToolRegistry, tool
 from jarvis.core.tts.normalize import plural_form
 from jarvis.core.version import current
@@ -1158,6 +1159,55 @@ class CoreTools:
             },
         )
 
+    @tool(
+        name="quiet",
+        phrases=[
+            "тихий режим", "я играю", "режим игры", "не мешай игре", "иди в тень",
+            "не мешай я играю", "quiet mode", "i'm gaming", "game mode",
+        ],
+        reversible=True,
+    )
+    async def quiet(self, minutes: int = 0) -> ToolResult:
+        """Не мешать игре: отдать память и уйти в низкий приоритет.
+
+        Уши и команды остаются: ассистент, который в игре перестаёт отзываться,
+        это не тихий режим, а выключенный ассистент.
+
+        :param minutes: на сколько; 0 — пока не скажут «как обычно».
+        """
+        self._modes.on(QUIET, minutes=max(0, minutes))
+        before = own_memory()
+        freed: list[str] = []
+        if self._registry.has("core.close_panel"):
+            # Панель — это окно Edge на гигабайт с лишним, и в игре его всё
+            # равно никто не видит.
+            closed = await self._registry.invoke("core.close_panel", {})
+            if closed.ok:
+                freed.append("панель")
+        if await release_recognizer(self._stt):
+            freed.append("местное распознавание")
+        if set_priority(low=True):
+            freed.append("низкий приоритет")
+        after = own_memory()
+        logger.info(
+            "Тихий режим: %s; своя память %.2f -> %.2f ГБ",
+            ", ".join(freed) or "рычагов не нашлось",
+            before,
+            after,
+        )
+        return ToolResult.success(
+            {"mode": QUIET, "minutes": max(0, minutes), "freed": freed,
+             "memory_gb": round(after, 2)},
+            speech={
+                "ru": ("Ухожу в тень, сэр. Слушаю по-прежнему.",
+                       "Не буду мешать. Позовёте — я здесь.",
+                       "Понял, играйте. Я тихо."),
+                "en": ("Going quiet, sir. Still listening.",
+                       "I'll stay out of the way.",
+                       "Understood. Enjoy the game."),
+            },
+        )
+
     @tool(name="as_usual", phrases=list(WAKE_PHRASES), routable=False, reversible=True)
     async def as_usual(self) -> ToolResult:
         """Вернуться к обычному поведению: выключить все режимы разом.
@@ -1173,6 +1223,11 @@ class CoreTools:
         сверяются буквально.
         """
         was = self._modes.clear()
+        if any(mode.name == QUIET for mode in was):
+            # Приоритет возвращаем всегда: оставить процесс в низком после
+            # выхода из режима — это тихая потеря отзывчивости, которую потом
+            # ищут в микрофоне и в сети.
+            set_priority(low=False)
         if not was:
             return ToolResult.success(
                 [],
