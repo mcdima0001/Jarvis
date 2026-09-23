@@ -15,6 +15,7 @@ from jarvis.core.faults import NO_MONEY, NO_NETWORK, Faults
 from jarvis.core.llm import LLMService, ProfileRegistry
 from jarvis.core.llm.protocol import Message
 from jarvis.core.llm.providers import OpenAIProvider
+from jarvis.core.persona import Persona
 from jarvis.core.tools import ToolRegistry, collect_tools, tool
 from tests.test_voice import RecordingTTS, _pipeline
 
@@ -51,8 +52,8 @@ async def test_empty_account_is_recognised_by_type_not_only_by_code() -> None:
     assert caught.value.provider == "OpenAI"
     fault = service.faults.recent()
     assert fault is not None and fault.kind == NO_MONEY
-    assert fault.speech("ru") == "На счету OpenAI кончились деньги."
-    assert fault.speech("en") == "The OpenAI account is out of credit."
+    assert fault.tellable, "про пустой счёт сказать есть что"
+    assert fault.provider == "OpenAI", "чей счёт — в лог и в панель, но не вслух"
 
 
 async def test_a_good_answer_forgets_the_fault() -> None:
@@ -101,8 +102,35 @@ async def test_the_pipeline_says_why_instead_of_a_polite_refusal() -> None:
     tts = RecordingTTS()
     pipeline = _pipeline(registry, events, tts=tts, faults=faults)
 
+    # Слова выбирает персона по виду сбоя. Провайдера вслух не называем
+    # (просьба владельца 23.09.2026): его имя человеку ничего не говорит, а
+    # чинить он идёт в панель и в лог, где причина названа точно.
+    excuses = set(Persona().lines(NO_MONEY, "ru"))
+
     await pipeline.handle(Utterance(text="расскажи сказку", named=True))
-    assert tts.said[-1] == "На счету OpenAI кончились деньги."
+    assert tts.said[-1] in excuses, tts.said[-1]
 
     await pipeline.handle(Utterance(text="скажи погоду", named=True))
-    assert tts.said[-1] == "На счету OpenAI кончились деньги.", "причина важнее текста ошибки"
+    assert tts.said[-1] in excuses, "причина важнее текста ошибки"
+    assert "OpenAI" not in tts.said[-1], "имя провайдера вслух не звучит"
+
+
+async def test_the_same_trouble_does_not_sound_the_same_twice() -> None:
+    """Просьба владельца 23.09.2026: «не одной и той же фразой»."""
+    registry, events = ToolRegistry(), LocalEventBus()
+    faults = Faults()
+
+    class Broken:
+        @tool(phrases=["скажи погоду"], reversible=True)
+        async def weather(self) -> ToolResult:
+            """Ответить сразу неудачей."""
+            faults.note(LLMOutOfCredits("кончились деньги", provider="OpenAI"))
+            return ToolResult.failure("LLMOutOfCredits: подробности для лога")
+
+    for item in collect_tools(Broken(), namespace="talk"):
+        registry.register(item)
+    tts = RecordingTTS()
+    pipeline = _pipeline(registry, events, tts=tts, faults=faults)
+    for _ in range(4):
+        await pipeline.handle(Utterance(text="скажи погоду", named=True))
+    assert len(set(tts.said)) > 1, "четыре неудачи подряд — четыре одинаковых фразы"

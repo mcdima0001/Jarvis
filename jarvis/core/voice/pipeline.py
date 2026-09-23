@@ -700,9 +700,18 @@ class VoicePipeline:
         return self._language or fallback or "ru"
 
     def _excuse(self, language: str | None) -> str:
-        """Чем объяснить неудачу: свежим сбоем, если он есть, иначе вежливо."""
+        """Чем объяснить неудачу: свежим сбоем, если он есть, иначе вежливо.
+
+        Слова берутся у персоны по виду сбоя: она умеет не повторяться и знает
+        обращение. Вид сбоя — из журнала, провайдер вслух не называется: его имя
+        человеку ничего не говорит, а чинить он идёт в панель и в лог.
+        """
         fault = self._faults.recent()
-        return fault.speech(language) if fault is not None else self._persona.line(FAILED, language)
+        if fault is None:
+            return self._persona.line(FAILED, language)
+        return self._persona.choose(
+            f"fault.{fault.kind}", self._persona.lines(fault.kind, language), language
+        ) or self._persona.line(FAILED, language)
 
     @property
     def _muted(self) -> bool:
@@ -721,7 +730,7 @@ class VoicePipeline:
             # «не справился» отправит искать поломку в коде.
             fault = self._faults.recent()
             if fault is not None:
-                return fault.speech(language)
+                return self._excuse(language)
             return result.error or self._persona.line(FAILED, language)
         if result.value is None:
             return self._persona.line(DONE, language)

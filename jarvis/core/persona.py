@@ -56,13 +56,29 @@ PRAISE = "praise"           # «молодец», «отлично»
 HERE = "here"               # «ты тут?», «слышишь меня?»
 BYE = "bye"                 # «пока», «спокойной ночи»
 
+#: Неполадки, о которых ассистент говорит сам. Имена совпадают с видами сбоя
+#: из `core/faults.py`, и это связь по договорённости, а не случайность: там
+#: знают, **что** сломалось, здесь — **как** об этом сказать. Сверяется тестом.
+#:
+#: Провайдеры тут не называются (просьба владельца 23.09.2026: «пусть говорит
+#: своими словами и не одной и той же фразой»). Живой человек не отвечает
+#: «на счету OpenAI кончились деньги» — и уж точно не отвечает так трижды
+#: подряд. Что именно сломалось, видно в панели и в логе, где и чинится.
+NO_MONEY = "no_money"       # облако отказало: счёт пуст
+NO_KEY = "no_key"           # ключ не задан
+TOO_OFTEN = "too_often"     # просят не частить
+NO_NETWORK = "no_network"   # сети нет
+
 #: Служебные реплики — их говорит сам конвейер.
 SERVICE: tuple[str, ...] = (LISTENING, WORKING, DONE, FAILED, GREETING, FAREWELL)
 
 #: Бытовые — их говорит `core.smalltalk` в ответ на прямое обращение.
 CHATTER: tuple[str, ...] = (HELLO, HOW_ARE_YOU, THANKS, PRAISE, HERE, BYE)
 
-SITUATIONS: tuple[str, ...] = (*SERVICE, *CHATTER)
+#: Неполадки — ими объясняется неудача, когда причина известна.
+TROUBLE: tuple[str, ...] = (NO_MONEY, NO_KEY, TOO_OFTEN, NO_NETWORK)
+
+SITUATIONS: tuple[str, ...] = (*SERVICE, *CHATTER, *TROUBLE)
 
 #: Как ассистент обращается к владельцу. Пустая строка убирает обращение.
 DEFAULT_ADDRESS: Mapping[str, str] = {"ru": "сэр", "en": "sir"}
@@ -366,6 +382,63 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Listening, {address}.",
             "I haven't gone anywhere, {address}.",
             "Here, {address}. Go ahead.",
+        ),
+    },
+    NO_MONEY: {
+        "ru": (
+            "Боюсь, умная часть меня сейчас недоступна, {address}.",
+            "Моё облако отключили за неуплату, {address}. Обхожусь своим умом.",
+            "Думать за меня сейчас некому, {address}.",
+            "Тут мне нужна была бы помощь со стороны, а её нет, {address}.",
+            "Без облака я заметно глупею, {address}, и это тот самый случай.",
+            "Лимит на размышления исчерпан, {address}.",
+            "Эта часть работы мне сейчас не по карману, {address}.",
+        ),
+        "en": (
+            "I'm afraid the clever half of me is unavailable, {address}.",
+            "My cloud has been cut off for non-payment, {address}.",
+            "There's no one to think for me at the moment, {address}.",
+            "That one needs outside help, and I have none, {address}.",
+            "Without the cloud I'm noticeably duller, {address}. This is that case.",
+            "That part of the job is beyond my budget right now, {address}.",
+        ),
+    },
+    NO_KEY: {
+        "ru": (
+            "Умная часть меня не подключена, {address}.",
+            "Мне не выдали доступ к облаку, {address}.",
+            "Тут нужна модель, а она не настроена, {address}.",
+        ),
+        "en": (
+            "The clever half of me isn't connected, {address}.",
+            "I haven't been given access to the cloud, {address}.",
+            "That needs a model, and none is set up, {address}.",
+        ),
+    },
+    TOO_OFTEN: {
+        "ru": (
+            "Меня просят не частить, {address}. Через минуту повторим?",
+            "Слишком много вопросов за раз — придётся обождать, {address}.",
+            "Упёрся в ограничение, {address}. Дайте минуту.",
+        ),
+        "en": (
+            "I'm being told to slow down, {address}. Shall we try in a minute?",
+            "Too many questions at once — we'll have to wait, {address}.",
+            "I've hit a limit, {address}. Give me a minute.",
+        ),
+    },
+    NO_NETWORK: {
+        "ru": (
+            "Сети нет, {address}.",
+            "Связь пропала, {address}.",
+            "Я сейчас сам по себе, {address}: интернета нет.",
+            "До сети не дотянулся, {address}.",
+        ),
+        "en": (
+            "There's no network, {address}.",
+            "The connection is gone, {address}.",
+            "I'm on my own right now, {address}: no internet.",
+            "I couldn't reach the network, {address}.",
         ),
     },
     BYE: {

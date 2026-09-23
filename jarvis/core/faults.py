@@ -41,26 +41,16 @@ _MARKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (NO_NETWORK, ("connect", "timeout", "timed out", "temporary failure", "name resolution", "unreachable", "сеть недоступна")),
 )
 
-_SPEECH: dict[str, dict[str, str]] = {
-    NO_MONEY: {
-        "ru": "На счету {provider} кончились деньги.",
-        "en": "The {provider} account is out of credit.",
-    },
-    NO_KEY: {
-        "ru": "Языковая модель не подключена: нет ключа.",
-        "en": "The language model isn't connected: no key.",
-    },
-    TOO_OFTEN: {
-        "ru": "{provider} не принимает запросы — слишком часто.",
-        "en": "{provider} is refusing requests: too many at once.",
-    },
-    NO_NETWORK: {
-        "ru": "Не дотянулся до сети.",
-        "en": "I couldn't reach the network.",
-    },
-}
-#: Чей счёт, если провайдер не назвался.
-_NOBODY = {"ru": "модели", "en": "the model"}
+#: О чём вообще говорят вслух. Непонятный сбой в этот список не входит:
+#: техническое сообщение вслух хуже вежливого отказа.
+#:
+#: **Слов здесь нет, и это решение** (23.09.2026). Раньше тут лежала ровно одна
+#: фраза на вид сбоя — «На счету OpenAI кончились деньги», — и звучала она
+#: слово в слово при каждой неудаче подряд. Живой человек так не отвечает, да и
+#: имя провайдера ему ни о чём не говорит: чинить это идут в панель и в лог, где
+#: причина названа точно. Поэтому здесь остался **вид** сбоя, а слова живут в
+#: персоне (`TROUBLE`), которая умеет варьировать и знает обращение.
+SPOKEN: frozenset[str] = frozenset({NO_MONEY, NO_KEY, TOO_OFTEN, NO_NETWORK})
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,13 +65,7 @@ class Fault:
     @property
     def tellable(self) -> bool:
         """Есть ли что сказать вслух: о непонятном сбое лучше молчать."""
-        return self.kind in _SPEECH
-
-    def speech(self, language: str | None = "ru") -> str:
-        """Одна фраза человеку; пусто — сказать нечего."""
-        code = "en" if (language or "ru").startswith("en") else "ru"
-        line = _SPEECH.get(self.kind, {}).get(code, "")
-        return line.format(provider=self.provider or _NOBODY[code])
+        return self.kind in SPOKEN
 
 
 def classify(exc: BaseException) -> str:

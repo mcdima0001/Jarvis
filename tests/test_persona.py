@@ -14,6 +14,7 @@ from jarvis.core.persona import (
     LISTENING,
     PHRASES,
     SITUATIONS,
+    TROUBLE,
     Persona,
     daypart,
 )
@@ -40,11 +41,33 @@ def test_listening_has_at_least_ten_variants():
 
 
 def test_every_situation_has_enough_variants():
-    """Одна-две фразы на ситуацию — это тот же будильник, только тише."""
+    """Одна-две фразы на ситуацию — это тот же будильник, только тише.
+
+    У неполадок порог ниже: они звучат редко (и хорошо бы не звучали вовсе),
+    а вариантов на «сети нет» больше трёх честно не придумать.
+    """
     persona = Persona()
     for situation in SITUATIONS:
+        least = 3 if situation in TROUBLE else 5
         for language in ("ru", "en"):
-            assert len(persona.variants(situation, language)) >= 5, f"{situation}/{language}"
+            assert len(persona.variants(situation, language)) >= least, f"{situation}/{language}"
+
+
+def test_trouble_is_named_the_same_way_as_in_the_fault_journal():
+    """Связь по договорённости: там знают «что сломалось», здесь — «как сказать»."""
+    from jarvis.core.faults import SPOKEN
+
+    assert set(TROUBLE) == set(SPOKEN)
+
+
+def test_no_provider_is_named_out_loud():
+    """Просьба владельца 23.09.2026: имя провайдера человеку ничего не говорит."""
+    persona = Persona()
+    names = ("openai", "openrouter", "deepgram", "anthropic", "gpt")
+    for situation in TROUBLE:
+        for language in ("ru", "en"):
+            for line in persona.lines(situation, language):
+                assert not any(name in line.lower() for name in names), line
 
 
 def test_skill_replies_are_chosen_without_repeats():
