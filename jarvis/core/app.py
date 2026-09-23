@@ -45,6 +45,7 @@ from jarvis.core.router import (
     FallbackResolver,
     LearnedResolver,
     LLMResolver,
+    LooseResolver,
     PhraseResolver,
     PlanResolver,
     Resolver,
@@ -582,6 +583,7 @@ def _build_resolvers(
             else None
         ),
         "learned": lambda: learner,
+        "loose": lambda: LooseResolver(registry),
         "similar": lambda: SimilarResolver(registry),
         "llm": lambda: LLMResolver(
             registry,

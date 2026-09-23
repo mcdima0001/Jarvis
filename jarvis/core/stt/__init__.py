@@ -83,7 +83,7 @@ def build_stt(config: STTConfig, worker: BlockingWorker) -> STT:
 
     if backup is None or isinstance(backup, NullSTT):
         return primary
-    return FallbackSTT(primary, backup)
+    return FallbackSTT(primary, backup, race_after_s=config.race_after_s)
 
 
 __all__ = [

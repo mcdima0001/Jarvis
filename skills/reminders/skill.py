@@ -156,6 +156,26 @@ def _count_of(raw: str | None) -> float | None:
     return parse_number(text)
 
 
+#: Сколько слов перед единицей просматривать в поисках числа. Дальше — уже не
+#: про эту длительность: «напомни про 5 яблок поставить таймер на минуту».
+WORDS_BACK = 3
+
+
+def _count_nearby(before: str) -> float | None:
+    """Число среди последних слов перед единицей времени.
+
+    Пусто вместо числа — одна единица («на минуту»). ``None`` — слова были, но
+    числом не оказались, и гадать тут нельзя: таймер не на то время хуже
+    непоставленного.
+    """
+    words = before.split()[-WORDS_BACK:]
+    for word in reversed(words):
+        value = _count_of(word)
+        if value is not None:
+            return value
+    return 1.0 if not words else None
+
+
 def parse_duration(text: str) -> float | None:
     """Сколько минут названо: «минуту», «5 минут», «полторы минуты», «полчаса».
 
@@ -172,6 +192,11 @@ def parse_duration(text: str) -> float | None:
     if not found:
         return None
     count = _count_of(found.group("count"))
+    if count is None:
+        # Между числом и единицей человек вставляет что угодно: «на 5 гребаных
+        # минут» (пример владельца 23.09.2026). Ищем число чуть дальше назад —
+        # не нашли вовсе, значит его и не называли: «на минуту» это одна минута.
+        count = _count_nearby(text[: found.start("unit")])
     if count is None or count <= 0:
         return None
     minutes = count * _seconds_in(found.group("unit")) / 60.0
@@ -367,7 +392,7 @@ class RemindersSkill(Skill):
 
     meta = SkillMeta(
         name="reminders",
-        version="0.1.0",
+        version="0.2.0",
         description="Напоминания и таймеры: «напомни через час», «таймер на 10 минут»",
         spoken=("напоминания", "часы", "таймеры", "reminders"),
     )

@@ -390,6 +390,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             model=str(stt.get("model", "base")),
             device=str(stt.get("device", "auto")),
             compute_type=str(stt.get("compute_type", "int8")),
+            race_after_s=float(stt.get("race_after_s", 1.5)),
             language=str(stt.get("language", "ru")),
             languages=tuple(str(code) for code in stt.get("languages", ("ru", "en"))),
             language_min_probability=float(stt.get("language_min_probability", 0.6)),

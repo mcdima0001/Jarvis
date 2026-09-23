@@ -9,6 +9,7 @@ from .alias import AliasResolver
 from .fallback import CHAT_TOOL, FallbackResolver
 from .learned import LearnedResolver
 from .llm import LLMResolver
+from .loose import LooseResolver
 from .phrase import PhraseResolver
 from .plan import PlanResolver, needs_a_plan
 from .similar import SimilarResolver, misheard
@@ -20,6 +21,7 @@ __all__ = [
     "FallbackResolver",
     "LearnedResolver",
     "LLMResolver",
+    "LooseResolver",
     "PhraseResolver",
     "PlanResolver",
     "SimilarResolver",
