@@ -692,7 +692,9 @@ function drawLoad(data) {
     el("span", { class: "key" }, `Процессор ${percent(last.cpu)}${degrees(last.cpu_temp)}`),
     last.gpu != null || last.gpu_temp != null ? el("span", { class: "key gpu" }, `Видеокарта ${percent(last.gpu)}${degrees(last.gpu_temp)}`) : "",
     el("span", { class: "key jarvis" }, `Jarvis ${last.core == null ? "—" : `${(last.core / cores).toFixed(1)}%`}`),
-    el("span", {}, `пик процессора за 30 минут ${Math.round(cpuPeak)}%`),
+    // С большой буквы, как и соседи по легенде: это подпись, а не хвост
+    // предыдущей (владелец, 24.09.2026).
+    el("span", {}, `Пик процессора за 30 минут ${Math.round(cpuPeak)}%`),
   ));
 }
 
