@@ -71,6 +71,7 @@ async def _skill(settings: dict[str, Any]) -> tuple[Any, Studio, ToolRegistry]:
         setting=lambda key, default=None: settings.get(key, default),
         logger=logging.getLogger("test.protocols"),
         tools=registry,
+        announcer=SimpleNamespace(offer=lambda text, **kwargs: "say"),
     )
     await skill.on_setup()
     for item in collect_tools(skill, namespace="protocols"):
@@ -170,3 +171,34 @@ async def test_a_watched_protocol_runs_itself_and_unwinds_afterwards() -> None:
     running.clear()
     await skill._look([game], seen)
     assert studio.calls[-1] == ("volume", {"level": 50}), "игра закрылась — вернули как было"
+
+
+async def test_a_self_started_protocol_says_so_before_it_works() -> None:
+    """Шаги идут секундами, и молчащий ассистент неотличим от не сработавшего.
+
+    Живой запуск 24.09.2026: игровой протокол отработал целиком и молча —
+    владелец спросил, сработал ли он вообще.
+    """
+    skill, studio, registry = await _skill({
+        "pause_s": 0,
+        "protocols": {
+            "игра": {
+                "when": {"process": ["javaw.exe"]},
+                "steps": [{"tool": "studio.volume", "args": {"level": 10}}],
+                "after": [{"tool": "studio.volume", "args": {"level": 50}}],
+            },
+        },
+    })
+    said: list[str] = []
+    skill.context.announcer.offer = lambda text, **kwargs: said.append(text) or "say"
+    game = skill._protocols["игра"]
+    running = {"javaw.exe"}
+    seen = lambda names: {name for name in names if name in running}  # noqa: E731
+
+    await skill._look([game], seen)
+    assert said and said[0].startswith("{address}"), "обращение подставит персона"
+    assert "«игра» запущен" in said[0]
+
+    running.clear()
+    await skill._look([game], seen)
+    assert "свёрнут" in said[-1], "об откате тоже говорим: иначе непонятно, что кончилось"

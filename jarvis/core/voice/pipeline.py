@@ -353,7 +353,9 @@ class VoicePipeline:
         """
         if not isinstance(event, AnnouncementRequested):
             return
-        await self._say(event.text, language=event.language)
+        # Обращение подставляет персона: скилл пишет «…, {address}», а «сэр»
+        # это или имя — решает одно место на всю систему, как и везде.
+        await self._say(self._persona.fill(event.text, event.language), language=event.language)
 
     async def _on_typed(self, event: Event) -> None:
         """Выполнить команду, пришедшую вводом, и ответить вслух.

@@ -122,7 +122,7 @@ class ProtocolsSkill(Skill):
     meta = SkillMeta(
         name="protocols",
         description="Протоколы: одна фраза — набор действий",
-        version="0.2.0",
+        version="0.3.0",
         spoken=("протоколы", "protocols"),
     )
 
@@ -181,12 +181,31 @@ class ProtocolsSkill(Skill):
             if found and not was:
                 self._active[item.name] = sorted(found)[0]
                 self.log.info("Повод для «%s»: %s", item.name, self._active[item.name])
-                await self._carry_out(item.name, item.steps)
+                # Сказать до шагов, а не после: они идут секундами, и молчащий
+                # ассистент в этот момент неотличим от не сработавшего. Живой
+                # запуск 24.09.2026: протокол отработал целиком и молча, и
+                # владелец спросил, сработал ли он вообще.
+                self._tell(f"{{address}}, протокол «{item.name}» запущен.")
+                result = await self._carry_out(item.name, item.steps)
+                failed = (result.value or {}).get("failed") if result.value else None
+                if failed:
+                    self._tell(f"В протоколе «{item.name}» не вышло: {', '.join(failed)}.")
             elif was and was not in found:
                 self._active.pop(item.name, None)
                 self.log.info("Повод для «%s» пропал: %s закрылся", item.name, was)
                 if item.after:
                     await self._carry_out(f"{item.name} (отбой)", item.after)
+                self._tell(f"Протокол «{item.name}» свёрнут, всё как было.")
+
+    def _tell(self, text: str) -> None:
+        """Сказать вслух о протоколе, который запустился сам.
+
+        Через политику речи без вопроса: решать, уместно ли говорить сейчас,
+        протоколу не положено — это одна забота на всю систему. Обращение
+        подставит персона, поэтому в тексте оно полем `{address}`.
+        """
+        decision = self.context.announcer.offer(text, importance="normal", language="ru")
+        self.log.debug("Протокол сказал (%s): %s", decision, text)
 
     def _processes(self) -> Any:
         """Чем смотреть за процессами. Живёт в скилле `windows` — Windows-only."""

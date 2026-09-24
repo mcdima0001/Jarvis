@@ -630,6 +630,29 @@ class Persona:
         }
         return tuple(_fill(template, fields) for template in self.variants(situation, code))
 
+    def fill(self, text: str, language: str | None = None) -> str:
+        """Подставить обращение в чужую реплику: «…, {address}» → «…, сэр».
+
+        Нужно тем, кто сочиняет текст сам и всё же хочет звучать как ассистент,
+        а не как система: речь без вопроса у скиллов именно такая. Обращение
+        по-прежнему знает одно место — здесь, — поэтому пустое обращение
+        уберётся вместе с запятой, как и в служебных репликах.
+        """
+        if "{" not in text:
+            return text
+        code = _code(language or self._default)
+        filled = _fill(text, {
+            "address": self.address_for(code),
+            "greeting": daypart(code),
+            "parting": daypart(code, parting=True),
+        })
+        if text.lstrip().startswith("{") and filled:
+            # Подстановка в начале фразы: «сэр, протокол запущен» с маленькой
+            # буквы выдаёт машину. Пустое обращение убирается целиком, и с
+            # большой буквы начинается уже следующее слово.
+            filled = filled[0].upper() + filled[1:]
+        return filled
+
     def line(self, situation: str, language: str | None = None, **fields: str) -> str:
         """Выбрать реплику, не повторяя недавние.
 
