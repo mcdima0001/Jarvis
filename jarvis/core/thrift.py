@@ -75,6 +75,15 @@ def own_memory() -> float:
         ]
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Типы объявляются обязательно, и это не педантизм: без них дескриптор
+    # процесса уезжает в 32 бита, вызов молча возвращает ноль, и тихий режим
+    # пишет в лог «память 0.00 -> 0.00» (поймано на живом запуске 24.09.2026 —
+    # замер был, а числа в нём не было).
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.K32GetProcessMemoryInfo.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(Counters), ctypes.c_uint32
+    ]
+    kernel32.K32GetProcessMemoryInfo.restype = ctypes.c_int
     counters = Counters()
     counters.cb = ctypes.sizeof(Counters)
     if not kernel32.K32GetProcessMemoryInfo(

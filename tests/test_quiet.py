@@ -100,3 +100,24 @@ async def test_leaving_other_modes_does_not_touch_the_priority(core: Any) -> Non
 async def test_memory_is_measured_and_not_promised() -> None:
     """Правило проекта: механизм, который нельзя измерить, не ставится."""
     assert thrift.own_memory() >= 0.0
+
+
+def test_the_memory_reading_is_a_number_not_a_zero() -> None:
+    """Тихий режим писал в лог «память 0.00 -> 0.00»: замер был, числа не было.
+
+    Причина — необъявленные типы у WinAPI: дескриптор процесса уезжал в 32 бита,
+    и вызов молча возвращал ноль. Урок общий, он уже записан в журнале про
+    `ctypes`: у любого вызова, чей результат используется, типы объявляются.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        return
+    import os
+
+    import psutil
+
+    mine = thrift.own_memory()
+    real = psutil.Process(os.getpid()).memory_info().rss / 1e9
+    assert mine > 0, "ноль означает, что мерить разучились"
+    assert abs(mine - real) < 0.05, f"{mine} против {real}"
