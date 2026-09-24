@@ -50,10 +50,13 @@ internal static class Launcher
 
         // В диспетчере задач процесс подписан «Python», и владелец просил
         // называть его Джарвисом (23.09.2026). Рядом с проектом лежит копия
-        // интерпретатора с переписанным описанием — `JarvisHost.exe`, её и
-        // запускаем. Стандартную библиотеку она ищет рядом с собой, поэтому ей
-        // нужен PYTHONHOME: папку мы и так знаем — нашли настоящий pythonw.
-        string host = Path.Combine(root, "JarvisHost.exe");
+        // интерпретатора с переписанным описанием и значком — `JarvisApp.exe`,
+        // её и запускаем. Стандартную библиотеку она ищет рядом с собой, поэтому
+        // ей нужен PYTHONHOME: папку мы и так знаем — нашли настоящий pythonw.
+        // Имя сменилось 24.09.2026 с `JarvisHost.exe`: диспетчер продолжал
+        // рисовать питоновский значок, хотя сама система для того же пути
+        // отдавала наш. Новый путь не кеширован нигде.
+        string host = Path.Combine(root, "JarvisApp.exe");
         bool renamed = File.Exists(host);
 
         ProcessStartInfo info = new ProcessStartInfo(renamed ? host : python, arguments.ToString());

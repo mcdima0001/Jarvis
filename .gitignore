@@ -45,8 +45,9 @@ tests.py
 # Запускатель собирается за секунду (`python launcher/build.py`), а бинарник в
 # истории — это мегабайты на каждую пересборку.
 /Jarvis.exe
-/JarvisHost.exe
-/JarvisHost.exe.old*
+/JarvisApp.exe
+/JarvisApp.exe.old*
+/JarvisHost.exe*
 # Ярлык на него — у каждого свой путь.
 /Jarvis.lnk
 bench/

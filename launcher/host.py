@@ -63,7 +63,14 @@ LOAD_LIBRARY_AS_DATAFILE = 0x2
 ROOT = Path(__file__).resolve().parent.parent
 #: Имя копии. Не `Jarvis.exe`: так зовут запускатель, и два одинаковых имени
 #: рядом путали бы сильнее, чем «Python».
-HOST = ROOT / "JarvisHost.exe"
+HOST = ROOT / "JarvisApp.exe"
+#: Как копия звалась раньше. Имя сменилось 24.09.2026: диспетчер задач упорно
+#: рисовал для `JarvisHost.exe` питоновский значок, хотя сама Windows для того
+#: же пути отдавала наш — и из файла, и из системного списка значков, и на все
+#: размеры. Раз картинка в файле верна, а показывается другая, дело в чём-то,
+#: что помнит путь; новый путь не помнит никто. Прежние копии выносим, чтобы
+#: рядом не лежал тёзка с чужим значком.
+FORMER = "JarvisHost.exe"
 #: Значок — тот же, что у трея и у запускателя.
 ICON = ROOT / "jarvis" / "core" / "tray" / "jarvis.ico"
 
@@ -216,7 +223,8 @@ def _make_room(target: Path) -> None:
     процесс держит содержимое, а не имя. Старый файл остаётся лежать до
     перезапуска и выносится следующей сборкой — своего имени он не занимает.
     """
-    for stale in target.parent.glob(f"{target.name}.old*"):
+    for stale in (*target.parent.glob(f"{target.name}.old*"),
+                  *target.parent.glob(f"{FORMER}*")):
         with suppress(OSError):
             stale.unlink()
     if not target.exists():
