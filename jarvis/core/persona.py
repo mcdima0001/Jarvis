@@ -84,11 +84,29 @@ SITUATIONS: tuple[str, ...] = (*SERVICE, *CHATTER, *TROUBLE)
 DEFAULT_ADDRESS: Mapping[str, str] = {"ru": "сэр", "en": "sir"}
 
 #: Приветствие по времени суток: часы, с которых оно начинается.
+#:
+#: **Ночью здороваются не «доброй ночи»** (поймано владельцем 23.09.2026,
+#: 23:41): на «привет» ассистент ответил «Доброй ночи, сэр. Слушаю.» — то есть
+#: пожелал спокойной ночи вместо приветствия. В русском это слова прощания, и
+#: услышав их в начале разговора, человек слышит «пока». Поэтому ночью
+#: здороваемся нейтрально, а «доброй ночи» осталось там, где оно и уместно, —
+#: в прощании (:data:`_PARTINGS`).
+#:
+#: У английского той же беды нет: «good night» тоже только прощание, и в таблице
+#: ночью честно стоял «good evening» с самого начала.
 _DAYPARTS: tuple[tuple[int, str, str], ...] = (
     (5, "Доброе утро", "Good morning"),
     (12, "Добрый день", "Good afternoon"),
     (18, "Добрый вечер", "Good evening"),
-    (23, "Доброй ночи", "Good evening"),
+    (23, "Здравствуйте", "Good evening"),
+)
+
+#: Прощание по времени суток — здесь «доброй ночи» на своём месте.
+_PARTINGS: tuple[tuple[int, str, str], ...] = (
+    (5, "Хорошего дня", "Have a good day"),
+    (12, "Хорошего дня", "Have a good day"),
+    (18, "Хорошего вечера", "Have a good evening"),
+    (23, "Доброй ночи", "Good night"),
 )
 
 #: Встроенные наборы. Порядок внутри набора не важен — выбор случайный.
@@ -266,6 +284,7 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
     FAREWELL: {
         "ru": (
             "До связи, {address}.",
+            "{parting}, {address}.",
             "Отключаюсь, {address}.",
             "Всего доброго, {address}.",
             "Ухожу в спящий режим, {address}.",
@@ -278,6 +297,7 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
         ),
         "en": (
             "Goodbye, {address}.",
+            "{parting}, {address}.",
             "Shutting down, {address}.",
             "Until next time, {address}.",
             "Going offline, {address}.",
@@ -490,15 +510,25 @@ _ADDRESS_SLOT = re.compile(
 )
 
 
-def daypart(language: str = "ru", *, now: datetime | None = None) -> str:
-    """Приветствие по времени суток: «Доброе утро», «Добрый вечер»…"""
+def daypart(
+    language: str = "ru", *, now: datetime | None = None, parting: bool = False
+) -> str:
+    """Слова по времени суток: «Доброе утро», «Добрый вечер», «Доброй ночи».
+
+    :param parting: прощаемся, а не здороваемся. Разделение не косметическое:
+        ночное «доброй ночи» годится только на прощание, а сказанное в ответ на
+        «привет» читается как «пока» — так ассистент и оговорился 23.09.2026.
+    """
     hour = (now or datetime.now()).hour
     english = language.startswith("en")
-    greeting = "Доброй ночи" if not english else "Good evening"
-    for start, russian, other in _DAYPARTS:
+    table = _PARTINGS if parting else _DAYPARTS
+    # До первого порога — ночь: она начинается вечером и кончается утром,
+    # поэтому её слова и стоят умолчанием.
+    words = table[-1][2] if english else table[-1][1]
+    for start, russian, other in table:
         if hour >= start:
-            greeting = other if english else russian
-    return greeting
+            words = other if english else russian
+    return words
 
 
 def _fill(template: str, fields: Mapping[str, str]) -> str:
@@ -593,7 +623,11 @@ class Persona:
         ради отмены которого этот файл и заведён.
         """
         code = _code(language or self._default)
-        fields = {"address": self.address_for(code), "greeting": daypart(code)}
+        fields = {
+            "address": self.address_for(code),
+            "greeting": daypart(code),
+            "parting": daypart(code, parting=True),
+        }
         return tuple(_fill(template, fields) for template in self.variants(situation, code))
 
     def line(self, situation: str, language: str | None = None, **fields: str) -> str:
@@ -613,6 +647,9 @@ class Persona:
             {
                 "address": self.address_for(code),
                 "greeting": daypart(code),
+                # Прощание отдельным полем: «{parting}, сэр» в наборе FAREWELL
+                # ночью скажет «Доброй ночи», а днём — «Хорошего дня».
+                "parting": daypart(code, parting=True),
                 **fields,
             },
         )

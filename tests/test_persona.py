@@ -11,6 +11,7 @@ from jarvis.core.persona import (
     FAILED,
     FAREWELL,
     GREETING,
+    HELLO,
     LISTENING,
     PHRASES,
     SITUATIONS,
@@ -38,6 +39,26 @@ def test_listening_has_at_least_ten_variants():
     persona = Persona()
     for language in ("ru", "en"):
         assert len(persona.variants(LISTENING, language)) >= 10
+
+
+def test_good_night_is_said_only_when_parting():
+    """«Доброй ночи» — слова прощания, и место им только в прощании."""
+    night = datetime(2026, 7, 29, 23, 41)
+    assert daypart("ru", now=night, parting=True) == "Доброй ночи"
+    assert daypart("ru", now=night) != "Доброй ночи"
+    # Днём прощаются иначе: «доброй ночи» в два часа дня — это насмешка.
+    assert daypart("ru", now=datetime(2026, 7, 29, 14), parting=True) == "Хорошего дня"
+    assert daypart("en", now=night, parting=True) == "Good night"
+
+
+def test_a_night_hello_does_not_sound_like_goodbye():
+    """Жалоба владельца дословно: «он типа пожелал спокойной ночи, а не поздоровался»."""
+    persona = Persona(address={"*": "сэр"})
+    for situation in (HELLO, GREETING):
+        for line in persona.variants(situation, "ru"):
+            said = line.format(address="сэр", greeting=daypart("ru", now=datetime(2026, 7, 29, 23, 41)),
+                               parting=daypart("ru", now=datetime(2026, 7, 29, 23, 41), parting=True))
+            assert "оброй ночи" not in said, said
 
 
 def test_every_situation_has_enough_variants():
@@ -131,7 +152,7 @@ def test_phrases_survive_speech_normalization():
         for language in ("ru", "en"):
             for line in persona.variants(situation, language):
                 text = normalize_for_speech(
-                    line.format(address="сэр", greeting="Доброе утро"),
+                    line.format(address="сэр", greeting="Доброе утро", parting="Доброй ночи"),
                     language=language,
                 )
                 assert text.strip(), line
@@ -172,7 +193,10 @@ def test_greeting_depends_on_time_of_day():
     assert daypart("ru", now=datetime(2026, 7, 29, 7)) == "Доброе утро"
     assert daypart("ru", now=datetime(2026, 7, 29, 14)) == "Добрый день"
     assert daypart("ru", now=datetime(2026, 7, 29, 21)) == "Добрый вечер"
-    assert daypart("ru", now=datetime(2026, 7, 29, 3)) == "Доброй ночи"
+    # Ночью здороваются не «доброй ночи»: в русском это прощание, и на «привет»
+    # оно звучит как «пока» (поймано владельцем 23.09.2026, 23:41).
+    assert daypart("ru", now=datetime(2026, 7, 29, 3)) == "Здравствуйте"
+    assert daypart("ru", now=datetime(2026, 7, 29, 23, 41)) == "Здравствуйте"
     assert daypart("en", now=datetime(2026, 7, 29, 7)) == "Good morning"
 
 
@@ -302,7 +326,7 @@ def test_random_choice_stays_inside_the_pool(situation):
     """Со случайным выбором реплика всё равно из своего набора."""
     persona = Persona()
     pool = {
-        line.format(address="сэр", greeting=daypart("ru"))
+        line.format(address="сэр", greeting=daypart("ru"), parting=daypart("ru", parting=True))
         for line in persona.variants(situation, "ru")
     }
     assert persona.line(situation, "ru") in pool
