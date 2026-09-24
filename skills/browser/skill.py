@@ -37,6 +37,35 @@ from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.text import best_match, romanize, skeleton, squash, starts, stem
 from jarvis.core.tools import tool
 
+#: Процессы браузеров. Нужны ровно за тем, чтобы не ждать расширение от
+#: закрытого браузера: здороваться ему неоткуда, а ожидание видно человеку.
+BROWSER_IMAGES = frozenset({
+    "browser.exe",      # Яндекс.Браузер
+    "chrome.exe", "msedge.exe", "firefox.exe",
+    "opera.exe", "opera_gx.exe", "brave.exe", "vivaldi.exe",
+    "chromium.exe", "chrome", "firefox", "msedge",
+})
+
+
+def browser_running() -> bool:
+    """Запущен ли хоть какой-нибудь браузер.
+
+    Без psutil честно отвечаем «да»: лучше подождать зря, чем отказаться от
+    расширения на машине, где мы просто не умеем смотреть процессы.
+    """
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover — на машине владельца psutil есть
+        return True
+    try:
+        for process in psutil.process_iter(["name"]):
+            if (process.info["name"] or "").lower() in BROWSER_IMAGES:
+                return True
+    except Exception:  # noqa: BLE001 — список процессов не важнее команды
+        return True
+    return False
+
+
 #: Поисковые системы: куда подставить запрос.
 ENGINES: dict[str, str] = {
     "google": "https://www.google.com/search?q={query}",
@@ -577,6 +606,14 @@ class _Extension:
             return True
         if timeout <= 0 or self._waited or self._ready.is_set():
             return False
+        if not browser_running():
+            # Ждать некого: браузер закрыт, и здороваться расширению неоткуда.
+            # Живой случай 24.09.2026, 18:07 — владелец закрыл браузер нарочно,
+            # сказал «переключи трек» и получил пятнадцать секунд тишины перед
+            # отказом. Проверка списка процессов стоит миллисекунды.
+            self._log.info("Браузер не запущен — расширения не жду")
+            self._waited = True
+            return False
         self._waited = True
         self._log.info("Расширение ещё не подключилось — жду до %.0f с", timeout)
         try:
@@ -710,7 +747,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.1.0",
+        version="0.2.0",
         spoken=("браузер", "browser"),
     )
 

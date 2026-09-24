@@ -1447,3 +1447,52 @@ async def test_what_the_media_key_cannot_say_is_not_faked(loaded, monkeypatch) -
 
     assert not result.ok, "делать вид, что лайкнули, нельзя"
     await manager.stop()
+
+
+async def test_a_closed_browser_hands_the_track_to_the_local_player(loaded, monkeypatch) -> None:
+    """Живой случай 24.09.2026, 18:07: браузер закрыт, рядом играет AIMP,
+    «переключи трек» ответило «расширение не подключено».
+
+    Прежний запасной путь ловил только молчащую вкладку — то есть случай, когда
+    браузер **открыт**. А самый частый как раз обратный: браузера нет вовсе, и
+    отказ приходит обычным ответом, без исключения.
+    """
+    from jarvis.core.contracts import ToolResult
+    from jarvis.core.tools import collect_tools, tool
+
+    manager, registry, _ = loaded
+    await manager.start()
+    asked: list[str] = []
+
+    class Local:
+        @tool(routable=False, reversible=True)
+        async def control(self, action: str) -> ToolResult:
+            asked.append(action)
+            return ToolResult.success({"player": "AIMP"})
+
+    for item in collect_tools(Local(), namespace="aimp"):
+        registry.register(item)
+    # Тот самый отказ скилла браузера, слово в слово.
+    monkeypatch.setattr(
+        registry, "invoke",
+        _refusing(registry.invoke, "browser.page_target",
+                  "работать со страницей умеет только расширение, а оно не подключено"),
+    )
+
+    result = await registry.invoke("page.next_track", {})
+
+    assert result.ok, "музыку переключил плеер на машине"
+    assert asked == ["next"]
+    await manager.stop()
+
+
+def _refusing(original, tool_name: str, error: str):
+    """Заставить один инструмент отказывать, остальные — работать как были."""
+    from jarvis.core.contracts import ToolResult
+
+    async def invoke(name, arguments=None, **kwargs):
+        if name == tool_name:
+            return ToolResult.failure(error, speech={"ru": "Расширение не подключено."})
+        return await original(name, arguments, **kwargs)
+
+    return invoke
