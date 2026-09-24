@@ -46,6 +46,7 @@ tests.py
 # истории — это мегабайты на каждую пересборку.
 /Jarvis.exe
 /JarvisHost.exe
+/JarvisHost.exe.old*
 # Ярлык на него — у каждого свой путь.
 /Jarvis.lnk
 bench/
