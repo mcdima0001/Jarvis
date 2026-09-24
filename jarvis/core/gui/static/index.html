@@ -131,6 +131,10 @@
   .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; }
   .legend .key::before { content: ""; display: inline-block; width: 14px; height: 2px; margin: 0 6px 3px 0; vertical-align: middle; background: var(--cyan); }
   .legend .key.gpu::before { background: #ffb454; }
+  /* Подписи сократились до CPU и GPU, а места за собой держат прежние: без
+     этого вся легенда съехала бы влево и сбилась в кучу (владелец, 24.09.2026).
+     Ширина в ch, а не в точках, — считается по шрифту, а не по догадке. */
+  .legend .key.cpu, .legend .key.gpu { min-width: 21ch; }
   .legend .key.jarvis::before { background: rgba(230, 245, 255, 0.55); }
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
@@ -689,8 +693,8 @@ function drawLoad(data) {
   const percent = (value) => (value == null ? "—" : `${Math.round(value)}%`);
   const cpuPeak = Math.max(0, ...points.map((p) => p.cpu ?? 0));
   note.replaceChildren(el("div", { class: "legend" },
-    el("span", { class: "key" }, `Процессор ${percent(last.cpu)}${degrees(last.cpu_temp)}`),
-    last.gpu != null || last.gpu_temp != null ? el("span", { class: "key gpu" }, `Видеокарта ${percent(last.gpu)}${degrees(last.gpu_temp)}`) : "",
+    el("span", { class: "key cpu" }, `CPU ${percent(last.cpu)}${degrees(last.cpu_temp)}`),
+    last.gpu != null || last.gpu_temp != null ? el("span", { class: "key gpu" }, `GPU ${percent(last.gpu)}${degrees(last.gpu_temp)}`) : "",
     el("span", { class: "key jarvis" }, `Jarvis ${last.core == null ? "—" : `${(last.core / cores).toFixed(1)}%`}`),
     // С большой буквы, как и соседи по легенде: это подпись, а не хвост
     // предыдущей (владелец, 24.09.2026).
