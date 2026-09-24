@@ -144,3 +144,13 @@ def test_the_overlay_bit_is_the_lowest_one() -> None:
     """Проверено на живой машине владельца: флаги 0x0 → 0x1 включают оверлей."""
     osd = _load("osd")
     assert osd.OSD_VISIBLE == 0x1
+
+
+def test_the_overlay_is_held_for_a_while_not_set_once() -> None:
+    """Игра поднимается полминуты, и RTSS по дороге возвращает своё состояние.
+
+    Живой случай 24.09.2026: оверлей включился в 10:49:08 — на запуск лаунчера,
+    а сама игра появилась в 11:56:06, и до неё включённое не дожило.
+    """
+    skill = _load("skill")
+    assert skill.OVERLAY_TRIES * skill.OVERLAY_EVERY_S >= 45, "игре нужно время подняться"

@@ -659,6 +659,11 @@ _WM_CLOSE = 0x0010
 #: ShowWindow: развернуть свёрнутое окно, не трогая уже развёрнутое.
 _SW_RESTORE = 9
 
+#: Сколько раз и как часто повторять просьбу об оверлее: игра поднимается
+#: полминуты, и RTSS, цепляясь к ней, возвращает себе прежнее состояние.
+OVERLAY_TRIES = 12
+OVERLAY_EVERY_S = 5.0
+
 #: Как часто заглядывать, не появилось ли окно запущенной программы.
 FOCUS_STEP_S = 0.3
 #: Сколько всего его ждать. Лаунчеры (Prism, Steam) рисуют окно не сразу, а
@@ -1201,7 +1206,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.8.0",
+        version="0.9.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -2123,6 +2128,11 @@ class WindowsSkill(Skill):
                 speech={"ru": "Оверлей не переключился.", "en": "The overlay didn't switch."},
             )
         self.log.info("Оверлей %s", "включён" if on else "выключен")
+        # Игра запускается не мгновенно, а RTSS, цепляясь к новому процессу,
+        # возвращает себе прежнее состояние. Поэтому просьбу повторяем ещё
+        # несколько раз: команда задаёт состояние, а не переключает, и лишний
+        # повтор не стоит ничего (24.09.2026 — оверлей до игры не дожил).
+        self.context.scope.spawn(self._hold_overlay(on, where), name="windows-overlay-hold")
         return ToolResult.success(
             {"overlay": on},
             speech={
@@ -2130,6 +2140,15 @@ class WindowsSkill(Skill):
                 "en": ("Overlay on.",) if on else ("Overlay off.",),
             },
         )
+
+    async def _hold_overlay(self, on: bool, where: Path) -> None:
+        """Удержать состояние оверлея, пока игра поднимается."""
+        for _ in range(OVERLAY_TRIES):
+            await asyncio.sleep(OVERLAY_EVERY_S)
+            if osd().visible(where) is on:
+                continue
+            if await asyncio.to_thread(osd().show, on, where):
+                self.log.info("Оверлей сбросился — поставил снова (%s)", "вкл" if on else "выкл")
 
     @tool(routable=False, reversible=False)
     async def press_keys(self, combination: str) -> ToolResult:
