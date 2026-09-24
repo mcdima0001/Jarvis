@@ -200,6 +200,8 @@ class JarvisApp:
             # Режим «отвечай коротко» — про длину любого текста, который
             # ассистент произносит, а производит его не один инструмент.
             modes=modes,
+            # Сколько не трогать провайдера, у которого кончились деньги.
+            fallback_retry_min=config.llm.fallback_retry_min,
             # Расход по дням и примерная цена — вкладка «Расход» в панели.
             usage=UsageLog(Path(config.memory.dir) / "usage", prices=config.llm.prices),
         )

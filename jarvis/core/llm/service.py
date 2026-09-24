@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jarvis.core.contracts import detect_language
-from jarvis.core.errors import LLMError, LLMNotConfigured
+from jarvis.core.errors import LLMError, LLMNotConfigured, LLMOutOfCredits
 from jarvis.core.faults import Faults
 from jarvis.core.state import BRIEF, Modes
 from jarvis.core.tools import ToolCatalog
@@ -73,6 +74,29 @@ _SUMMARY_SYSTEM = (
     "Ты сжимаешь текст до сути. Пиши по-русски, без вступлений и оценок, "
     "только факты, которые важны для дальнейшей работы."
 )
+
+
+def _out_of_money(exc: LLMError) -> bool:
+    """Беда надолго: пустой счёт или нет ключа.
+
+    Сетевой сбой и «слишком часто» сюда не идут намеренно: у запасного
+    провайдера та же сеть, а на ограничение частоты он ответит так же — вторая
+    попытка только удвоит ожидание перед ответом.
+    """
+    return isinstance(exc, (LLMOutOfCredits, LLMNotConfigured))
+
+
+def _spare_model(model: str, provider: str) -> str:
+    """Как та же модель зовётся у запасного провайдера.
+
+    У OpenRouter модели OpenAI записаны с приставкой («openai/gpt-5.4-nano»), и
+    это единственное, что можно угадать честно. Всё остальное задаётся
+    `fallback_model` в профиле — угадывать имена моделей вслепую опаснее, чем
+    промолчать.
+    """
+    if "/" in model or provider != "openrouter":
+        return model
+    return f"openai/{model}"
 
 
 def _as_float(value: object) -> float:
@@ -150,6 +174,7 @@ class LLMService:
         modes: "Modes | None" = None,
         usage: "UsageLog | None" = None,
         faults: "Faults | None" = None,
+        fallback_retry_min: float = 30.0,
     ) -> None:
         self._providers = dict(providers)
         self._profiles = profiles
@@ -163,6 +188,10 @@ class LLMService:
         #: Журнал последнего сбоя: пустой счёт и отсутствие сети называются
         #: вслух, а не прячутся за «не справился» (21.09.2026).
         self._faults = faults if faults is not None else Faults()
+        #: Провайдеры, которых временно не трогаем: у них кончились деньги или
+        #: нет ключа. Имя → до какого момента (монотонные часы).
+        self._blocked: dict[str, float] = {}
+        self._retry_after = max(60.0, fallback_retry_min * 60)
 
     @property
     def faults(self) -> "Faults":
@@ -245,18 +274,76 @@ class LLMService:
         profile, provider, request = self._prepare(
             messages, task=task, tools=tools, tool_choice=tool_choice, max_tokens=max_tokens
         )
+        if self._blocked_until(profile.provider) and self._spare(profile) is not None:
+            # У основного недавно кончились деньги: спрашивать его снова —
+            # значит платить ожиданием на каждой фразе. Сразу к запасному.
+            provider, request = self._to_spare(profile, request)
         try:
             response = await provider.complete(request)
         except LLMError as exc:
-            # Все пути к модели сходятся здесь, поэтому и сбой записывается
-            # здесь: разбору намерения, разговору и плану заводить своё
-            # объяснение не нужно.
-            fault = self._faults.note(exc, provider=str(getattr(provider, "title", "") or provider.name))
-            logger.warning("Модель не ответила (%s): %s", fault.kind, exc)
-            raise
+            spare = self._spare(profile) if provider.name == profile.provider else None
+            if spare is not None and _out_of_money(exc):
+                # Деньги и ключ — беды надолго, а не на секунду: помечаем
+                # основного и уходим к запасному. Сетевой сбой сюда не идёт:
+                # у запасного та же сеть, и вторая попытка ничего не даст.
+                self._block(profile.provider, exc)
+                provider, request = self._to_spare(profile, request)
+                try:
+                    response = await provider.complete(request)
+                except LLMError as second:
+                    self._note(second, provider)
+                    raise
+            else:
+                self._note(exc, provider)
+                raise
         self._faults.forget()
-        await self._account(profile, response.usage)
+        await self._account(profile, response.usage, provider=provider.name)
         return response
+
+    # --- запасной провайдер -------------------------------------------------
+
+    def _note(self, exc: LLMError, provider: LLMProvider) -> None:
+        """Записать сбой в журнал — все пути к модели сходятся в `complete`."""
+        fault = self._faults.note(exc, provider=str(getattr(provider, "title", "") or provider.name))
+        logger.warning("Модель не ответила (%s): %s", fault.kind, exc)
+
+    def _spare(self, profile: Any) -> LLMProvider | None:
+        """Запасной провайдер профиля, если он задан и собрался."""
+        name = getattr(profile, "fallback_provider", "")
+        if not name or name == profile.provider:
+            return None
+        spare = self._providers.get(name)
+        if spare is None or not spare.configured:
+            return None
+        return spare
+
+    def _to_spare(self, profile: Any, request: LLMRequest) -> tuple[LLMProvider, LLMRequest]:
+        """Тот же запрос, но к запасному провайдеру и его моделью."""
+        spare = self._spare(profile)
+        assert spare is not None  # зовётся только когда он есть
+        model = getattr(profile, "fallback_model", "") or _spare_model(profile.model, spare.name)
+        logger.info("Спрашиваю запасного: %s/%s вместо %s/%s",
+                    spare.name, model, profile.provider, profile.model)
+        return spare, replace(request, model=model)
+
+    def _block(self, name: str, exc: LLMError) -> None:
+        """Не трогать провайдера некоторое время: счёт за минуту не пополнится."""
+        self._blocked[name] = time.monotonic() + self._retry_after
+        logger.warning(
+            "У провайдера %s беда со счётом или ключом (%s) — работаю на запасном %.0f минут",
+            name, exc, self._retry_after / 60,
+        )
+
+    def _blocked_until(self, name: str) -> bool:
+        """Идёт ли ещё блокировка основного провайдера."""
+        until = self._blocked.get(name, 0.0)
+        if not until:
+            return False
+        if time.monotonic() >= until:
+            self._blocked.pop(name, None)
+            logger.info("Пробую снова основного провайдера %s", name)
+            return False
+        return True
 
     def _prepare(
         self,
@@ -287,7 +374,7 @@ class LLMService:
         logger.debug("LLM запрос: задача=%s модель=%s", profile.task, profile.model)
         return profile, provider, request
 
-    async def _account(self, profile: Any, usage: Mapping[str, Any]) -> None:
+    async def _account(self, profile: Any, usage: Mapping[str, Any], *, provider: str = "") -> None:
         """Записать расход запроса: в сеанс, в файл дня и в лог."""
         self._spending.add(profile.task, usage)
         if self._usage is not None:
@@ -295,9 +382,10 @@ class LLMService:
             # задержала бы голос ради бухгалтерии.
             await asyncio.to_thread(self._usage.add, profile.task, profile.model, usage)
         logger.info(
-            "LLM %s (%s): %s+%s токенов%s, всего за сеанс %s",
+            "LLM %s (%s%s): %s+%s токенов%s, всего за сеанс %s",
             profile.task,
             profile.model,
+            f" через {provider}" if provider and provider != profile.provider else "",
             usage.get("prompt_tokens", "?"),
             usage.get("completion_tokens", "?"),
             f", ${float(usage['cost']):.5f}" if usage.get("cost") else "",

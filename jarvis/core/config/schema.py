@@ -151,6 +151,12 @@ class TaskProfile:
     #: Глубина рассуждения модели. Для голосового ассистента почти всегда
     #: наименьшая: рассуждающая модель без неё тратит потолок ответа на мысли.
     reasoning: str | None = None
+    #: Куда уходить, если у основного провайдера кончились деньги или нет ключа
+    #: (просьба владельца 24.09.2026). Пусто — никуда, как было раньше.
+    fallback_provider: str = ""
+    #: Какой моделью спрашивать запасного. Пусто — та же, но с приставкой
+    #: провайдера: у OpenRouter модели OpenAI зовутся «openai/gpt-...».
+    fallback_model: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -160,6 +166,11 @@ class LLMConfig:
     default_task: str = "dialog"
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     profiles: Mapping[str, TaskProfile] = field(default_factory=dict)
+    #: Общий запасной провайдер для всех профилей, у которых свой не задан.
+    fallback_provider: str = ""
+    #: Сколько минут не трогать основного после отказа по деньгам. Кредиты не
+    #: возвращаются за минуту, а каждый запрос к пустому счёту — это ожидание.
+    fallback_retry_min: float = 30.0
     #: Тарифы моделей для примерной цены в панели. OpenAI цену в ответе не
     #: присылает, а знать хотя бы порядок трат владелец просил (14.09.2026).
     prices: Mapping[str, "ModelPrice"] = field(default_factory=dict)

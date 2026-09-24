@@ -237,6 +237,13 @@ def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
             headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
         )
 
+    # Общий запасной провайдер: писать его в каждом профиле незачем.
+    spare = str(section.get("fallback_provider", "") or "")
+    if spare and spare not in providers:
+        raise ConfigError(
+            f"llm.fallback_provider={spare!r} — такого провайдера нет в llm.providers"
+        )
+
     profiles: dict[str, TaskProfile] = {}
     for task, raw in _section(section, "profiles").items():
         provider = str(raw.get("provider", ""))
@@ -253,6 +260,8 @@ def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
             max_tokens=int(raw.get("max_tokens", 1024)),
             system=raw.get("system"),
             reasoning=str(raw["reasoning"]) if raw.get("reasoning") else None,
+            fallback_provider=str(raw.get("fallback_provider", spare) or ""),
+            fallback_model=str(raw.get("fallback_model", "") or ""),
         )
 
     default_task = str(section.get("default_task", "dialog"))
@@ -272,7 +281,14 @@ def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
             raise ConfigError(
                 f"llm.prices.{model}: нужны числа input, output и необязательный cached ({exc})"
             ) from exc
-    return LLMConfig(default_task=default_task, providers=providers, profiles=profiles, prices=prices)
+    return LLMConfig(
+        default_task=default_task,
+        providers=providers,
+        profiles=profiles,
+        prices=prices,
+        fallback_provider=spare,
+        fallback_retry_min=float(section.get("fallback_retry_min", 30.0)),
+    )
 
 
 def load_config(path: Path | str | None = None, *, root: Path | None = None) -> JarvisConfig:
