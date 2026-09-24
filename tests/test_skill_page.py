@@ -1496,3 +1496,63 @@ def _refusing(original, tool_name: str, error: str):
         return await original(name, arguments, **kwargs)
 
     return invoke
+
+
+async def test_a_page_that_found_nothing_also_hands_over(loaded, monkeypatch) -> None:
+    """Живой случай 24.09.2026, 20:27: браузер открыт, вкладка ответила, но
+    нажимать в ней нечего — «Не нашёл, чем это сделать на странице», — а музыка
+    играла в AIMP.
+
+    Третий способ отказа подряд, и на него запасной путь опять не был повешен.
+    Поэтому теперь он висит на исходе: во вкладке не вышло — отдаём плееру.
+    """
+    from jarvis.core.contracts import ToolResult
+    from jarvis.core.tools import collect_tools, tool
+
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    # Страница жива и отвечает, просто ни один шаг не сработал.
+    fake.REPLIES[:] = [{"done": None}, {"done": None}, {"done": None}]
+    asked: list[str] = []
+
+    class Local:
+        @tool(routable=False, reversible=True)
+        async def control(self, action: str) -> ToolResult:
+            asked.append(action)
+            return ToolResult.success({"player": "AIMP"})
+
+    for item in collect_tools(Local(), namespace="aimp"):
+        registry.register(item)
+
+    result = await registry.invoke("page.next_track", {})
+
+    assert result.ok and asked == ["next"], "во вкладке не вышло — отдали плееру"
+    assert result.speech_for("ru") == "Следующий трек."
+    await manager.stop()
+
+
+async def test_a_like_is_not_handed_to_the_player(loaded, monkeypatch) -> None:
+    """Лайк мультимедийной кнопкой не поставить — значит остаётся честный отказ."""
+    from jarvis.core.contracts import ToolResult
+    from jarvis.core.tools import collect_tools, tool
+
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": None}, {"done": None}, {"done": None}]
+
+    class Local:
+        @tool(routable=False, reversible=True)
+        async def control(self, action: str) -> ToolResult:
+            raise AssertionError("лайк местному плееру отдавать нельзя")
+
+    for item in collect_tools(Local(), namespace="aimp"):
+        registry.register(item)
+
+    result = await registry.invoke("page.like", {})
+
+    assert not result.ok
+    await manager.stop()
