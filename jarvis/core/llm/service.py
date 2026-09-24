@@ -76,6 +76,12 @@ _SUMMARY_SYSTEM = (
 )
 
 
+#: Сколько не трогать мёртвого провайдера, когда запасного нет. Полминуты —
+#: компромисс: меньше значит платить ожиданием почти на каждой фразе, больше —
+#: не заметить, что счёт уже пополнили.
+DEAD_RETRY_S = 30.0
+
+
 def _out_of_money(exc: LLMError) -> bool:
     """Беда надолго: пустой счёт или нет ключа.
 
@@ -191,6 +197,8 @@ class LLMService:
         #: Провайдеры, которых временно не трогаем: у них кончились деньги или
         #: нет ключа. Имя → до какого момента (монотонные часы).
         self._blocked: dict[str, float] = {}
+        #: Чем именно провайдер отказал: этим же отказываем, пока не отпустит.
+        self._blocked_why: dict[str, LLMError] = {}
         self._retry_after = max(60.0, fallback_retry_min * 60)
 
     @property
@@ -274,19 +282,30 @@ class LLMService:
         profile, provider, request = self._prepare(
             messages, task=task, tools=tools, tool_choice=tool_choice, max_tokens=max_tokens
         )
-        if self._blocked_until(profile.provider) and self._spare(profile) is not None:
+        if self._blocked_until(profile.provider):
             # У основного недавно кончились деньги: спрашивать его снова —
-            # значит платить ожиданием на каждой фразе. Сразу к запасному.
-            provider, request = self._to_spare(profile, request)
+            # значит платить ожиданием на каждой фразе.
+            if self._spare(profile) is not None:
+                provider, request = self._to_spare(profile, request)
+            else:
+                # Запасного нет — но и к мёртвому идти незачем: он ответит тем
+                # же отказом, только через полсекунды ожидания, и так на каждой
+                # неузнанной фразе (живой лог 24.09.2026: два похода на фразу,
+                # `intent` и `intent_strong`). Отказываем сразу и тем же сбоем,
+                # чтобы вслух прозвучала настоящая причина.
+                raise self._blocked_why[profile.provider]
         try:
             response = await provider.complete(request)
         except LLMError as exc:
             spare = self._spare(profile) if provider.name == profile.provider else None
+            if _out_of_money(exc) and provider.name == profile.provider:
+                # Помним беду независимо от того, есть ли запасной: ходить к
+                # пустому счёту на каждой фразе не нужно в обоих случаях.
+                self._block(profile.provider, exc, spare=spare is not None)
             if spare is not None and _out_of_money(exc):
-                # Деньги и ключ — беды надолго, а не на секунду: помечаем
-                # основного и уходим к запасному. Сетевой сбой сюда не идёт:
-                # у запасного та же сеть, и вторая попытка ничего не даст.
-                self._block(profile.provider, exc)
+                # Деньги и ключ — беды надолго, а не на секунду: уходим к
+                # запасному. Сетевой сбой сюда не идёт: у запасного та же сеть,
+                # и вторая попытка ничего не даст.
                 provider, request = self._to_spare(profile, request)
                 try:
                     response = await provider.complete(request)
@@ -326,12 +345,22 @@ class LLMService:
                     spare.name, model, profile.provider, profile.model)
         return spare, replace(request, model=model)
 
-    def _block(self, name: str, exc: LLMError) -> None:
-        """Не трогать провайдера некоторое время: счёт за минуту не пополнится."""
-        self._blocked[name] = time.monotonic() + self._retry_after
+    def _block(self, name: str, exc: LLMError, *, spare: bool) -> None:
+        """Не трогать провайдера некоторое время: счёт за минуту не пополнится.
+
+        Сроки разные, и разница не формальная. **Есть запасной** — ждём долго:
+        работа идёт, терять на попытках нечего. **Запасного нет** — ждём
+        полминуты: ассистент сейчас беспомощен, владелец пополняет счёт прямо
+        сейчас, и получить «не могу» ещё полчаса после пополнения он не должен.
+        """
+        wait = self._retry_after if spare else DEAD_RETRY_S
+        self._blocked[name] = time.monotonic() + wait
+        #: Чем отказывать, пока блокировка держится: тем же сбоем, что случился.
+        #: Придумывать свой нельзя — вслух прозвучала бы неправда.
+        self._blocked_why[name] = exc
         logger.warning(
-            "У провайдера %s беда со счётом или ключом (%s) — работаю на запасном %.0f минут",
-            name, exc, self._retry_after / 60,
+            "У провайдера %s беда со счётом или ключом (%s) — не трогаю его %.0f с%s",
+            name, exc, wait, " (работаю на запасном)" if spare else "",
         )
 
     def _blocked_until(self, name: str) -> bool:
@@ -341,6 +370,7 @@ class LLMService:
             return False
         if time.monotonic() >= until:
             self._blocked.pop(name, None)
+            self._blocked_why.pop(name, None)
             logger.info("Пробую снова основного провайдера %s", name)
             return False
         return True

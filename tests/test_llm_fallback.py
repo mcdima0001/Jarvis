@@ -112,3 +112,25 @@ async def test_both_dead_still_explains_itself() -> None:
         await service.complete([Message.user("привет")], task="dialog")
     fault = service.faults.recent()
     assert fault is not None and fault.tellable
+
+
+async def test_a_dead_provider_is_not_knocked_on_twice_per_phrase() -> None:
+    """Живой лог 24.09.2026: при пустом счёте каждая фраза ходила к OpenAI
+    дважды — задачами `intent` и `intent_strong` — и теряла на этом секунду.
+
+    Запасного у разбора команд нет намеренно, но и ходить к мёртвому незачем:
+    он ответит тем же отказом, только через ожидание.
+    """
+    main = Provider("openai", fails=LLMOutOfCredits("кончились деньги", provider="OpenAI"))
+    service = _service(main)
+    for _ in range(3):
+        with pytest.raises(LLMOutOfCredits):
+            await service.complete([Message.user("привет")], task="dialog")
+    assert len(main.asked) == 1, "спросили один раз, дальше отказываем сразу"
+
+
+async def test_without_a_spare_the_wait_is_short() -> None:
+    """Владелец пополняет счёт прямо сейчас — держать отказ полчаса нельзя."""
+    from jarvis.core.llm.service import DEAD_RETRY_S
+
+    assert DEAD_RETRY_S <= 60, "полминуты хватает, чтобы не частить"

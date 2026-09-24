@@ -64,6 +64,10 @@ async def test_a_good_answer_forgets_the_fault() -> None:
     service = _service(lambda request: answers.pop(0))
     with pytest.raises(LLMOutOfCredits):
         await service.complete([Message.user("привет")], task="dialog")
+    # Пустой счёт запоминается на полминуты: ходить к нему на каждой фразе
+    # незачем, он ответит тем же отказом. В жизни срок снимает время.
+    assert service._blocked, "к мёртвому провайдеру сразу не возвращаемся"
+    service._blocked.clear()
     await service.complete([Message.user("привет")], task="dialog")
     assert service.faults.recent() is None, "счёт пополнили — старую жалобу забыть"
 
