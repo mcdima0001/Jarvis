@@ -132,8 +132,7 @@ class DownloadsCleanupSkill(Skill):
             "покажи старые файлы в загрузках",
             "что можно удалить из загрузок",
         ],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def list_old_downloads(self, days: int = 30) -> ToolResult:
         """Перечисляет файлы в каталоге загрузок старше указанного числа дней.
 
@@ -194,8 +193,7 @@ class DownloadsCleanupSkill(Skill):
             "удали старые файлы из загрузок",
             "почисти загрузки",
         ],
-        reversible=False,
-    )
+        reversible=False, routable=False)
     async def delete_old_downloads(self, days: int = 30) -> ToolResult:
         """Безвозвратно удаляет файлы в каталоге загрузок старше указанного числа дней.
 

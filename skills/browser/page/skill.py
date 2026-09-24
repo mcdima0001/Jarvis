@@ -1011,7 +1011,7 @@ class PageSkill(Skill):
     @tool(phrases=["нажми {control}", "нажми кнопку {control}", "нажми на {control}",
                    "открой {control} на странице", "открой {control} на сайте",
                    "press {control}", "click {control}"],
-          reversible=False)
+          reversible=False, routable=False)
     async def press(self, control: str, site: str = "") -> ToolResult:
         """Нажать кнопку на странице по её подписи.
 
@@ -1252,7 +1252,7 @@ class PageSkill(Skill):
                    "покажи канал {name}", "канал {name}",
                    "open the channel {name}", "find the channel {name}",
                    "go to the channel {name}"],
-          reversible=True)
+          reversible=True, routable=False)
     async def open_channel(self, name: str, site: str = "") -> ToolResult:
         """Открыть канал автора на видеосайте: найти его в поиске сайта и перейти.
 
@@ -1291,7 +1291,7 @@ class PageSkill(Skill):
                    "найди на сайте {text}", "поищи на странице {text}",
                    "поищи на сайте {text}",
                    "type {text}", "search the page for {text}"],
-          reversible=False)
+          reversible=False, routable=False)
     async def type_in(self, text: str, site: str = "") -> ToolResult:
         """Напечатать текст в поле на странице — обычно в поиск сайта.
 
@@ -1408,7 +1408,7 @@ class PageSkill(Skill):
                    "открой главную страницу", "вернись на главную",
                    "нажми на логотип", "нажми на лого", "нажми логотип",
                    "go to the home page", "go home"],
-          reversible=True)
+          reversible=True, routable=False)
     async def home(self, site: str = "") -> ToolResult:
         """Перейти на главную страницу сайта, не открывая новую вкладку.
 

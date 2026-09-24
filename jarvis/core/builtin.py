@@ -1392,7 +1392,7 @@ class CoreTools:
 
     @tool(name="spending", phrases=["сколько потрачено", "расход токенов",
                                     "how much have you spent", "token usage"],
-          reversible=True)
+          reversible=True, routable=False)
     async def spending(self) -> ToolResult:
         """Показать расход токенов с момента запуска."""
         report = self._llm.spending

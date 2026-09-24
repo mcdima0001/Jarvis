@@ -286,7 +286,7 @@ class ProtocolsSkill(Skill):
             },
         )
 
-    @tool(phrases=["какие протоколы", "какие есть протоколы", "список протоколов", "what protocols"], reversible=True)
+    @tool(phrases=["какие протоколы", "какие есть протоколы", "список протоколов", "what protocols"], reversible=True, routable=False)
     async def list_protocols(self) -> ToolResult:
         """Назвать записанные протоколы."""
         names = list(self._protocols)

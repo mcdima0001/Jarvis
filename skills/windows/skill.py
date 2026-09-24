@@ -1690,12 +1690,12 @@ class WindowsSkill(Skill):
         spec.loader.exec_module(module)
         return module
 
-    @tool(phrases=["включи блютуз", "включи bluetooth", "включи блютус", "turn on bluetooth"], reversible=True)
+    @tool(phrases=["включи блютуз", "включи bluetooth", "включи блютус", "turn on bluetooth"], reversible=True, routable=False)
     async def bluetooth_on(self) -> ToolResult:
         """Включить блютуз."""
         return await self._bt_radio("On")
 
-    @tool(phrases=["выключи блютуз", "выключи bluetooth", "выключи блютус", "turn off bluetooth"], reversible=True)
+    @tool(phrases=["выключи блютуз", "выключи bluetooth", "выключи блютус", "turn off bluetooth"], reversible=True, routable=False)
     async def bluetooth_off(self) -> ToolResult:
         """Выключить блютуз."""
         return await self._bt_radio("Off")
@@ -1727,8 +1727,7 @@ class WindowsSkill(Skill):
     @tool(
         phrases=["какие блютуз устройства", "что подключено по блютузу", "список блютуз устройств",
                  "блютуз устройства", "bluetooth devices"],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def bluetooth_devices(self) -> ToolResult:
         """Перечислить сопряжённые блютуз-устройства и что из них подключено."""
         bt = self._bt()
@@ -1893,7 +1892,7 @@ class WindowsSkill(Skill):
                    "запусти {program} от админа", "запусти {program} с правами админа",
                    "открой {program} от имени администратора", "открой {program} с правами администратора",
                    "открой {program} от админа", "run {program} as administrator", "run {program} as admin"],
-          reversible=False)
+          reversible=False, routable=False)
     async def launch_program_admin(self, program: str) -> ToolResult:
         """Запустить программу с правами администратора — только по прямой просьбе.
 
@@ -2002,8 +2001,7 @@ class WindowsSkill(Skill):
     @tool(
         phrases=["схема питания {mode}", "поставь питание {mode}",
                  "режим питания {mode}", "power plan {mode}"],
-        reversible=False,
-    )
+        reversible=False, routable=False)
     async def set_power_plan(self, mode: str = "") -> ToolResult:
         """Переключить схему электропитания: производительность, баланс, экономия.
 
@@ -2041,8 +2039,7 @@ class WindowsSkill(Skill):
     @tool(
         phrases=["верни схему питания", "верни питание", "схема питания как была",
                  "restore power plan"],
-        reversible=False,
-    )
+        reversible=False, routable=False)
     async def restore_power_plan(self) -> ToolResult:
         """Вернуть ту схему питания, что была до переключения."""
         if not self._plan_before:
@@ -2093,8 +2090,7 @@ class WindowsSkill(Skill):
     @tool(
         phrases=["включи оверлей", "покажи оверлей", "покажи счётчик кадров",
                  "покажи фпс", "show overlay", "show fps"],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def overlay_on(self) -> ToolResult:
         """Показать оверлей RivaTuner — тот самый счётчик кадров поверх игры."""
         return await self._overlay(True)
@@ -2102,8 +2098,7 @@ class WindowsSkill(Skill):
     @tool(
         phrases=["выключи оверлей", "убери оверлей", "убери счётчик кадров",
                  "убери фпс", "hide overlay", "hide fps"],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def overlay_off(self) -> ToolResult:
         """Убрать оверлей RivaTuner."""
         return await self._overlay(False)
@@ -2608,7 +2603,7 @@ class WindowsSkill(Skill):
                     "en": "Couldn't change the volume."},
         )
 
-    @tool(phrases=["обнови список программ", "refresh programs"], reversible=True)
+    @tool(phrases=["обнови список программ", "refresh programs"], reversible=True, routable=False)
     async def refresh(self) -> ToolResult:
         """Перечитать меню «Пуск» после установки новой программы."""
         self._rebuild()

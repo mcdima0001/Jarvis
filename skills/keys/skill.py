@@ -1547,8 +1547,7 @@ class KeysSkill(Skill):
             "следи что я набираю",
             "watch the keyboard",
         ],
-        reversible=False,
-    )
+        reversible=False, routable=False)
     async def watch(self) -> str:
         """Включить слежение за набранным на клавиатуре."""
         if self._watcher is None:
@@ -1566,8 +1565,7 @@ class KeysSkill(Skill):
             "хватит следить за тем что я печатаю",
             "stop watching the keyboard",
         ],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def unwatch(self) -> str:
         """Выключить слежение за клавиатурой."""
         self._enabled = False

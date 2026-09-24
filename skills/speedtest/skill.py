@@ -100,7 +100,7 @@ class SpeedtestSkill(Skill):
         return ToolResult.success(payload, speech=self._speech(payload))
 
     @tool(phrases=["есть ли интернет", "проверь связь", "что с интернетом",
-                   "что там с интернетом", "интернет работает"], reversible=True)
+                   "что там с интернетом", "интернет работает"], reversible=True, routable=False)
     async def check_latency(self) -> ToolResult:
         """Быстро проверяет доступность сети и задержку без замера скорости."""
         try:

@@ -338,7 +338,7 @@ class MemorySkill(Skill):
             speech={"ru": f"Вот что помню. {spoken}{more_ru}", "en": f"Here is what I remember. {spoken}{more_en}"},
         )
 
-    @tool(reversible=False)
+    @tool(reversible=False, routable=False)
     async def set_preference(self, key: str, value: str) -> ToolResult:
         """Сохранить устойчивое предпочтение.
 
@@ -412,7 +412,7 @@ class MemorySkill(Skill):
 
     @tool(phrases=["обнови что знаешь обо мне", "разбери мои записи",
                    "update what you know about me"],
-          reversible=False)
+          reversible=False, routable=False)
     async def digest(self) -> ToolResult:
         """Разобрать свежие записи прямо сейчас, не дожидаясь фона."""
         try:

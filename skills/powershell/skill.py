@@ -235,7 +235,7 @@ class ClipboardSkill(Skill):
 
     # --- инструменты -------------------------------------------------------
 
-    @tool(phrases=["что в буфере обмена", "прочитай буфер обмена"], reversible=True)
+    @tool(phrases=["что в буфере обмена", "прочитай буфер обмена"], reversible=True, routable=False)
     async def read_clipboard(self) -> ToolResult:
         """Читает текущее содержимое буфера обмена и сообщает его вслух."""
         backend = self._backend
@@ -310,7 +310,7 @@ class ClipboardSkill(Skill):
             },
         )
 
-    @tool(phrases=["следи за буфером обмена", "начни смотреть буфер"], reversible=True)
+    @tool(phrases=["следи за буфером обмена", "начни смотреть буфер"], reversible=True, routable=False)
     async def watch_clipboard(self, interval: float = _POLL_INTERVAL) -> ToolResult:
         """Включает фоновое наблюдение за буфером обмена.
 
@@ -345,8 +345,7 @@ class ClipboardSkill(Skill):
 
     @tool(
         phrases=["хватит следить за буфером", "останови слежку за буфером"],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def stop_watching(self) -> ToolResult:
         """Выключает фоновое наблюдение за буфером обмена."""
         task = self._watch_task
@@ -412,7 +411,7 @@ class ClipboardSkill(Skill):
             },
         )
 
-    @tool(phrases=["скопируй в буфер обмена", "положи в буфер"], reversible=True)
+    @tool(phrases=["скопируй в буфер обмена", "положи в буфер"], reversible=True, routable=False)
     async def put_to_clipboard(self, text: str = "") -> ToolResult:
         """Кладёт указанный текст в буфер обмена.
 
@@ -453,7 +452,7 @@ class ClipboardSkill(Skill):
             },
         )
 
-    @tool(phrases=["очисти буфер обмена", "сотри буфер обмена"], reversible=False)
+    @tool(phrases=["очисти буфер обмена", "сотри буфер обмена"], reversible=False, routable=False)
     async def clear_clipboard(self) -> ToolResult:
         """Очищает буфер обмена, прежнее содержимое остаётся только в истории."""
         backend = self._backend

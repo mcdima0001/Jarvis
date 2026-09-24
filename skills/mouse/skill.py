@@ -454,7 +454,7 @@ class MouseSkill(Skill):
             },
         )
 
-    @tool(phrases=["где курсор", "какие координаты мыши"], reversible=True)
+    @tool(phrases=["где курсор", "какие координаты мыши"], reversible=True, routable=False)
     async def where(self) -> ToolResult:
         """Сообщает текущие координаты указателя и размер экрана."""
         if not _is_windows():

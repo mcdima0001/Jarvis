@@ -1396,8 +1396,7 @@ class PhotoPlaceSkill(Skill):
             "открой это место в картах",
             "show where this was taken on the map",
         ],
-        reversible=False,
-    )
+        reversible=False, routable=False)
     async def place_on_map(
         self, path: str = "", hint: str = "", language: str = "ru"
     ) -> ToolResult:

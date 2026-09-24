@@ -448,3 +448,39 @@ def test_broken_override_file_does_not_stop_the_start(tmp_path: Path) -> None:
     path = tmp_path / "overrides.json"
     path.write_text('{"demo.send": {"reversible": "да"}, "x": 1', encoding="utf-8")
     assert _flags_registry(path).get("demo.send").spec.reversible is False  # type: ignore[union-attr]
+
+
+def test_the_catalog_stays_small_enough_to_pay_for() -> None:
+    """Каталог платится на каждой неузнанной фразе, и растёт он незаметно.
+
+    Замер 24.09.2026 настоящими запросами: 102 инструмента стоили 4938 входных
+    токенов, то есть один инструмент — около 48. За три недели до этого их был
+    51 и 1466 токенов: число удвоилось, цена утроилась, и заметили это только
+    когда пошли мерить.
+
+    Предел тут не про красоту, а про деньги: новый инструмент, который голосом
+    не зовут свободной формулировкой, обязан помечаться `routable=False`. Порог
+    с запасом — он ловит не единичную добавку, а новое удвоение.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    routable = 0
+    for source in list((root / "skills").rglob("skill.py")) + [root / "jarvis" / "core" / "builtin.py"]:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call) or getattr(decorator.func, "id", "") != "tool":
+                    continue
+                says = {kw.arg: kw.value for kw in decorator.keywords}
+                marked = says.get("routable")
+                if isinstance(marked, ast.Constant) and marked.value is False:
+                    continue
+                routable += 1
+    assert routable <= 80, (
+        f"в каталоге {routable} инструментов — это около {routable * 48} токенов "
+        "на каждой неузнанной фразе; что-то из нового стоит пометить routable=False"
+    )

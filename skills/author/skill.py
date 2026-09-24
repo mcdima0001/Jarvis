@@ -470,7 +470,7 @@ class AuthorSkill(Skill):
             },
         )
 
-    @tool(reversible=False)
+    @tool(reversible=False, routable=False)
     async def improve(
         self, skill: str, request: str, language: str = "ru", revise: bool = False, model: str = ""
     ) -> ToolResult:

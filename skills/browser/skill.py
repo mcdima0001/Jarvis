@@ -966,7 +966,7 @@ class BrowserSkill(Skill):
 
     @tool(phrases=["закрой браузер", "закрой окно браузера",
                    "close the browser", "close the browser window"],
-          reversible=False)
+          reversible=False, routable=False)
     async def close(self, browser: str = "") -> ToolResult:
         """Закрыть окно браузера.
 
@@ -1110,7 +1110,7 @@ class BrowserSkill(Skill):
 
     @tool(phrases=["закрой вкладку", "закрой вкладку {site}",
                    "close the tab", "close the {site} tab"],
-          reversible=False)
+          reversible=False, routable=False)
     async def close_tab(self, site: str = "") -> ToolResult:
         """Закрыть вкладку с сайтом.
 

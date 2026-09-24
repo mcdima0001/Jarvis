@@ -108,8 +108,7 @@ class UptimeSkill(Skill):
             "когда я последний раз перезагружался",
             "покажи аптайм",
         ],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def get_uptime(self) -> ToolResult:
         """Сообщает время работы компьютера с момента последней перезагрузки.
 

@@ -335,8 +335,7 @@ class SentinelSkill(Skill):
     @tool(
         phrases=["как там ноутбук", "как там компьютер", "состояние компьютера", "состояние ноутбука",
                  "сколько заряда", "сколько места на диске", "how is the computer"],
-        reversible=True,
-    )
+        reversible=True, routable=False)
     async def status(self) -> ToolResult:
         """Рассказать о машине: заряд, место на диске, загрузка процессора."""
         power, free, share = await asyncio.to_thread(self._measure)

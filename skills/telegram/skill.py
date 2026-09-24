@@ -572,7 +572,7 @@ class TelegramSkill(Skill):
 
     @tool(phrases=["что нового в телеграме", "проверь телеграм", "новые сообщения",
                    "есть новые сообщения", "any new messages", "check telegram"],
-          reversible=True)
+          reversible=True, routable=False)
     async def get_recent_chats(self, limit: int = 5) -> ToolResult:
         """Показать чаты с непрочитанными сообщениями.
 
