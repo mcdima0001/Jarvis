@@ -1216,7 +1216,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.9.2",
+        version="0.9.3",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1653,6 +1653,40 @@ class WindowsSkill(Skill):
             self._quiet_cut = self._loud_cut = float(cut_db)
         await self._duck()
         return ToolResult.success(len(self._ducked))
+
+    @tool(routable=False, reversible=True)
+    async def music_control(self, action: str) -> ToolResult:
+        """Управлять музыкой, которая играет **на машине**, а не во вкладке.
+
+        Зовёт это `page`, когда расширение недоступно: браузер закрыт или
+        молчит, а музыка идёт из AIMP (просьба владельца 24.09.2026). В каталог
+        модели не идёт — фразы про треки объявлены у `page`, и второй набор тех
+        же слов только спорил бы с ним.
+
+        :param action: «next», «previous», «pause» или «play».
+        """
+        doing = {
+            "next": media().next_track, "previous": media().previous_track,
+            "pause": media().pause, "play": media().play,
+        }.get(action)
+        if doing is None:
+            return ToolResult.failure(f"не знаю действие {action!r}")
+        try:
+            sessions = [described for _, described in sound_sessions()]
+        except Exception as exc:  # noqa: BLE001 — нет pycaw или COM не в духе
+            return ToolResult.failure(f"звуковые сессии не прочитались: {exc}")
+        pids = media().local_music(sessions, own_pids={os.getpid()})
+        if not pids:
+            return ToolResult.failure("на машине музыку никто не играет")
+        sent = await asyncio.to_thread(doing, set(pids))
+        if not sent:
+            # Окон нет — команде некуда прийти. У свёрнутого в трей плеера
+            # видимого окна не бывает, и это не редкость: музыку как раз
+            # слушают свёрнутой.
+            return ToolResult.failure("плеер есть, а окна у него нет")
+        names = ", ".join(sorted({s.name for s in sessions if s.pid in pids}))
+        self.log.info("Музыка на машине: %s (%s, окон: %d)", action, names, sent)
+        return ToolResult.success({"action": action, "players": names, "windows": sent})
 
     @tool(routable=False, reversible=True)
     async def restore_others(self) -> ToolResult:

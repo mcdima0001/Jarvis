@@ -154,3 +154,40 @@ def test_the_overlay_is_held_for_a_while_not_set_once() -> None:
     """
     skill = _load("skill")
     assert skill.OVERLAY_TRIES * skill.OVERLAY_EVERY_S >= 45, "игре нужно время подняться"
+
+
+# --- музыка на машине, когда браузер закрыт ---------------------------------
+
+
+def test_the_browser_is_never_the_local_player() -> None:
+    """Вкладкой заведует расширение: мультимедийная кнопка ей не указ.
+
+    Просьба владельца 24.09.2026: «переключи трек» при убитом браузере должно
+    доставаться AIMP, а не отвечать, что расширение не подключено.
+    """
+    sessions = [Sound(pid=10, name="browser.exe"), Sound(pid=12, name="AIMP.exe")]
+    assert media.local_music(sessions) == (12,)
+
+
+def test_our_own_voice_is_not_music() -> None:
+    sessions = [Sound(pid=7, name="JarvisApp.exe"), Sound(pid=12, name="AIMP.exe")]
+    assert media.local_music(sessions, own_pids={7}) == (12,)
+
+
+def test_the_one_that_is_playing_wins() -> None:
+    """Открытый, но замолчавший плеер трогать незачем, если рядом играет другой."""
+    sessions = [Sound(pid=12, name="AIMP.exe", playing=False),
+                Sound(pid=13, name="foobar2000.exe", playing=True)]
+    assert media.local_music(sessions) == (13,)
+
+
+def test_when_nobody_plays_we_take_them_all() -> None:
+    """«Следующий трек» на паузе означает «включи следующий»."""
+    sessions = [Sound(pid=12, name="AIMP.exe", playing=False),
+                Sound(pid=13, name="foobar2000.exe", playing=False)]
+    assert media.local_music(sessions) == (12, 13)
+
+
+def test_no_player_at_all_is_an_empty_answer() -> None:
+    """Пусто — значит говорить будем прежнюю причину, а не выдумывать успех."""
+    assert media.local_music([Sound(pid=10, name="browser.exe")]) == ()

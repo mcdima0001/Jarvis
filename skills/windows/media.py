@@ -46,6 +46,16 @@ logger = logging.getLogger(__name__)
 WM_APPCOMMAND = 0x0319
 APPCOMMAND_MEDIA_PAUSE = 47
 APPCOMMAND_MEDIA_PLAY = 46
+APPCOMMAND_MEDIA_NEXTTRACK = 11
+APPCOMMAND_MEDIA_PREVIOUSTRACK = 12
+
+#: Браузеры: их музыкой заведует расширение, а не мультимедийные кнопки.
+#: Нужны здесь именно чтобы **исключить** их из местных плееров.
+BROWSERS: tuple[str, ...] = (
+    "browser.exe",      # Яндекс.Браузер
+    "chrome.exe", "msedge.exe", "firefox.exe",
+    "opera.exe", "brave.exe", "vivaldi.exe",
+)
 
 #: Кто считается видеоплеером. Имена процессов, регистр не важен.
 #:
@@ -154,6 +164,47 @@ def pause(pids: Container[int]) -> int:
 def play(pids: Container[int]) -> int:
     """Снять с паузы."""
     return tell(pids, APPCOMMAND_MEDIA_PLAY)
+
+
+def next_track(pids: Container[int]) -> int:
+    """Следующий трек."""
+    return tell(pids, APPCOMMAND_MEDIA_NEXTTRACK)
+
+
+def previous_track(pids: Container[int]) -> int:
+    """Предыдущий трек."""
+    return tell(pids, APPCOMMAND_MEDIA_PREVIOUSTRACK)
+
+
+def local_music(
+    sessions: Sequence[Any],
+    *,
+    own_pids: Container[int] = (),
+    browsers: Iterable[str] = BROWSERS,
+) -> tuple[int, ...]:
+    """Кто играет музыку **на машине**, а не во вкладке.
+
+    Просьба владельца 24.09.2026: «переключи трек» при убитом браузере должно
+    доставаться AIMP, а не отвечать, что расширение не подключено.
+
+    Решаем по звуку, а не по списку известных плееров: в AIMP музыка звучит так
+    же, как в foobar или Spotify, и перечислять их все — значит забыть
+    половину. Браузер и сам ассистент исключаются: первым заведует расширение,
+    второй — это наш собственный голос.
+
+    Играющие важнее молчащих: открытый, но замолчавший плеер трогать незачем,
+    если рядом кто-то действительно играет. Не играет никто — отдаём всех
+    открытых: «следующий трек» на паузе означает «включи следующий».
+    """
+    skip = {name.lower() for name in browsers}
+    fitting = [
+        session for session in sessions
+        if int(getattr(session, "pid", 0) or 0) > 0
+        and int(getattr(session, "pid", 0)) not in own_pids
+        and str(getattr(session, "name", "")).lower() not in skip
+    ]
+    playing = [session for session in fitting if getattr(session, "playing", False)]
+    return tuple(dict.fromkeys(int(session.pid) for session in (playing or fitting)))
 
 
 # --- VLC через его собственный веб-интерфейс ---------------------------------

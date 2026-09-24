@@ -101,6 +101,25 @@ VIDEO_WORDS = frozenset({"ролик", "ролики", "клип", "клипы",
 #: если ответа не было до предела ожидания.
 UNREACHABLE_MARKS = ("страница не отвечает", "расширение не ответило")
 
+#: Что умеет сказать плееру на машине мультимедийная кнопка. Перемотки, лайка
+#: и «что играет» тут нет намеренно: послать их нечем, а молча сделать вид, что
+#: получилось, — худшее из возможного.
+#: Кто умеет то же самое на машине.
+LOCAL_TOOL = "windows.music_control"
+
+LOCAL_ACTIONS = frozenset({"pause", "play", "next", "previous"})
+
+#: Что сказать вслух, когда команду принял плеер на машине. Своими словами, а
+#: не «расширение не подключено»: для человека это просто музыка.
+LOCAL_SAID = {
+    "pause": "Пауза.", "play": "Продолжаю.",
+    "next": "Следующий трек.", "previous": "Предыдущий трек.",
+}
+LOCAL_SAID_EN = {
+    "pause": "Paused.", "play": "Resumed.",
+    "next": "Next track.", "previous": "Previous track.",
+}
+
 
 class PageUnreachable(Exception):
     """Страница не отвечает — дальнейшие попытки команды бессмысленны.
@@ -950,7 +969,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.1.0",
+        version="0.2.0",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1519,6 +1538,9 @@ class PageSkill(Skill):
             return await self._act_inner(action, **options)
         except PageUnreachable as exc:
             reason = str(exc)
+            local = await self._local_music(action)
+            if local is not None:
+                return local
             self.log.warning("Страница не отвечает, дальше не пробую: %s", reason)
             said = reason.removeprefix("страница недоступна: ").removeprefix("страница не отвечает: ")
             return ToolResult.failure(
@@ -1528,6 +1550,38 @@ class PageSkill(Skill):
                     "en": "The page isn't responding. Open the tab and try again.",
                 },
             )
+
+    async def _local_music(self, action: str) -> ToolResult | None:
+        """Отдать команду плееру на машине, раз во вкладке её принять некому.
+
+        Просьба владельца 24.09.2026: «переключи трек» при убитом браузере
+        должно доставаться AIMP, а не отвечать, что расширение не подключено.
+        Вкладка — способ, а не цель: человек просит переключить **музыку**, и
+        где она играет, его не касается.
+
+        Пробуем только то, что мультимедийная кнопка умеет сказать: пауза,
+        игра, вперёд, назад. Лайк, перемотка и «что играет» остаются за
+        расширением — послать их местному плееру нечем, и делать вид, что
+        получилось, нельзя.
+
+        :return: ответ, если местный плеер нашёлся; ``None`` — пусть говорит
+            прежнюю причину отказа.
+        """
+        if action not in LOCAL_ACTIONS or not self.tools.has(LOCAL_TOOL):
+            # Спрашиваем реестр, а не ловим исключение: скилла `windows` может
+            # не быть вовсе (сервер, другая система), и это обычное дело, а не
+            # сбой — в лог такое падать не должно.
+            return None
+        result = await self.tools.invoke(LOCAL_TOOL, {"action": action})
+        if not result.ok:
+            self.log.debug("Музыку на машине переключить не вышло: %s", result.error)
+            return None
+        players = str((result.value or {}).get("players") or "плеер")
+        self.log.info("Расширение молчит — команду '%s' отдал: %s", action, players)
+        return ToolResult.success(
+            result.value,
+            speech={"ru": LOCAL_SAID[action], "en": LOCAL_SAID_EN[action]},
+        )
 
     async def _act_inner(
         self,

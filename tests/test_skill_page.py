@@ -1397,3 +1397,53 @@ def test_what_plays_is_asked_of_the_site_not_of_the_markup() -> None:
     нет вовсе, а название трека сайт сообщает исправно.
     """
     assert page.ACTIONS["playing"] == ({"now": "track"},)
+
+
+async def test_a_dead_extension_hands_the_track_to_the_local_player(loaded, monkeypatch) -> None:
+    """Просьба владельца 24.09.2026: браузер убит специально, музыка идёт из
+    AIMP, а «переключи трек» отвечало, что расширение не подключено.
+
+    Вкладка — способ, а не цель: человек просит переключить **музыку**, и где
+    она играет, его не касается.
+    """
+    from jarvis.core.contracts import ToolResult
+    from jarvis.core.tools import collect_tools, tool
+
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"error": "страница не отвечает: расширение не ответило"}]
+    asked: list[str] = []
+
+    class Local:
+        """Скилл windows в миниатюре: только то, что зовёт страница."""
+
+        @tool(routable=False, reversible=True)
+        async def music_control(self, action: str) -> ToolResult:
+            asked.append(action)
+            return ToolResult.success({"players": "AIMP.exe", "windows": 1})
+
+    for item in collect_tools(Local(), namespace="windows"):
+        registry.register(item)
+
+    result = await registry.invoke("page.next_track", {})
+
+    assert result.ok, "музыку переключил плеер на машине"
+    assert asked == ["next"]
+    assert result.speech_for("ru") == "Следующий трек."
+    await manager.stop()
+
+
+async def test_what_the_media_key_cannot_say_is_not_faked(loaded, monkeypatch) -> None:
+    """Лайк местному плееру послать нечем — значит остаётся честный отказ."""
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"error": "страница не отвечает: расширение не ответило"}]
+
+    result = await registry.invoke("page.like", {})
+
+    assert not result.ok, "делать вид, что лайкнули, нельзя"
+    await manager.stop()
