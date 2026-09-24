@@ -158,6 +158,16 @@ MAX_PROGRAM_WORDS = 5
 QUIET_CUT_DB = 10.0
 LOUD_CUT_DB = 35.0
 
+#: Сколько ждать блютуз-устройство после переключения служб, прежде чем сказать
+#: «не отозвалось». Замер 24.09.2026 (`tools/bluetooth_bench.py`): у живой
+#: колонки вызов сам блокируется на 6.1–6.5 с и возвращается, когда она уже
+#: подключена; в живом сбое он вернулся за 0.34 с, а колонка подключилась через
+#: три-четыре секунды. Шесть секунд накрывают второй случай с запасом, а
+#: выключенное устройство столько и стоит: неверное «не отозвалось» хуже, чем
+#: медленное верное, а молчать эти секунды ассистенту не даёт «секунду».
+BT_SETTLE_S = 6.0
+BT_ASK_EVERY_S = 0.4
+
 #: Между какими значениями системной громкости натянута прямая. Ниже тихой
 #: точки режем мягко, выше громкой — на полную.
 QUIET_AT = 0.2
@@ -1206,7 +1216,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.9.0",
+        version="0.9.1",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1808,7 +1818,7 @@ class WindowsSkill(Skill):
         )
 
     async def _bt_apply(self, bt: Any, device: Any, connect: bool) -> ToolResult:
-        """Подключить или отключить найденное устройство."""
+        """Подключить или отключить найденное устройство и дождаться, чем кончилось."""
         if device.connected == connect:
             state = "уже подключено" if connect else "и так отключено"
             return ToolResult.success(
@@ -1818,19 +1828,42 @@ class WindowsSkill(Skill):
             accepted = await asyncio.to_thread(bt.set_connected, device.address, connect)
         except bt.BluetoothError as exc:
             return ToolResult.failure(str(exc), speech={"ru": str(exc), "en": "Bluetooth refused."})
-        if not accepted:
+        settled = await self._bt_settled(bt, device.name, connect)
+        self.log.info(
+            "Блютуз: %s %s — %s (служб приняло: %d)",
+            "подключаю" if connect else "отключаю", device.name,
+            "получилось" if settled else "не дождался", accepted,
+        )
+        if not settled:
             return ToolResult.failure(
-                f"службы {device.name} не переключились",
+                f"{device.name} не {'подключилось' if connect else 'отключилось'}",
                 speech={"ru": f"{device.name} не отозвалось. Оно включено и рядом?", "en": f"{device.name} did not respond."},
             )
-        self.log.info("Блютуз: %s %s (служб приняло: %d)", "подключаю" if connect else "отключаю", device.name, accepted)
         return ToolResult.success(
             {"device": device.name, "connected": connect},
             speech={
-                "ru": f"{'Подключаю' if connect else 'Отключаю'} {device.name}.",
-                "en": f"{'Connecting' if connect else 'Disconnecting'} {device.name}.",
+                "ru": f"{'Подключил' if connect else 'Отключил'} {device.name}.",
+                "en": f"{'Connected' if connect else 'Disconnected'} {device.name}.",
             },
         )
+
+    async def _bt_settled(self, bt: Any, name: str, connect: bool) -> bool:
+        """Дождаться, пока устройство действительно сменит состояние.
+
+        Судить по коду возврата `BluetoothSetServiceState` нельзя — замер
+        24.09.2026 (`tools/bluetooth_bench.py`) показал, что он не знает
+        результата ни в одну сторону: выключенная колонка «приняла» службу и не
+        подключилась, а у живой вызов вернул ноль принявших, после чего она
+        подключилась. Правду знает только `fConnected` в списке устройств.
+        """
+        deadline = time.monotonic() + BT_SETTLE_S
+        while True:
+            found = next((item for item in await asyncio.to_thread(bt.devices) if item.name == name), None)
+            if found is not None and found.connected == connect:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(BT_ASK_EVERY_S)
 
     @tool(
         phrases=[

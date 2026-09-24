@@ -1249,3 +1249,94 @@ def test_plain_start_goes_through_explorer_when_elevated(monkeypatch: pytest.Mon
     monkeypatch.setattr(windows.subprocess, "Popen", lambda command, **_: started.append(command))
     windows.start_plain("C:/Menu/Steam.lnk")
     assert started == [["explorer.exe", "C:/Menu/Steam.lnk"]]
+
+
+# --- блютуз: чем кончилось, а не что вернули службы -------------------------
+
+
+class _FakeBluetooth:
+    """Модуль блютуза в миниатюре: сколько служб «приняло» и когда устройство
+    на самом деле сменит состояние."""
+
+    class BluetoothError(Exception):
+        pass
+
+    def __init__(self, *, accepted: int, connects_after: int | None) -> None:
+        self._accepted = accepted
+        self._left = connects_after
+        self.asked = 0
+        self.connected = False
+
+    def set_connected(self, address: int, connect: bool) -> int:
+        return self._accepted
+
+    def devices(self) -> list[Any]:
+        self.asked += 1
+        if self._left is not None:
+            self._left -= 1
+            if self._left <= 0:
+                self.connected = True
+        return [windows_device("JBL Flip 6", self.connected)]
+
+
+def windows_device(name: str, connected: bool) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(name=name, address=2, connected=connected, kind=0x240414)
+
+
+def _bt_skill() -> Any:
+    import logging
+
+    class Bt(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-bluetooth")
+
+    return object.__new__(Bt)
+
+
+async def test_connected_is_reported_even_when_no_service_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Живой сбой 24.09.2026: служб приняло ноль, ассистент сказал «не
+    отозвалось», а колонка подключилась через три-четыре секунды.
+
+    Замер (`tools/bluetooth_bench.py`) показал, почему: код возврата
+    `BluetoothSetServiceState` о результате не знает. Спрашивать надо состояние.
+    """
+    monkeypatch.setattr(windows, "BT_ASK_EVERY_S", 0.0)
+    bt = _FakeBluetooth(accepted=0, connects_after=3)
+    result = await _bt_skill()._bt_apply(bt, windows_device("JBL Flip 6", False), True)
+    assert result.ok, "ноль принявших служб — ещё не отказ"
+    assert result.speech_for("ru") == "Подключил JBL Flip 6."
+
+
+async def test_a_device_that_never_shows_up_is_an_honest_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Обратный случай замера: выключенная колонка «приняла» службу и не
+    подключилась. Успехом это звать нельзя."""
+    monkeypatch.setattr(windows, "BT_SETTLE_S", 0.05)
+    monkeypatch.setattr(windows, "BT_ASK_EVERY_S", 0.0)
+    bt = _FakeBluetooth(accepted=1, connects_after=None)
+    result = await _bt_skill()._bt_apply(bt, windows_device("HK GO + PLAY", False), True)
+    assert not result.ok
+    assert "не отозвалось" in result.speech_for("ru")
+
+
+async def test_an_already_settled_device_is_answered_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """У живой колонки вызов сам блокируется на шесть секунд и возвращается,
+    когда она уже подключена: ждать после этого нечего."""
+    monkeypatch.setattr(windows, "BT_ASK_EVERY_S", 10.0)  # сон сорвал бы тест
+    bt = _FakeBluetooth(accepted=2, connects_after=1)
+    result = await _bt_skill()._bt_apply(bt, windows_device("JBL Flip 6", False), True)
+    assert result.ok and bt.asked == 1, "хватило одного вопроса о состоянии"
+
+
+async def test_nothing_to_do_is_not_a_wait() -> None:
+    """Уже подключённое не заставляем ждать и не трогаем службы."""
+    bt = _FakeBluetooth(accepted=0, connects_after=None)
+    result = await _bt_skill()._bt_apply(bt, windows_device("JBL Flip 6", True), True)
+    assert result.ok and bt.asked == 0
+    assert "уже подключено" in result.speech_for("ru")
