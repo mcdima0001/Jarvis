@@ -2518,7 +2518,8 @@ class WindowsSkill(Skill):
                     "en": f"Volume {level} percent."},
         )
 
-    @tool(phrases=["погромче", "сделай громче", "louder", "turn it up"],
+    @tool(phrases=["погромче", "сделай громче", "включи громче", "включи погромче",
+                   "louder", "turn it up"],
           routable=False,
           reversible=True)
     async def louder(self) -> ToolResult:

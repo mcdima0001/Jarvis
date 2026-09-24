@@ -92,3 +92,19 @@ async def test_a_clean_command_is_left_to_the_phrase_resolver(resolver: LooseRes
 async def test_politeness_inside_a_short_command(resolver: LooseResolver) -> None:
     intent = await resolver.resolve(Utterance(text="включи мне пожалуйста музыку"))
     assert intent is not None and intent.tool == "clock.play"
+
+
+async def test_a_latin_name_does_not_flip_the_language() -> None:
+    """«Включи Lincoln Park Faint» — русская команда с английским названием.
+
+    Живой случай 24.09.2026: латиницы втрое больше, язык объявился английским,
+    разговор ушёл в английскую подсказку, и ответ прочитал английский голос.
+    Владелец услышал это сразу: «говорит не через фиш аудио».
+    """
+    from jarvis.core.contracts import dominant_language
+
+    assert dominant_language("включи Lincoln Park Faint") == ""
+    assert dominant_language("открой Prism Launcher") == ""
+    # А настоящая английская фраза по-прежнему английская: голова у неё своя.
+    assert dominant_language("what is the weather today") == "en"
+    assert dominant_language("open the browser please") == "en"

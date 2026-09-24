@@ -1163,7 +1163,8 @@ class CoreTools:
         name="quiet",
         phrases=[
             "тихий режим", "я играю", "режим игры", "не мешай игре", "иди в тень",
-            "не мешай я играю", "quiet mode", "i'm gaming", "game mode",
+            "не мешай я играю", "включи тихий режим", "включи игровой режим",
+            "quiet mode", "i'm gaming", "game mode",
         ],
         reversible=True,
     )

@@ -557,6 +557,8 @@ class RemindersSkill(Skill):
     @tool(
         phrases=[
             "напомни {request}", "напомни мне {request}", "напоминание {request}",
+            "поставь будильник на {request}", "заведи будильник на {request}",
+            "разбуди {request}",
             "поставь напоминание {request}", "поставь напоминание на {request}",
             "remind me {request}", "reminder {request}",
         ],

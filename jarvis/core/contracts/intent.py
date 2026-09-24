@@ -45,6 +45,13 @@ def count_letters(text: str) -> tuple[int, int]:
     return cyrillic, latin
 
 
+#: Первое слово фразы: по нему видно, на каком языке отдана команда.
+_FIRST_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+#: Короче этого голова фразы ничего не доказывает: «ok», «да», имя из двух букв.
+LEAST_HEAD = 3
+
+
 def dominant_language(text: str) -> str:
     """Язык фразы, если он очевиден. Пусто — не берёмся судить.
 
@@ -64,11 +71,34 @@ def dominant_language(text: str) -> str:
     cyrillic, latin = count_letters(text)
     if cyrillic + latin < ENOUGH_LETTERS:
         return ""
+    guess = ""
     if cyrillic >= latin * CLEAR_MAJORITY:
-        return "ru"
-    if latin >= cyrillic * CLEAR_MAJORITY:
-        return "en"
-    return ""
+        guess = "ru"
+    elif latin >= cyrillic * CLEAR_MAJORITY:
+        guess = "en"
+    return guess if not _tail_flips(text, guess) else ""
+
+
+def _tail_flips(text: str, guess: str) -> bool:
+    """Не хвост ли перевернул язык: «включи Lincoln Park Faint».
+
+    Живой случай 24.09.2026: команда русская, название трека латиницей, букв в
+    названии втрое больше — язык объявился английским, разговор ушёл в
+    английскую подсказку, и ответ прочитал английский голос. Владелец услышал
+    это сразу: «говорит не через фиш аудио».
+
+    Первое слово тут решает по праву: команду произносят первой, а название
+    идёт следом. Если голова фразы написана не тем алфавитом, что победил, —
+    судить не беремся, и язык остаётся прежним, как и было задумано.
+    """
+    if not guess:
+        return False
+    head = _FIRST_WORD.search(text)
+    if head is None:
+        return False
+    cyrillic, latin = count_letters(head.group(0))
+    mine, theirs = (cyrillic, latin) if guess == "en" else (latin, cyrillic)
+    return mine >= LEAST_HEAD and mine > theirs
 
 
 #: Числительные словами. Whisper пишет числа то цифрами, то прописью, и «сделай
