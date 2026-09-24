@@ -258,6 +258,10 @@ llm:
     dialog:
       provider: openai
       model: gpt-5.4-nano
+      # Запасной — бесплатная модель OpenRouter (замер 24.09.2026, когда оба
+      # счёта оказались пусты): отвечает по-русски за 2.3 с. Для разговора этого
+      # достаточно: худшее, что выйдет, — ответ послабее.
+      fallback_model: nex-agi/nex-n2.5-mini:free
       reasoning: none
       temperature: 0.7
       # Ответ произносится вслух: длинный никто не дослушает, а выход стоит
@@ -270,12 +274,20 @@ llm:
     summarize:
       provider: openai
       model: gpt-5.4-nano
+      fallback_model: nex-agi/nex-n2.5-mini:free
       reasoning: none
       temperature: 0.3
       max_tokens: 300
     intent:                   # самая частая задача: срабатывает на каждой неузнанной фразе
       provider: openai
       model: gpt-5.4-nano
+      # Бесплатной моделью разбор команд НЕ делаем, и это замер, а не
+      # осторожность (24.09.2026, tools/spare_models_bench.py): на живых
+      # репликах она выбрала верный инструмент 2 раза из 5 и потратила 4.4 с
+      # на фразу. Неверно выполненная команда хуже невыполненной — про вторую
+      # человек хотя бы знает. Без денег фраза просто не разберётся, а местные
+      # резолверы (57% реплик) продолжают работать.
+      fallback_provider: ""
       reasoning: none
       temperature: 0.0
       max_tokens: 200
@@ -286,6 +298,7 @@ llm:
     intent_strong:
       provider: openai
       model: gpt-5.4-mini
+      fallback_provider: ""   # то же, что у intent: командой ошибиться дороже
       reasoning: none
       temperature: 0.0
       max_tokens: 200
@@ -296,6 +309,7 @@ llm:
     plan:
       provider: openai
       model: gpt-4.1-mini
+      fallback_provider: ""   # план — это цепочка команд, ошибаться тем более нельзя
       temperature: 0.0
       max_tokens: 400
     # Зрение: снимок экрана (скилл `screen`). Дешевле gpt-5.4-mini никто не
