@@ -105,7 +105,14 @@ UNREACHABLE_MARKS = ("страница не отвечает", "расширен
 #: и «что играет» тут нет намеренно: послать их нечем, а молча сделать вид, что
 #: получилось, — худшее из возможного.
 #: Кто умеет то же самое на машине.
-LOCAL_TOOL = "windows.music_control"
+#: Сперва спрашиваем AIMP: он отвечает через своё невидимое окно, то есть
+#: слушается даже свёрнутым в трей, и знает, что именно играет. Мультимедийная
+#: кнопка — запасной путь для всех остальных плееров: она шлётся видимым окнам
+#: и названия трека не знает.
+LOCAL_TOOLS = ("aimp.control", "windows.music_control")
+
+#: «Что играет» умеет только AIMP: кнопке такой вопрос не задать.
+PLAYING_TOOL = "aimp.now_playing"
 
 LOCAL_ACTIONS = frozenset({"pause", "play", "next", "previous"})
 
@@ -113,11 +120,11 @@ LOCAL_ACTIONS = frozenset({"pause", "play", "next", "previous"})
 #: не «расширение не подключено»: для человека это просто музыка.
 LOCAL_SAID = {
     "pause": "Пауза.", "play": "Продолжаю.",
-    "next": "Следующий трек.", "previous": "Предыдущий трек.",
+    "next": "Следующий трек.", "previous": "Предыдущий трек.", "playing": "",
 }
 LOCAL_SAID_EN = {
     "pause": "Paused.", "play": "Resumed.",
-    "next": "Next track.", "previous": "Previous track.",
+    "next": "Next track.", "previous": "Previous track.", "playing": "",
 }
 
 
@@ -969,7 +976,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.2.0",
+        version="0.3.0",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1567,21 +1574,40 @@ class PageSkill(Skill):
         :return: ответ, если местный плеер нашёлся; ``None`` — пусть говорит
             прежнюю причину отказа.
         """
-        if action not in LOCAL_ACTIONS or not self.tools.has(LOCAL_TOOL):
-            # Спрашиваем реестр, а не ловим исключение: скилла `windows` может
-            # не быть вовсе (сервер, другая система), и это обычное дело, а не
-            # сбой — в лог такое падать не должно.
+        if action == "playing":
+            return await self._local_playing()
+        if action not in LOCAL_ACTIONS:
             return None
-        result = await self.tools.invoke(LOCAL_TOOL, {"action": action})
-        if not result.ok:
-            self.log.debug("Музыку на машине переключить не вышло: %s", result.error)
+        for name in LOCAL_TOOLS:
+            # Спрашиваем реестр, а не ловим исключение: скилла может не быть
+            # вовсе (сервер, другая система), и это обычное дело, а не сбой.
+            if not self.tools.has(name):
+                continue
+            result = await self.tools.invoke(name, {"action": action})
+            if not result.ok:
+                self.log.debug("Плееру на машине не досталось (%s): %s", name, result.error)
+                continue
+            self.log.info("Расширение молчит — команду %r отдал %s", action, name)
+            return ToolResult.success(
+                result.value,
+                speech={"ru": LOCAL_SAID[action], "en": LOCAL_SAID_EN[action]},
+            )
+        return None
+
+    async def _local_playing(self) -> ToolResult | None:
+        """«Что играет», когда вкладки нет: спросить плеер на машине.
+
+        Умеет это только AIMP — он называет трек сам. Мультимедийной кнопке
+        такой вопрос не задать, поэтому запасного пути тут нет.
+        """
+        if not self.tools.has(PLAYING_TOOL):
             return None
-        players = str((result.value or {}).get("players") or "плеер")
-        self.log.info("Расширение молчит — команду '%s' отдал: %s", action, players)
-        return ToolResult.success(
-            result.value,
-            speech={"ru": LOCAL_SAID[action], "en": LOCAL_SAID_EN[action]},
-        )
+        answer = await self.tools.invoke(PLAYING_TOOL, {})
+        if not answer.ok:
+            self.log.debug("Плеер на машине не сказал, что играет: %s", answer.error)
+            return None
+        self.log.info("Расширение молчит — что играет, спросил у %s", PLAYING_TOOL)
+        return answer
 
     async def _act_inner(
         self,

@@ -1340,3 +1340,36 @@ async def test_nothing_to_do_is_not_a_wait() -> None:
     result = await _bt_skill()._bt_apply(bt, windows_device("JBL Flip 6", True), True)
     assert result.ok and bt.asked == 0
     assert "уже подключено" in result.speech_for("ru")
+
+
+# --- оверлей: держит состояние только последний ------------------------------
+
+
+async def test_a_new_overlay_command_cancels_the_previous_hold() -> None:
+    """Живой случай 24.09.2026, 17:57: протокол «игра» включил оверлей и начал
+    держать его минуту; через полминуты игра закрылась, отбой выключил оверлей
+    и начал держать выключенным.
+
+    Минуту подряд в логе «поставил снова (вкл)» чередовалось с «(выкл)» —
+    счётчик мигал на экране, и снаружи это выглядело как «протокол не
+    выключился». Держать состояние вправе только последний, кто просил.
+    """
+    import asyncio
+    import logging
+
+    class Holder(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-overlay")
+
+    skill = object.__new__(Holder)
+    skill._overlay_hold = None
+
+    async def forever() -> None:
+        await asyncio.sleep(60)
+
+    first = asyncio.create_task(forever())
+    skill._overlay_hold = first
+    skill._stop_overlay_hold()
+    await asyncio.sleep(0)
+
+    assert first.cancelled() or first.done(), "прежнее удержание снято"
+    assert skill._overlay_hold is None

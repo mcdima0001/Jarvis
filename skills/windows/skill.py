@@ -1216,7 +1216,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.9.3",
+        version="0.9.4",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -2205,7 +2205,16 @@ class WindowsSkill(Skill):
         # возвращает себе прежнее состояние. Поэтому просьбу повторяем ещё
         # несколько раз: команда задаёт состояние, а не переключает, и лишний
         # повтор не стоит ничего (24.09.2026 — оверлей до игры не дожил).
-        self.context.scope.spawn(self._hold_overlay(on, where), name="windows-overlay-hold")
+        # Держит состояние **один** — последний, кто попросил. Иначе два
+        # удержания дерутся: живой случай 24.09.2026, 17:57 — протокол «игра»
+        # включил оверлей и начал держать его минуту, через полминуты игра
+        # закрылась, отбой выключил оверлей и начал держать выключенным, и
+        # минуту подряд в логе «поставил снова (вкл)» чередовалось с «(выкл)».
+        # Снаружи это и есть «протокол не выключился»: счётчик мигал на экране.
+        self._stop_overlay_hold()
+        self._overlay_hold = self.context.scope.spawn(
+            self._hold_overlay(on, where), name="windows-overlay-hold"
+        )
         return ToolResult.success(
             {"overlay": on},
             speech={
@@ -2213,6 +2222,13 @@ class WindowsSkill(Skill):
                 "en": ("Overlay on.",) if on else ("Overlay off.",),
             },
         )
+
+    def _stop_overlay_hold(self) -> None:
+        """Снять прежнее удержание: держать состояние вправе только последний."""
+        holding = getattr(self, "_overlay_hold", None)
+        if holding is not None and not holding.done():
+            holding.cancel()
+        self._overlay_hold = None
 
     async def _hold_overlay(self, on: bool, where: Path) -> None:
         """Удержать состояние оверлея, пока игра поднимается."""

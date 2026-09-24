@@ -122,7 +122,7 @@ class ProtocolsSkill(Skill):
     meta = SkillMeta(
         name="protocols",
         description="Протоколы: одна фраза — набор действий",
-        version="0.3.0",
+        version="0.3.1",
         spoken=("протоколы", "protocols"),
     )
 
@@ -139,6 +139,9 @@ class ProtocolsSkill(Skill):
         self._watch = bool(self.context.setting("watch", True))
         #: Какой протокол сейчас «идёт» и из-за какого процесса.
         self._active: dict[str, str] = {}
+        #: О запуске какого протокола успели сказать вслух: об отбое тех же
+        #: обязаны сказать тоже, иначе история остаётся недосказанной.
+        self._announced: dict[str, bool] = {}
         self.log.info("Протоколов: %d (%s)", len(self._protocols), ", ".join(self._protocols) or "пусто")
 
     async def on_start(self) -> None:
@@ -185,7 +188,10 @@ class ProtocolsSkill(Skill):
                 # ассистент в этот момент неотличим от не сработавшего. Живой
                 # запуск 24.09.2026: протокол отработал целиком и молча, и
                 # владелец спросил, сработал ли он вообще.
-                self._tell(f"{{address}}, протокол «{item.name}» запущен.")
+                said = self._tell(f"{{address}}, протокол «{item.name}» запущен.")
+                # Запомнили, сказали ли о запуске: от этого зависит, обязаны ли
+                # мы досказать об отбое.
+                self._announced[item.name] = said == "say"
                 result = await self._carry_out(item.name, item.steps)
                 failed = (result.value or {}).get("failed") if result.value else None
                 if failed:
@@ -195,17 +201,30 @@ class ProtocolsSkill(Skill):
                 self.log.info("Повод для «%s» пропал: %s закрылся", item.name, was)
                 if item.after:
                     await self._carry_out(f"{item.name} (отбой)", item.after)
-                self._tell(f"Протокол «{item.name}» свёрнут, всё как было.")
+                # Начатое договариваем: если о запуске сказали вслух, об отбое
+                # обязаны сказать тоже. Живой случай 24.09.2026, 17:57 —
+                # «протокол «игра» запущен» прозвучал, а «свёрнут» политика
+                # придержала (реплики шли подряд), и владелец решил, что
+                # протокол не выключился. Недосказанная история хуже молчания.
+                self._tell(
+                    f"Протокол «{item.name}» свёрнут, всё как было.",
+                    important=self._announced.pop(item.name, False),
+                )
 
-    def _tell(self, text: str) -> None:
+    def _tell(self, text: str, *, important: bool = False) -> None:
         """Сказать вслух о протоколе, который запустился сам.
 
         Через политику речи без вопроса: решать, уместно ли говорить сейчас,
         протоколу не положено — это одна забота на всю систему. Обращение
         подставит персона, поэтому в тексте оно полем `{address}`.
+
+        :param important: досказываем начатое — тогда придерживать нечего.
         """
-        decision = self.context.announcer.offer(text, importance="normal", language="ru")
+        decision = self.context.announcer.offer(
+            text, importance="urgent" if important else "normal", language="ru"
+        )
         self.log.debug("Протокол сказал (%s): %s", decision, text)
+        return decision
 
     def _processes(self) -> Any:
         """Чем смотреть за процессами. Живёт в скилле `windows` — Windows-only."""

@@ -202,3 +202,68 @@ async def test_a_self_started_protocol_says_so_before_it_works() -> None:
     running.clear()
     await skill._look([game], seen)
     assert "свёрнут" in said[-1], "об откате тоже говорим: иначе непонятно, что кончилось"
+
+
+async def test_the_fold_up_is_told_when_the_start_was(monkeypatch) -> None:
+    """Живой случай 24.09.2026, 17:57: «протокол «игра» запущен» прозвучал, а
+    «свёрнут» политика придержала — реплики шли подряд.
+
+    Владелец услышал только половину и решил, что протокол не выключился.
+    Недосказанная история хуже молчания, поэтому вторая половина идёт как
+    важная: придерживать нечего, если первую уже сказали.
+    """
+    skill, _, _ = await _skill({
+        "protocols": {
+            "игра": {
+                "when": {"process": ["javaw.exe"]},
+                "steps": [{"tool": "studio.volume", "args": {"level": 10}}],
+                "after": [{"tool": "studio.volume", "args": {"level": 50}}],
+            },
+        },
+    })
+    offered: list[tuple[str, str]] = []
+
+    def offer(text: str, **kwargs: Any) -> str:
+        offered.append((text, kwargs.get("importance", "normal")))
+        return "say"
+
+    skill.context.announcer.offer = offer
+    game = skill._protocols["игра"]
+    running = {"javaw.exe"}
+    seen = lambda names: {name for name in names if name in running}  # noqa: E731
+
+    await skill._look([game], seen)
+    running.clear()
+    await skill._look([game], seen)
+
+    assert offered[0][1] == "normal", "о запуске — обычной важности"
+    assert "свёрнут" in offered[-1][0] and offered[-1][1] == "urgent"
+
+
+async def test_an_unheard_start_leaves_the_fold_up_ordinary() -> None:
+    """Если о запуске промолчали, досказывать нечего — и настаивать не о чем."""
+    skill, _, _ = await _skill({
+        "protocols": {
+            "игра": {
+                "when": {"process": ["javaw.exe"]},
+                "steps": [{"tool": "studio.volume", "args": {"level": 10}}],
+                "after": [{"tool": "studio.volume", "args": {"level": 50}}],
+            },
+        },
+    })
+    offered: list[tuple[str, str]] = []
+
+    def offer(text: str, **kwargs: Any) -> str:
+        offered.append((text, kwargs.get("importance", "normal")))
+        return "hold"
+
+    skill.context.announcer.offer = offer
+    game = skill._protocols["игра"]
+    running = {"javaw.exe"}
+    seen = lambda names: {name for name in names if name in running}  # noqa: E731
+
+    await skill._look([game], seen)
+    running.clear()
+    await skill._look([game], seen)
+
+    assert offered[-1][1] == "normal"
