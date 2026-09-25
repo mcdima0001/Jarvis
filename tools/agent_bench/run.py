@@ -129,6 +129,71 @@ def visible_titles() -> list[str]:
     return titles
 
 
+def window_handles() -> set[int]:
+    """Видимые окна верхнего уровня — чтобы после прогона закрыть появившиеся."""
+    if sys.platform != "win32":
+        return set()
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found: set[int] = set()
+    walker = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @walker
+    def keep(handle: int, _: int) -> bool:
+        if user32.IsWindowVisible(handle) and user32.GetWindowTextLengthW(handle) > 0:
+            found.add(int(handle))
+        return True
+
+    user32.EnumWindows(keep, 0)
+    return found
+
+
+def _browser(app: Any) -> Any:
+    """Живой скилл браузера — через него расширение перечисляет и закрывает вкладки."""
+    record = getattr(app.skills, "_records", {}).get("browser")
+    extension = getattr(getattr(record, "instance", None), "_extension", None)
+    return extension if extension is not None and extension.connected else None
+
+
+async def open_tabs(app: Any) -> set[int]:
+    extension = _browser(app)
+    listed = await extension.call("tabs") if extension else None
+    return {int(tab["tabId"]) for tab in (listed or {}).get("tabs", []) if "tabId" in tab}
+
+
+async def tidy(app: Any, *, windows: set[int], tabs: set[int]) -> None:
+    """Закрыть всё, что открыл прогон: вкладки и окна, которых не было до него.
+
+    Просьба владельца 25.09.2026: «после тестов закрывай вкладки и программы,
+    что наоткрывал». Закрывается только новое — то, что было открыто до
+    прогона, не трогается. Окна закрываются вежливо (`WM_CLOSE`), как крестиком:
+    программа успеет спросить, если ей есть что сохранить. Окна с правами
+    администратора (диспетчер задач) так не закрыть — о них говорим отдельно.
+    """
+    extension = _browser(app)
+    if extension is not None:
+        fresh = sorted(await open_tabs(app) - tabs)
+        if fresh:
+            closed = await extension.call("close", tabIds=fresh) or {}
+            print(f"Закрыл вкладок: {closed.get('closed', 0)}")
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    titles: dict[int, str] = {}
+    for handle in window_handles() - windows:
+        buffer = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(handle, buffer, 256)
+        user32.PostMessageW(handle, 0x0010, 0, 0)  # WM_CLOSE
+        titles[handle] = buffer.value
+    await asyncio.sleep(1.5)
+    still = [titles[handle] for handle in window_handles() & titles.keys()]
+    print(f"Закрыл окон: {len(titles) - len(still)}" + (f"; не закрылись: {', '.join(still)}" if still else ""))
+
+
 def matches(check: dict[str, Any], *, titles: list[str], url: str) -> bool:
     """Прошла ли проверка состояния. Чистая функция — её проверяют тесты."""
     wanted_titles = [str(item).lower() for item in check.get("title", [])]
@@ -226,6 +291,9 @@ async def main() -> int:
     mode.add_argument("--route-only", action="store_true", help="только разбор, ничего не выполнять")
     mode.add_argument("--live", action="store_true", help="выполнять и проверять состояние машины")
     parser.add_argument("--only", type=int, nargs="*", help="номера задач, с единицы")
+    parser.add_argument("--plan-model", default="", help="модель плана на этот прогон, конфиг не трогается")
+    parser.add_argument("--plan-reasoning", default="", help="глубина рассуждения для модели плана")
+    parser.add_argument("--keep", action="store_true", help="не закрывать открытое прогоном")
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -241,6 +309,14 @@ async def main() -> int:
     # стенд не портит память владельца.
     config = load_config()
     config = replace(config, router=replace(config.router, learn_commands=False))
+    if args.plan_model:
+        profiles = dict(config.llm.profiles)
+        plan = profiles["plan"]
+        profiles["plan"] = replace(
+            plan, model=args.plan_model, reasoning=args.plan_reasoning or plan.reasoning
+        )
+        config = replace(config, llm=replace(config.llm, profiles=profiles))
+        print(f"План на этот прогон: {args.plan_model}")
     _log_to_file()
     app = JarvisApp.build(config)
     await app.start(ears=False, voice=False)
@@ -248,7 +324,13 @@ async def main() -> int:
         if args.route_only:
             report(await route_only(app, tasks), mode="route")
         else:
-            report(await live(app, tasks), mode="live")
+            await asyncio.sleep(3.0)  # расширению — поздороваться
+            windows, tabs = window_handles(), await open_tabs(app)
+            try:
+                report(await live(app, tasks), mode="live")
+            finally:
+                if not args.keep:
+                    await tidy(app, windows=windows, tabs=tabs)
     finally:
         await app.stop("стенд закончен")
     return 0
