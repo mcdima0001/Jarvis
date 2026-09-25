@@ -354,6 +354,7 @@ class JarvisApp:
             meter=meter,
             conversation=conversation,
             faults=faults,
+            reply_language=config.app.reply_language,
         )
 
         runner = ServiceRunner()

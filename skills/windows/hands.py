@@ -23,7 +23,17 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger(__name__)
+#: Имя под общим «jarvis»: модуль грузится по файлу, и `__name__` у него чужой —
+#: нажатия рук не попадали в лог, и разбирать, что план нажал, было не по чему.
+logger = logging.getLogger("jarvis.skills.windows.hands")
+
+#: Сколько кнопок у окна, чтобы считать его окном-вопросом («Да», «Нет»,
+#: «Отмена»). У главных окон программ кнопок десятки.
+DIALOG_BUTTONS = 6
+#: Больше этого окно — не вопрос, а программа. Системные вопросы Windows и
+#: окна-вопросы Qt (Prism Launcher) — в пределах 700×400.
+DIALOG_WIDTH = 900
+DIALOG_HEIGHT = 600
 
 #: Сколько элементов отдавать плану. Больше — дороже в токенах, а нужная кнопка
 #: почти всегда среди первых: дерево идёт сверху вниз, как их видит глаз.
@@ -100,7 +110,22 @@ def _window(uia: Any, automation: Any, title: str) -> Any:
             raise HandsError("впереди нет окна")
         return automation.ElementFromHandle(handle)
 
+    # Впереди окно-вопрос той же программы — оно и есть «окно Prism Launcher»
+    # для того, кто просит нажать. Живой случай 25.09.2026: план просил окно
+    # «Prism Launcher», руки брали главное, а впереди висело «Недостаток
+    # свободной памяти — Prism Launcher» с кнопкой «Yes», которую и надо было
+    # нажать.
+    import ctypes
+
     from jarvis.core.text import best_match
+
+    handle = ctypes.WinDLL("user32").GetForegroundWindow()
+    if handle:
+        front = automation.ElementFromHandle(handle)
+        if best_match(title, [front.CurrentName or ""], similarity=0.5) or (
+            title.lower() in (front.CurrentName or "").lower()
+        ):
+            return front
 
     root = automation.GetRootElement()
     children = root.FindAll(uia.TreeScope_Children, automation.CreateTrueCondition())
@@ -154,11 +179,46 @@ def _pick(items: list[tuple[Element, Any]], wanted: str, *, kinds: tuple[str, ..
 
     pool = [(element, raw) for element, raw in items if not kinds or element.kind in kinds]
     names = {element.name: (element, raw) for element, raw in pool}
-    found = best_match(wanted, list(names), similarity=0.6)
+    # Сперва точно, без учёта регистра: нечёткое сравнение не берёт слова
+    # короче трёх букв, а в окнах-вопросах как раз «Да», «Нет», «OK». Живая
+    # проверка 25.09.2026: «не нашёл „Да“; есть: Да, Нет».
+    exact = {name.lower().strip(): name for name in names}
+    found = exact.get(wanted.lower().strip()) or best_match(wanted, list(names), similarity=0.6)
     if found is None:
         near = ", ".join(list(names)[:6])
         raise HandsError(f"не нашёл «{wanted}»" + (f"; есть: {near}" if near else ""))
     return names[found]
+
+
+def _activate(window: Any) -> None:
+    """Вывести окно вперёд — как если бы по нему щёлкнули.
+
+    Живая проверка 25.09.2026: в окне-вопросе, которое не в фокусе, нажатие
+    шаблоном элемента **проходит без ошибки и ничего не делает** — «Нажал:
+    кнопка „Да“», а окно так и висело. Системный диалог слушает кнопки только
+    активным. Поэтому перед нажатием окно активируется; тот же приём, каким
+    `windows` выводит вперёд запущенную программу.
+    """
+    import ctypes
+
+    handle = int(window.CurrentNativeWindowHandle or 0)
+    if not handle:
+        return
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if user32.GetForegroundWindow() == handle:
+        return
+    user32.ShowWindow(handle, 9)  # SW_RESTORE
+    if user32.SetForegroundWindow(handle):
+        return
+    theirs = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    ours = kernel32.GetCurrentThreadId()
+    user32.AttachThreadInput(ours, theirs, True)
+    try:
+        user32.BringWindowToTop(handle)
+        user32.SetForegroundWindow(handle)
+    finally:
+        user32.AttachThreadInput(ours, theirs, False)
 
 
 def press(wanted: str, title: str = "") -> str:
@@ -176,6 +236,7 @@ def press(wanted: str, title: str = "") -> str:
     element, raw = _pick(_collect(uia, automation, window), wanted)
     if risky(element.name):
         raise HandsError(f"«{element.name}» — необратимо, нажму только по прямой команде")
+    _activate(window)
 
     attempts = (
         (uia.UIA_InvokePatternId, uia.IUIAutomationInvokePattern, "Invoke"),
@@ -223,6 +284,70 @@ def write(text: str, field: str = "", title: str = "") -> str:
     pattern.QueryInterface(uia.IUIAutomationValuePattern).SetValue(text)
     logger.info("Вписал в «%s» %d знаков", element.name, len(text))
     return element.name
+
+
+def dialogs(limit: int = 3) -> list[tuple[str, list[str]]]:
+    """Окна-вопросы на экране — **где бы они ни были**, — и их кнопки.
+
+    Нужно глазам проверки: заголовок «Недостаток свободной памяти» ещё не
+    говорит, что осталось нажать «Yes», а план без этого сдавался (живой случай
+    25.09.2026, Prism Launcher). Искать только впереди нельзя: владелец
+    предупредил, что такие окна обычно появляются **не в фокусе**.
+
+    Окно-вопрос узнаётся по трём признакам сразу: у него есть окно-владелец
+    (или это системный диалог `#32770`), оно небольшое и кнопок в нём немного.
+    Одних размера и кнопок мало — так выглядит и виджет плеера на рабочем столе.
+    """
+    if sys.platform != "win32":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetClassNameW.argtypes = [wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+    user32.GetWindow.restype = wintypes.HWND
+    user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
+    candidates: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(handle: int, _: int) -> bool:
+        if not user32.IsWindowVisible(handle):
+            return True
+        kind = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(handle, kind, 64)
+        owned = bool(user32.GetWindow(handle, 4))  # GW_OWNER
+        if owned or kind.value == "#32770":
+            candidates.append(int(handle))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    uia, automation = _uia()
+    found: list[tuple[str, list[str]]] = []
+    for handle in candidates:
+        try:
+            window = automation.ElementFromHandle(handle)
+            box = window.CurrentBoundingRectangle
+        except Exception:  # noqa: BLE001 — окно могло закрыться по дороге
+            continue
+        width, height = box.right - box.left, box.bottom - box.top
+        if not (0 < width <= DIALOG_WIDTH and 0 < height <= DIALOG_HEIGHT):
+            continue
+        title = window.CurrentName or ""
+        if forbidden(title):
+            continue
+        buttons = [
+            element.name for element, _ in _collect(uia, automation, window)
+            if element.kind == "кнопка" and not element.name.lower().startswith(_FRAME_BUTTONS)
+        ]
+        if buttons and len(buttons) <= DIALOG_BUTTONS:
+            found.append((title, buttons))
+        if len(found) >= limit:
+            break
+    return found
+
+
+#: Кнопки рамки окна: они есть у любого окна и к вопросу не относятся.
+_FRAME_BUTTONS = ("закрыть", "свернуть", "развернуть", "восстановить", "close", "minimize", "maximize", "restore")
 
 
 def available() -> bool:

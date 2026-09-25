@@ -489,7 +489,6 @@ class CoreTools:
         # владельца, и подтверждённый шаг не получает никаких особых прав: он
         # идёт тем же путём, что и та же команда, сказанная вслух сразу.
         if outcome.blocked is not None:
-            done = _steps_done(outcome, code)
             what = _describe_step(outcome.blocked, self._registry)
             # Вопрос задаётся о шаге, а согласие возвращает нас **в план**:
             # иначе разрешённый шаг выполнился бы в одиночку, а остальная
@@ -504,19 +503,21 @@ class CoreTools:
                     "steps": [step.tool for step in outcome.steps],
                     "blocked": outcome.blocked.tool,
                 },
+                # Каждая версия собирается целиком на своём языке: язык ответа
+                # выбирает конвейер, а не модель, передавшая `language`, — иначе
+                # выходило «Сделал шагов: 6. Could not continue…» (25.09.2026).
                 question={
-                    "ru": f"{done}Дальше нужно {what}. Делать?",
-                    "en": f"{done}Next step is {what}. Shall I?",
+                    "ru": f"{_steps_done(outcome, 'ru')}Дальше нужно {what}. Делать?",
+                    "en": f"{_steps_done(outcome, 'en')}Next step is {what}. Shall I?",
                 },
             )
 
         if outcome.stopped:
-            done = _steps_done(outcome, code)
             return ToolResult.failure(
                 f"план остановлен: {outcome.stopped}",
                 speech={
-                    "ru": f"{done}Дальше не получилось: {outcome.stopped}.",
-                    "en": f"{done}Could not continue: {outcome.stopped}.",
+                    "ru": f"{_steps_done(outcome, 'ru')}Дальше не получилось: {outcome.stopped}.",
+                    "en": f"{_steps_done(outcome, 'en')}Could not continue: {outcome.stopped}.",
                 },
             )
 

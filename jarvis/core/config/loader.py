@@ -332,6 +332,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
         app=AppConfig(
             name=str(app.get("name", "Jarvis")),
             language=str(app.get("language", "ru")),
+            reply_language=str(app.get("reply_language", "") or ""),
         ),
         logging=LoggingConfig(
             level=str(log.get("level", "INFO")).upper(),

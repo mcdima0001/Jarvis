@@ -101,7 +101,7 @@ def describe(values: Mapping[str, Any]) -> str:
         if value in (None, "", {}, []):
             continue
         if isinstance(value, Mapping):
-            shown = {key: value[key] for key in ("active", "title", "url", "windows") if value.get(key)}
+            shown = {key: value[key] for key in ("active", "dialogs", "title", "url", "windows") if value.get(key)}
             text = json.dumps(shown or dict(value), ensure_ascii=False)
         else:
             text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)

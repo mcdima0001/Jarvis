@@ -174,10 +174,14 @@ class VoicePipeline:
         hotwords: Any = None,
         recorder: Any = None,
         faults: Faults | None = None,
+        reply_language: str = "",
     ) -> None:
         #: Журнал сбоев обращения к модели: неудача называет причину, а не
         #: прячется за «не справился» (21.09.2026).
         self._faults = faults if faults is not None else Faults()
+        #: Отвечать только на этом языке (`app.reply_language`); пусто — на
+        #: языке вопроса.
+        self._reply_language = reply_language
         #: Детектор слов без имени — только замер: пишет в лог, ничего не делает.
         self._hotwords = hotwords
         #: Запись услышанных фраз на диск (`audio.record_dir`); ``None`` — не писать.
@@ -695,6 +699,9 @@ class VoicePipeline:
         программы, сайта или файла поводом не является. Подробности и цена
         ошибки — в `dominant_language`.
         """
+        if self._reply_language:
+            # Владелец задал язык ответа — догадки распознавания не в счёт.
+            return self._reply_language
         found = dominant_language(command)
         if found:
             self._language = found

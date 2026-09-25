@@ -1910,3 +1910,20 @@ def test_hush_is_only_the_bare_word() -> None:
 
     assert is_hush("Хватит.") and is_hush("замолчи") and is_hush("stop")
     assert not is_hush("поставь на стоп") and not is_hush("хватит играть музыку")
+
+
+def test_reply_language_overrides_what_was_heard() -> None:
+    """Владелец 25.09.2026: английский голос — только запасной, без интернета.
+
+    «Запусти Minecraft через Prism Launcher» сразу после перезапуска получило
+    английский ответ: язык разговора ещё не был задан, и в запасе оказалась
+    догадка распознавания.
+    """
+    from jarvis.core.voice.pipeline import VoicePipeline
+
+    pipeline = object.__new__(VoicePipeline)
+    pipeline._language = ""
+    pipeline._reply_language = "ru"
+    assert pipeline._language_of("launch Minecraft now please", fallback="en") == "ru"
+    pipeline._reply_language = ""
+    assert pipeline._language_of("launch Minecraft now please", fallback="en") == "en"

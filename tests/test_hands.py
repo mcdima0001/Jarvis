@@ -260,3 +260,12 @@ async def test_looks_do_not_eat_the_action_budget() -> None:
     planner, window = _mending(script[:4] + script[-2:])
     outcome = await planner.run("посмотри и нажми")
     assert outcome.ok and window.pressed == ["Воспроизведение"]
+
+
+def test_short_dialog_buttons_are_found() -> None:
+    """Живая проверка 25.09.2026: «не нашёл „Да“; есть: Да, Нет» — нечёткое
+    сравнение не берёт слова короче трёх букв, а в окнах-вопросах только такие."""
+    hands = _hands()
+    items = [(hands.Element(kind="кнопка", name=name), name) for name in ("Да", "Нет", "OK")]
+    assert hands._pick(items, "да")[0].name == "Да"
+    assert hands._pick(items, "ok")[0].name == "OK"

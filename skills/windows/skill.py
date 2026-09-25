@@ -1330,7 +1330,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.10.3",
+        version="0.11.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1782,7 +1782,17 @@ class WindowsSkill(Skill):
             title for title in (await asyncio.to_thread(window_handles)).values()
             if title not in _BACKGROUND_TITLES and title != active
         ]
-        return ToolResult.success({"active": active, "windows": titles[:OBSERVE_WINDOWS]})
+        seen: dict[str, Any] = {"active": active, "windows": titles[:OBSERVE_WINDOWS]}
+        try:
+            asking = await asyncio.to_thread(hands().dialogs)
+        except Exception as exc:  # noqa: BLE001 — глаза не важнее самой работы
+            self.log.debug("Окна-вопросы не прочитались: %s", exc)
+            asking = []
+        if asking:
+            # Окно-вопрос на экране — где бы оно ни было: его кнопки и есть то,
+            # что осталось нажать («Yes» в «Недостатке памяти» у Prism).
+            seen["dialogs"] = [f"{title}: {', '.join(buttons)}" for title, buttons in asking]
+        return ToolResult.success(seen)
 
     # --- точные руки: нажать по названию, а не мышью по пикселям ------------
 
