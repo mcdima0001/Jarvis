@@ -1030,6 +1030,17 @@ def _sibling(filename: str, name: str) -> Any:
     return module
 
 
+def hands() -> Any:
+    """Точные руки: нажать в окне по названию (`hands.py`)."""
+    global _HANDS
+    if _HANDS is None:
+        _HANDS = _sibling("hands.py", "jarvis_skills.windows_hands")
+    return _HANDS
+
+
+_HANDS: Any = None
+
+
 def media() -> Any:
     """Соседний модуль `media.py`: скилл грузится по файлу, без пакета."""
     global _MEDIA
@@ -1249,7 +1260,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.9.6",
+        version="0.10.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1702,6 +1713,51 @@ class WindowsSkill(Skill):
             if title not in _BACKGROUND_TITLES and title != active
         ]
         return ToolResult.success({"active": active, "windows": titles[:OBSERVE_WINDOWS]})
+
+    # --- точные руки: нажать по названию, а не мышью по пикселям ------------
+
+    @tool(routable=False, reversible=True, agent=True)
+    async def elements(self, window: str = "") -> ToolResult:
+        """Что можно нажать или заполнить в окне программы — кнопки, поля, пункты, по именам.
+
+        :param window: заголовок окна, как его называют; пусто — окно, которое впереди.
+        """
+        try:
+            title, found = await asyncio.to_thread(hands().elements, window)
+        except hands().HandsError as exc:
+            return ToolResult.failure(str(exc), speech={"ru": f"{exc}.", "en": str(exc)})
+        listed = [f"{item.kind}: {item.name}" for item in found]
+        return ToolResult.success({"window": title, "elements": listed})
+
+    @tool(routable=False, reversible=True, agent=True, shows=True)
+    async def press_element(self, name: str, window: str = "") -> ToolResult:
+        """Нажать кнопку, пункт, вкладку или ссылку в окне программы по названию — без мыши.
+
+        Необратимое («Удалить», «Отправить», «Оплатить») само не нажимается:
+        для него нужна прямая команда (`jarvis.core.risk`).
+
+        :param name: название элемента, как в списке `elements`.
+        :param window: заголовок окна; пусто — окно, которое впереди.
+        """
+        try:
+            pressed = await asyncio.to_thread(hands().press, name, window)
+        except hands().HandsError as exc:
+            return ToolResult.failure(str(exc), speech={"ru": f"{exc}.", "en": str(exc)})
+        return ToolResult.success({"pressed": pressed}, speech={"ru": f"Нажал: {pressed}.", "en": f"Pressed {pressed}."})
+
+    @tool(routable=False, reversible=True, agent=True, shows=True)
+    async def write_text(self, text: str, field: str = "", window: str = "") -> ToolResult:
+        """Вписать текст в поле окна программы. Enter не нажимает — отправляет владелец.
+
+        :param text: что вписать.
+        :param field: название поля; пусто — первое поле окна.
+        :param window: заголовок окна; пусто — окно, которое впереди.
+        """
+        try:
+            where = await asyncio.to_thread(hands().write, text, field, window)
+        except hands().HandsError as exc:
+            return ToolResult.failure(str(exc), speech={"ru": f"{exc}.", "en": str(exc)})
+        return ToolResult.success({"field": where}, speech={"ru": f"Вписал в «{where}».", "en": f"Typed into {where}."})
 
     @tool(routable=False, reversible=True)
     async def music_control(self, action: str) -> ToolResult:

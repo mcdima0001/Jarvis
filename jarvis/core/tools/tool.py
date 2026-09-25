@@ -38,6 +38,8 @@ class _ToolMarker:
     reversible: bool | None
     recognizes: str | None = None
     shows: bool = False
+    agent: bool = False
+    risk_arg: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -73,6 +75,29 @@ class ToolSpec:
     #: стенд 25.09.2026 показал 9 ложных успехов из 20. Прогнозу погоды флаг
     #: не нужен: его результат — сам ответ.
     shows: bool = False
+    #: Руки агентного цикла: план видит инструмент, даже если модель разбора
+    #: команд его не видит (`routable=False`). Нажать кнопку по имени плану
+    #: нужно, а в каталог каждой неузнанной фразы ей незачем — это токены.
+    agent: bool = False
+    #: Какой аргумент называет то, что нажимается. Необратимость у «нажми»
+    #: зависит не от инструмента, а от кнопки: «Семь» — можно, «Купить» — нет
+    #: (`jarvis.core.risk`). План с таким инструментом решает по значению.
+    risk_arg: str | None = None
+
+    def unattended_with(self, arguments: Mapping[str, Any]) -> bool:
+        """Можно ли плану сделать этот шаг сам — с учётом аргументов.
+
+        На прямую команду голосом не влияет: «нажми купить», сказанное вслух,
+        выполняется — сказал, значит разрешил.
+        """
+        if self.unattended:
+            return True
+        if not self.risk_arg:
+            return False
+        from jarvis.core.risk import risky
+
+        value = str(arguments.get(self.risk_arg) or "").strip()
+        return bool(value) and not risky(value)
 
     @property
     def unattended(self) -> bool:
@@ -121,6 +146,8 @@ def tool(
     reversible: bool | None = None,
     recognizes: str | None = None,
     shows: bool = False,
+    agent: bool = False,
+    risk_arg: str | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Пометить метод скилла как инструмент.
 
@@ -146,6 +173,12 @@ def tool(
     :param shows: результат виден на экране (окно, вкладка, страница). Такой
         инструмент, выбранный моделью, проверяется: совпало ли увиденное с
         просьбой. См. `jarvis.core.verify`.
+    :param agent: показывать агентному циклу (`core.plan`), даже если в
+        каталог разбора команд инструмент не идёт. Это руки плана: нажать по
+        имени, вписать в поле, посмотреть, что можно нажать.
+    :param risk_arg: имя аргумента, называющего нажимаемое. План делает такой
+        шаг сам, только если название не звучит необратимо («Удалить»,
+        «Купить», «Отправить»); прямую команду это не касается.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -161,6 +194,8 @@ def tool(
                 reversible=reversible,
                 recognizes=recognizes,
                 shows=shows,
+                agent=agent,
+                risk_arg=risk_arg,
             ),
         )
         return func
@@ -203,6 +238,8 @@ def collect_tools(instance: Any, *, namespace: str) -> list[Tool]:
                     routable=marker.routable,
                     reversible=marker.reversible,
                     shows=marker.shows,
+                    agent=marker.agent,
+                    risk_arg=marker.risk_arg,
                 ),
                 handler=bound,
                 timeout=marker.timeout,
@@ -219,7 +256,7 @@ class ToolCatalog:
     specs: tuple[ToolSpec, ...] = field(default_factory=tuple)
 
     def function_schemas(
-        self, *, exclude: Container[str] = frozenset()
+        self, *, exclude: Container[str] = frozenset(), agent: bool = False
     ) -> list[dict[str, Any]]:
         """Схемы инструментов для function-calling.
 
@@ -231,11 +268,13 @@ class ToolCatalog:
             циклу: план не должен строить план (вложенность умножает расход, не
             добавляя возможностей) и не должен «выполнять» цель разговором о
             ней.
+        :param agent: каталог для агентного цикла — вдобавок к обычному ещё и
+            руки (`@tool(agent=True)`), которых модель разбора команд не видит.
         """
         return [
             spec.as_function_schema()
             for spec in self.specs
-            if spec.routable and spec.name not in exclude
+            if (spec.routable or (agent and spec.agent)) and spec.name not in exclude
         ]
 
     def describe(self) -> str:

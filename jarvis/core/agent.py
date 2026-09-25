@@ -82,6 +82,10 @@ _SYSTEM = {
         "За один раз вызывай ровно один инструмент. После каждого шага тебе "
         "сообщат, что получилось, — решай следующий шаг по результату, а не по "
         "догадке. Уже выполненный шаг не повторяй. "
+        "Нажимай и вписывай **по названию элемента**, а не мышью по "
+        "координатам: сперва посмотри, что можно нажать (список элементов окна "
+        "или страницы), потом нажми нужное по имени. Мышь — только когда по "
+        "названию нельзя. "
         "Когда цель достигнута или стало ясно, что её не достичь, ответь "
         "текстом без вызова: одним-двумя предложениями, их произнесут вслух."
     ),
@@ -89,7 +93,10 @@ _SYSTEM = {
         "You are carrying out the owner's request step by step by calling "
         "tools. Call exactly one tool at a time. After each step you are told "
         "what happened; decide the next step from the result, not from a guess. "
-        "Never repeat a step already done. When the goal is reached, or it is "
+        "Never repeat a step already done. Press and type **by element name**, "
+        "not with the mouse at coordinates: first list what can be pressed in "
+        "the window or page, then press it by name; the mouse only when naming "
+        "is impossible. When the goal is reached, or it is "
         "clear it cannot be, reply with text and no call: one or two sentences, "
         "they will be read aloud."
     ),
@@ -154,7 +161,7 @@ class Planner:
 
     def _schemas(self) -> list[dict[str, Any]]:
         """Каталог для цикла: всё, что видит роутер, кроме спрятанного."""
-        return self._registry.catalog().function_schemas(exclude=HIDDEN)
+        return self._registry.catalog().function_schemas(exclude=HIDDEN, agent=True)
 
     def _opening(self, goal: str, language: str) -> list[Message]:
         """Первые две реплики: правила игры и сама цель."""
@@ -239,7 +246,7 @@ class Planner:
                 return Outcome(steps=tuple(history), stopped="выбран несуществующий инструмент")
 
             # «План не даёт новых прав»: необратимое сам не делаю.
-            if not found.spec.unattended:
+            if not found.spec.unattended_with(call.arguments):
                 logger.info("Цикл упёрся в необратимый шаг: %s", name)
                 return Outcome(
                     steps=tuple(history),

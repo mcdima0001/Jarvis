@@ -977,7 +977,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.3.2",
+        version="0.4.0",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1038,7 +1038,7 @@ class PageSkill(Skill):
     @tool(phrases=["нажми {control}", "нажми кнопку {control}", "нажми на {control}",
                    "открой {control} на странице", "открой {control} на сайте",
                    "press {control}", "click {control}"],
-          reversible=False, routable=False)
+          reversible=False, routable=False, agent=True, risk_arg="control", shows=True)
     async def press(self, control: str, site: str = "") -> ToolResult:
         """Нажать кнопку на странице по её подписи.
 
