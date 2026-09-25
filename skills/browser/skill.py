@@ -66,6 +66,32 @@ def browser_running() -> bool:
     return False
 
 
+#: Поиск картинок у тех, у кого он есть. «Найди в гугле картинки с котами»
+#: открывало обычную выдачу со словом «картинки» (стенд 25.09.2026, ложный
+#: успех): запрос попадал в поиск как есть, а просьба была — картинки.
+IMAGE_ENGINES: dict[str, str] = {
+    "google": "https://www.google.com/search?tbm=isch&q={query}",
+    "yandex": "https://yandex.ru/images/search?text={query}",
+    "duckduckgo": "https://duckduckgo.com/?iax=images&ia=images&q={query}",
+}
+
+#: С чего начинается просьба о картинках: «картинки с котами», «фото Эйфелевой башни».
+_PICTURES = re.compile(
+    r"^(?:картинк\w*|изображени\w*|фотк\w*|фото(?:графи\w*)?|pictures?|images?|photos?)"
+    r"(?:\s+(?:с|со|про|of|with))?\s+",
+    re.IGNORECASE,
+)
+
+
+def images_asked(query: str) -> tuple[bool, str]:
+    """Просят ли картинки, и что искать без этого слова. Чистая функция — её проверяют тесты."""
+    text = query.strip()
+    found = _PICTURES.match(text)
+    if not found or not text[found.end():].strip():
+        return False, text
+    return True, text[found.end():].strip()
+
+
 #: Поисковые системы: куда подставить запрос.
 ENGINES: dict[str, str] = {
     "google": "https://www.google.com/search?q={query}",
@@ -747,7 +773,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.2.1",
+        version="0.2.2",
         spoken=("браузер", "browser"),
     )
 
@@ -960,7 +986,9 @@ class BrowserSkill(Skill):
         :param engine: где искать: гугл, яндекс, ютуб, википедия, гитхаб, карты.
         """
         chosen = pick_engine(engine, self._engines, self._default_engine)
-        url = search_url(query, self._engines[chosen])
+        pictures, query = images_asked(query)
+        template = IMAGE_ENGINES.get(chosen) if pictures else None
+        url = search_url(query, template or self._engines[chosen])
         if url is None:
             return ToolResult.failure(
                 "пустой поисковый запрос",

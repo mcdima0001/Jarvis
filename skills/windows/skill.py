@@ -70,6 +70,26 @@ BUILT_IN: dict[str, str] = {
     "paint": "mspaint.exe",
     "микшер": "sndvol.exe",
     "volume mixer": "sndvol.exe",
+    # Средства администрирования (25.09.2026): в меню «Пуск» их нет, и стенд
+    # показал, что «открой диспетчер устройств» открывало диспетчер задач, а
+    # «редактор реестра» и «сведения о системе» не находились вовсе.
+    "диспетчер устройств": "devmgmt.msc",
+    "device manager": "devmgmt.msc",
+    "редактор реестра": "regedit.exe",
+    "реестр": "regedit.exe",
+    "registry editor": "regedit.exe",
+    "сведения о системе": "msinfo32.exe",
+    "system information": "msinfo32.exe",
+    "звук": "mmsys.cpl",
+    "устройства воспроизведения": "mmsys.cpl",
+    "управление дисками": "diskmgmt.msc",
+    "службы": "services.msc",
+    "просмотр событий": "eventvwr.msc",
+    "управление компьютером": "compmgmt.msc",
+    "планировщик заданий": "taskschd.msc",
+    "свойства системы": "sysdm.cpl",
+    "сетевые подключения": "ncpa.cpl",
+    "программы и компоненты": "appwiz.cpl",
 }
 
 #: Ярлыки, которые в меню «Пуск» есть, а запускать их никто не просит.
@@ -157,6 +177,12 @@ MAX_PROGRAM_WORDS = 5
 #: вовсе. Поэтому глубина едет по прямой между двумя точками.
 QUIET_CUT_DB = 10.0
 LOUD_CUT_DB = 35.0
+
+#: Местоимения: «открой его» — ссылка на сказанное, а не название программы.
+_POINTERS = frozenset({"его", "её", "ее", "их", "это", "этот", "эту", "то", "него", "неё", "it", "this", "that"})
+
+#: Предлоги места: «в картах», «на ютубе» — это где, а не что.
+_PLACE_WORDS = frozenset({"в", "во", "на", "in", "on"})
 
 #: Длиннее — уже не название программы, а фраза со своим смыслом: «в википедии
 #: статью про Тверь». Замер по живым логам 25.09.2026: всё срабатывавшее через
@@ -263,10 +289,30 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     # содержит «кто», и вопрос «кто такой трамп» открывал Telegram, а «блокнот»
     # содержит «окно». Побеждает самое короткое название, иначе «обс» уезжает
     # в «OBS Studio Portable Edition».
+    # У запроса из нескольких слов учитываются **все** слова, а не одно у края:
+    # «диспетчер устройств» совпадал с «диспетчером задач» по одному
+    # «диспетчер», и открывалось не то (стенд 25.09.2026, ложный успех).
+    # Общие слова вроде «лаунчер» и «студио» в названиях программ в ключи не
+    # попадают (`_GENERIC`), поэтому и в запросе их не требуем: иначе «призом
+    # лаунчера» перестало бы находить Prism Launcher — у него «launcher» нечем
+    # сравнить. Проверено на всех фразах запуска из логов владельца.
+    said = [
+        word for word in _significant_words(query)
+        if not any(romanize(word).startswith(generic) for generic in _GENERIC if len(generic) >= 4)
+    ]
+
+    def accounts_for(keys: tuple[str, ...]) -> bool:
+        if len(said) < 2:
+            return True
+        return all(
+            any(touches(form, key) or touches(key, form) for key in keys for form in (word, romanize(word)))
+            for word in said
+        )
+
     contained = [
         (name, target)
         for name, target, keys, _ in prepared
-        if any(touches(part, key) for key in keys for part in wanted)
+        if any(touches(part, key) for key in keys for part in wanted) and accounts_for(keys)
     ]
     if contained:
         return min(contained, key=lambda item: len(item[0]))
@@ -290,8 +336,25 @@ def match_program(query: str, catalog: Mapping[str, str]) -> tuple[str, str] | N
     # названия — слишком слабое основание: «открой гитхап» запускало «Ample
     # Guitar», потому что «githap» похоже на «guitar» на 0.73. Точное
     # совпадение и совпадение краем по словам работают выше и там уместны.
+    def each_word_close(keys: tuple[str, ...]) -> bool:
+        # То же правило, что выше, но нечётко: «диспетчер печати» похож на
+        # «диспетчер задач» целиком на 0.71 — общее длинное слово тянет
+        # похожесть вверх, — хотя «печати» и «задач» не похожи вовсе.
+        if len(said) < 2:
+            return True
+        return all(
+            any(
+                closeness(form, key, balance=_BALANCE) >= _SIMILARITY or touches(form, key)
+                for key in keys
+                for form in (word, romanize(word))
+            )
+            for word in said
+        )
+
     best: tuple[float, str, str] | None = None
-    for name, target, _, whole in prepared:
+    for name, target, keys, whole in prepared:
+        if not each_word_close(keys):
+            continue
         for key in whole:
             for part in wanted:
                 # Сравнивать имеет смысл слова сопоставимой длины: короткое
@@ -1260,7 +1323,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.10.1",
+        version="0.10.2",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -2078,6 +2141,14 @@ class WindowsSkill(Skill):
         """
         program = str(arguments.get("program", "")).strip()
         if not program:
+            return False
+        words = program.lower().split()
+        # «Открой его», «открой это» — ссылка на то, о чём только что шла речь,
+        # а не название. Стенд 25.09.2026: «найди видео … и открой его» союз
+        # резал надвое, и «его» искалось как программа. А «в картах», «на
+        # ютубе» начинаются с предлога — программы так не называют, это место,
+        # и такую просьбу лучше поймёт модель, видящая разговор.
+        if words[0] in _POINTERS or (words[0] in _PLACE_WORDS and len(words) > 1):
             return False
         if match_program(program, self._catalog) is not None:
             return True

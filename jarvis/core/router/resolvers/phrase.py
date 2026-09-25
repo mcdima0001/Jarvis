@@ -24,6 +24,17 @@ from ..templates import specificity as _specificity
 
 logger = logging.getLogger(__name__)
 
+#: Вторая просьба внутри слота: союз и повелительный глагол следом. Глаголы —
+#: повелительные, а не любые: «включи трек Я сошла с ума и не помню» и «напиши
+#: маме буду через час и куплю хлеб» — одна просьба, союз там живёт внутри.
+_SECOND_REQUEST = re.compile(
+    r"\sи\s+(?:потом\s+|затем\s+|ещё\s+|еще\s+)?"
+    r"(?:открой|включи|найди|покажи|нажми|запусти|переведи|поставь|сделай|отправь|"
+    r"закрой|выключи|перейди|зайди|скачай|сохрани|построй|посмотри|прочитай|прочти|"
+    r"проложи|скопируй|вставь)\b",
+    re.IGNORECASE,
+)
+
 
 class PhraseResolver:
     """Точное и шаблонное совпадение по фразам, объявленным скиллами."""
@@ -66,7 +77,9 @@ class PhraseResolver:
         exact, templates = self._index()
 
         tool_name = exact.get(text)
-        if tool_name is not None:
+        # Точная фраза тоже может уступить: «открой в картах» значит «открой
+        # найденное место», только пока место свежее; без него это просто карты.
+        if tool_name is not None and self._recognized(tool_name, {}):
             return Intent(
                 tool=tool_name,
                 confidence=1.0,
@@ -81,6 +94,14 @@ class PhraseResolver:
             if not match:
                 continue
             arguments = {k: v.strip() for k, v in match.groupdict().items() if v}
+            if any(_SECOND_REQUEST.search(f" {value}") for value in arguments.values()):
+                # В слот попала вторая просьба: «найди на ютубе видео Veritasium
+                # и открой его» — `найди на {engine} {query}` забирал «видео … и
+                # открой его» целиком в поисковый запрос (стенд 25.09.2026). Две
+                # просьбы подряд, где вторая ссылается на первую, — работа для
+                # плана, а не для одного инструмента.
+                logger.debug("В слот %s попала вторая просьба — уступаю", name)
+                continue
             if not self._recognized(name, arguments):
                 # Шаблон совпал по форме, но инструмент такого значения не
                 # знает: «открой в википедии статью про Тверь» — не программа.

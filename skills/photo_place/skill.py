@@ -77,8 +77,9 @@ import base64
 import io
 import math
 import re
+import time
 from collections import Counter
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -1152,6 +1153,12 @@ def tighter(candidate: float | None, current: float | None) -> bool:
     return current is None or candidate < current
 
 
+#: Подпись найденного места в обстановке и сколько оно остаётся верным. Полчаса
+#: — «открой в картах» говорят сразу, а через час то же место — уже неправда.
+PLACE_NOTE = "найдено место"
+PLACE_FRESH_MIN = 30.0
+
+
 def map_url(latitude: float, longitude: float) -> str:
     """Ссылка на точку в OpenStreetMap."""
     return (
@@ -1302,7 +1309,7 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.6.0",
+        version="0.7.0",
         spoken=("место по фото", "где снято", "photo place"),
     )
 
@@ -1393,7 +1400,6 @@ class PhotoPlaceSkill(Skill):
         phrases=[
             "открой место съёмки на карте",
             "покажи на карте где снято",
-            "открой это место в картах",
             "show where this was taken on the map",
         ],
         reversible=False, routable=False)
@@ -1473,6 +1479,7 @@ class PhotoPlaceSkill(Skill):
         if verdict.point is not None:
             payload["latitude"], payload["longitude"] = verdict.point
             payload["map"] = map_url(*verdict.point)
+            self._remember_place(verdict.place, verdict.point)
         # Реплика одна и на том языке, на котором спросили: агента об этом же
         # и просили. Собирать вторую на другом языке не из чего — переводить
         # ответ значило бы звать модель ещё раз ради слова «здание».
@@ -1708,6 +1715,60 @@ class PhotoPlaceSkill(Skill):
 
     # --- что делаем с версиями -----------------------------------------------
 
+    def _remember_place(self, place: str, point: tuple[float, float]) -> None:
+        """Положить найденное место в обстановку: следующая просьба может о нём.
+
+        Живой случай 25.09.2026: «где была сделана фотка на экране» → «Сингапур,
+        точность — здание», и следом «открой в картах» — а найденное место
+        осталось только словами в реплике, без координат, и открыть было нечего.
+        Координаты здесь, а не ссылка: ссылка не влезает в строку обстановки, а
+        по координатам модель соберёт адрес любых карт сама.
+        """
+        self._found = (place, point, time.monotonic())
+        # Через getattr: скилл бывает собран без контекста (тесты, служебные
+        # вызовы), и тогда помнить место в обстановке просто негде.
+        situation = getattr(getattr(self, "context", None), "situation", None)
+        if situation is None:
+            return
+        latitude, longitude = point
+        situation.note(
+            PLACE_NOTE, f"{place} ({latitude:.5f}, {longitude:.5f})", minutes=PLACE_FRESH_MIN
+        )
+
+    def _has_found(self, arguments: Mapping[str, str]) -> bool:
+        """Есть ли свежее найденное место — тогда «открой в картах» про него."""
+        found = getattr(self, "_found", None)
+        return found is not None and time.monotonic() - found[2] < PLACE_FRESH_MIN * 60
+
+    @tool(
+        phrases=[
+            "открой в картах", "открой на карте", "покажи на карте", "покажи в картах",
+            "открой это место в картах", "открой это место на карте",
+            "покажи это место на карте", "open it on the map", "show it on the map",
+        ],
+        reversible=True, routable=False, recognizes="_has_found", shows=True,
+    )
+    async def open_found(self) -> ToolResult:
+        """Открыть на карте только что найденное место — без повторного разбора снимка.
+
+        Живой случай 25.09.2026: «где была сделана фотка» → «Сингапур», и следом
+        «открой в картах» просто переключило на браузер. Фразы срабатывают, только
+        пока место свежее (`PLACE_FRESH_MIN`); иначе они уступают обычным картам.
+        """
+        found = getattr(self, "_found", None)
+        if found is None:
+            return ToolResult.failure("ничего не находил", speech={"ru": "Я пока ничего не находил.", "en": "I haven't found anything yet."})
+        place, point, _ = found
+        if not self.tools.has("browser.open_site"):
+            return ToolResult.failure("открыть карту нечем")
+        opened = await self.tools.invoke("browser.open_site", {"site": map_url(*point)})
+        if not opened.ok:
+            return opened
+        return ToolResult.success(
+            {"place": place, "latitude": point[0], "longitude": point[1]},
+            speech={"ru": f"Открыл на карте: {place}.", "en": f"Opened on the map: {place}."},
+        )
+
     async def _answer(self, said: str, code: str, *, photo: str = "") -> ToolResult:
         """Выбрать версию по лестнице и, если есть чем, сверить её со спутником."""
         if is_refusal(said):
@@ -1760,6 +1821,7 @@ class PhotoPlaceSkill(Skill):
         # Точность говорится вслух: владельцу нужна точка, и услышать «только до
         # города» ему важнее, чем услышать название города.
         tail = f", {accuracy}" if accuracy else ""
+        self._remember_place(best.name, best.point)
         return ToolResult.success(payload, speech=_speech(best, tail))
 
     async def _decide(
@@ -2009,6 +2071,7 @@ class PhotoPlaceSkill(Skill):
             "file": str(photo),
         }
         self.log.info("Координаты из EXIF: %s -> %r", point, place)
+        self._remember_place(place or "место со снимка", point)
         if not place:
             return ToolResult.success(
                 payload,
