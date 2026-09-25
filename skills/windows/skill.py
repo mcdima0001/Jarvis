@@ -158,6 +158,11 @@ MAX_PROGRAM_WORDS = 5
 QUIET_CUT_DB = 10.0
 LOUD_CUT_DB = 35.0
 
+#: Длиннее — уже не название программы, а фраза со своим смыслом: «в википедии
+#: статью про Тверь». Замер по живым логам 25.09.2026: всё срабатывавшее через
+#: `открой {program}` укладывалось в два слова, всё длиннее падало.
+PROGRAM_WORDS = 2
+
 #: Сколько ждать блютуз-устройство после переключения служб, прежде чем сказать
 #: «не отозвалось». Замер 24.09.2026 (`tools/bluetooth_bench.py`): у живой
 #: колонки вызов сам блокируется на 6.1–6.5 с и возвращается, когда она уже
@@ -1216,7 +1221,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.9.4",
+        version="0.9.5",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1956,9 +1961,30 @@ class WindowsSkill(Skill):
             },
         )
 
+    def _knows_program(self, arguments: Mapping[str, str]) -> bool:
+        """Похоже ли услышанное на название программы или сайта.
+
+        Шаблон `открой {program}` забирал любую фразу на «открой»: стенд
+        25.09.2026 (`tools/agent_bench`) — 13 просьб из 20, от «открой в
+        википедии статью про Тверь» до «открой мои подписки на ютубе». Ни одна
+        не программа, а до модели, которая их поняла бы, они не доходили.
+
+        Правило выведено из живых логов, а не придумано: всё, что через этот
+        шаблон у владельца **срабатывало** («телеграм», «prism launcher»,
+        «призом лаунчер»), — не длиннее двух слов, а всё длиннее падало с
+        «программа не найдена». Короткое пропускаем и без каталога: за ним
+        стоит запасной путь в сайты («открой гитхаб»).
+        """
+        program = str(arguments.get("program", "")).strip()
+        if not program:
+            return False
+        if match_program(program, self._catalog) is not None:
+            return True
+        return len(program.split()) <= PROGRAM_WORDS
+
     @tool(phrases=["открой {program}", "запусти {program}",
                    "open {program}", "launch {program}", "start {program}"],
-          reversible=True)
+          reversible=True, recognizes="_knows_program")
     async def launch_program(self, program: str) -> ToolResult:
         """Запустить программу по названию — с обычными правами, без администратора.
 

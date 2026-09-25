@@ -1,0 +1,102 @@
+# Задачи, под которые у Jarvis НЕТ своего скилла.
+#
+# Просьба владельца 25.09.2026: «в фильме Джарвис — не набор команд, он может
+# что угодно». Стенд мерит ровно это: сколько просьб без готового инструмента
+# ассистент доводит до конца. Считается три исхода, и худший из них — не отказ,
+# а **ложный успех**: ассистент сказал «готово», а на машине ничего не
+# изменилось (живые случаи 24.09: «Готово» вместо нажатия кнопки, «Черновиков
+# нет» вместо перезагрузки модулей).
+#
+# Поэтому у каждой задачи есть `check` — проверка по СОСТОЯНИЮ машины, а не по
+# словам ассистента:
+#   title: подстрока в заголовке любого видимого окна (без регистра);
+#   url:   подстрока в адресе активной вкладки (через расширение браузера).
+# Несколько подстрок через список — достаточно любой.
+#
+# `ideal` — какими из нынешних инструментов задача решаема в принципе. Нужен
+# режиму --route-only: он ничего не выполняет, а смотрит, куда разбор уводит
+# просьбу. Это грубая оценка, настоящий счёт даёт только --live.
+#
+# Задачи выбраны безвредными: только открыть и показать. Ничего не отправляется,
+# не покупается и не удаляется.
+
+tasks:
+  - say: найди на ютубе последнее видео канала Veritasium и открой его
+    check: {url: ["youtube.com/watch"]}
+    ideal: [browser.open_site, browser.search, core.plan]
+
+  - say: открой в википедии статью про Тверь
+    check: {url: ["wikipedia.org/wiki/%D0%A2%D0%B2%D0%B5%D1%80%D1%8C", "wikipedia.org/wiki/Тверь"]}
+    ideal: [browser.open_site, browser.search, core.plan]
+
+  - say: открой настройки звука Windows
+    check: {title: ["Параметры", "Settings", "Звук"]}
+    ideal: [windows.launch_program, core.plan]
+
+  - say: открой диспетчер устройств
+    check: {title: ["Диспетчер устройств", "Device Manager"]}
+    ideal: [windows.launch_program, core.plan]
+
+  - say: покажи прогноз погоды на неделю на яндексе
+    check: {url: ["yandex.ru/pogoda"]}
+    ideal: [browser.open_site, core.plan]
+
+  - say: построй в картах маршрут до Москвы
+    check: {url: ["maps", "rtext"]}
+    ideal: [browser.open_site, core.plan]
+
+  - say: открой переводчик и переведи на английский доброе утро
+    check: {url: ["translate.google", "translate.yandex"]}
+    ideal: [browser.open_site, core.plan]
+
+  - say: открой на гитхабе репозиторий vosk
+    check: {url: ["github.com/alphacep/vosk"]}
+    ideal: [browser.open_site, browser.search, core.plan]
+
+  - say: открой историю браузера
+    check: {url: ["history"]}
+    ideal: [browser.open_site, core.plan]
+
+  - say: открой мои подписки на ютубе
+    check: {url: ["youtube.com/feed/subscriptions"]}
+    ideal: [browser.open_site, core.plan]
+
+  - say: открой калькулятор
+    check: {title: ["Калькулятор", "Calculator"]}
+    ideal: [windows.launch_program]
+
+  - say: открой панель управления звуком где выбирают устройство по умолчанию
+    check: {title: ["Звук", "Sound"]}
+    ideal: [windows.launch_program, core.plan]
+
+  - say: открой на хабре раздел про питон
+    check: {url: ["habr.com"]}
+    ideal: [browser.open_site, core.plan]
+
+  - say: открой страницу игры майнкрафт в стиме
+    check: {url: ["store.steampowered.com/app", "minecraft"]}
+    ideal: [browser.open_site, browser.search, core.plan]
+
+  - say: открой сведения о системе
+    check: {title: ["Сведения о системе", "System Information"]}
+    ideal: [windows.launch_program, core.plan]
+
+  - say: открой на ютубе трендовые видео
+    check: {url: ["youtube.com/feed/trending", "youtube.com/feed/explore"]}
+    ideal: [browser.open_site, core.plan]
+
+  - say: найди в гугле картинки с котами
+    check: {url: ["tbm=isch", "udm=2", "images"]}
+    ideal: [browser.search, browser.open_site, core.plan]
+
+  - say: открой в браузере страницу расширений
+    check: {url: ["extensions"]}
+    ideal: [browser.open_site]
+
+  - say: открой редактор реестра
+    check: {title: ["Редактор реестра", "Registry Editor"]}
+    ideal: [windows.launch_program]
+
+  - say: открой в кинопоиске фильм интерстеллар
+    check: {url: ["kinopoisk.ru/film"]}
+    ideal: [browser.open_site, browser.search, core.plan]

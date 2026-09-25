@@ -36,6 +36,7 @@ class _ToolMarker:
     timeout: float | None
     routable: bool
     reversible: bool | None
+    recognizes: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -95,6 +96,8 @@ class Tool:
     spec: ToolSpec
     handler: Callable[..., Awaitable[Any]]
     timeout: float | None = None
+    #: Узнаёт ли инструмент значения, пойманные шаблоном фразы (см. `tool`).
+    recognizer: Callable[[Mapping[str, str]], bool] | None = None
 
     @property
     def name(self) -> str:
@@ -110,6 +113,7 @@ def tool(
     timeout: float | None = None,
     routable: bool = True,
     reversible: bool | None = None,
+    recognizes: str | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Пометить метод скилла как инструмент.
 
@@ -124,6 +128,14 @@ def tool(
     :param reversible: можно ли отменить последствия. На прямую команду голосом
         не влияет: сказал — значит разрешил. Нужен там, где шаг выбрал план, а
         не человек. Не объявил — считается необратимым и спросит.
+    :param recognizes: имя метода скилла, который по аргументам из шаблона
+        отвечает, **узнаёт ли инструмент их вообще**. Нужен шаблонам со
+        свободным слотом: `открой {program}` забирал любую фразу на «открой» —
+        стенд 25.09.2026 показал 13 просьб из 20, от «открой в википедии
+        статью про Тверь» до «открой мои подписки на ютубе». Ни одна не была
+        программой, и до модели, которая поняла бы их, они не доходили. Метод
+        обязан быть быстрым и синхронным: он спрашивается на каждой фразе,
+        совпавшей с шаблоном. Не узнал — шаблон уступает дальше по цепочке.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -137,6 +149,7 @@ def tool(
                 timeout=timeout,
                 routable=routable,
                 reversible=reversible,
+                recognizes=recognizes,
             ),
         )
         return func
@@ -181,6 +194,7 @@ def collect_tools(instance: Any, *, namespace: str) -> list[Tool]:
                 ),
                 handler=bound,
                 timeout=marker.timeout,
+                recognizer=getattr(instance, marker.recognizes) if marker.recognizes else None,
             )
         )
     return tools

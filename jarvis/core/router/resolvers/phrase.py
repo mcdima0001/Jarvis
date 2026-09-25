@@ -78,12 +78,36 @@ class PhraseResolver:
         # именем собственным или моделью оборудования, и портить его нельзя.
         for pattern, name in templates:
             match = pattern.match(utterance.cleaned)
-            if match:
-                return Intent(
-                    tool=name,
-                    arguments={k: v.strip() for k, v in match.groupdict().items() if v},
-                    confidence=0.95,
-                    resolver=self.name,
-                    utterance=utterance.text,
-                )
+            if not match:
+                continue
+            arguments = {k: v.strip() for k, v in match.groupdict().items() if v}
+            if not self._recognized(name, arguments):
+                # Шаблон совпал по форме, но инструмент такого значения не
+                # знает: «открой в википедии статью про Тверь» — не программа.
+                # Уступаем дальше: следующему шаблону, выученному, модели.
+                logger.debug("Шаблон %s не узнал %s — уступаю", name, arguments)
+                continue
+            return Intent(
+                tool=name,
+                arguments=arguments,
+                confidence=0.95,
+                resolver=self.name,
+                utterance=utterance.text,
+            )
         return None
+
+    def _recognized(self, name: str, arguments: Mapping[str, str]) -> bool:
+        """Узнаёт ли инструмент значения из шаблона. Не объявил — узнаёт всё.
+
+        Сломавшаяся проверка считается «узнал»: иначе ошибка в одном скилле
+        отнимала бы у него все его фразы разом.
+        """
+        found = self._registry.get(name)
+        recognizer = found.recognizer if found is not None else None
+        if recognizer is None:
+            return True
+        try:
+            return bool(recognizer(arguments))
+        except Exception:  # noqa: BLE001 — проверка не важнее самой команды
+            logger.exception("Проверка значения у %s упала — считаю узнанным", name)
+            return True
