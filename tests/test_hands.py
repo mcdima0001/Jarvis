@@ -155,3 +155,82 @@ def test_passwords_and_money_are_off_limits() -> None:
     assert hands.forbidden("KeePassXC — Passwords.kdbx")
     assert hands.forbidden("Т-Банк — Переводы")
     assert not hands.forbidden("Калькулятор")
+
+
+# --- осечка руки: посмотреть и повторить, но не уйти дальше вслепую ----------
+
+
+class Window:
+    """Окно, где есть только «Воспроизведение» — а план сперва зовёт иначе."""
+
+    def __init__(self) -> None:
+        self.pressed: list[str] = []
+        self.other: list[str] = []
+
+    @tool(routable=False, reversible=True, agent=True)
+    async def elements(self) -> ToolResult:
+        """Что можно нажать."""
+        return ToolResult.success(["вкладка: Воспроизведение", "вкладка: Запись"])
+
+    @tool(routable=False, reversible=True, agent=True, shows=True)
+    async def press(self, name: str) -> ToolResult:
+        """Нажать по имени."""
+        if name != "Воспроизведение":
+            return ToolResult.failure(f"не нашёл «{name}»; есть: Воспроизведение, Запись")
+        self.pressed.append(name)
+        return ToolResult.success(name)
+
+    @tool(reversible=True)
+    async def louder(self) -> ToolResult:
+        """Посторонний шаг."""
+        self.other.append("louder")
+        return ToolResult.success(None)
+
+
+def _mending(script: list[object]) -> tuple[Planner, Window]:
+    registry = ToolRegistry(default_timeout=1.0)
+    window = Window()
+    for item in collect_tools(window, namespace="win"):
+        registry.register(item)
+    llm = LLMService(
+        providers={"scripted": Scripted(script)},  # type: ignore[dict-item]
+        profiles=ProfileRegistry(
+            {"plan": TaskProfile(task="plan", provider="scripted", model="stub")}, default_task="plan"
+        ),
+    )
+    return Planner(llm=llm, registry=registry), window
+
+
+async def test_a_missed_press_is_mended_by_looking_and_retrying() -> None:
+    """Живой случай стенда: «не нашёл „Вкладка «Воспроизведение»“; есть: …» —
+    и план оборвался, хотя следующим шагом мог нажать верное."""
+    planner, window = _mending([
+        ("win.press", {"name": "Вкладка «Воспроизведение»"}),
+        ("win.elements", {}),
+        ("win.press", {"name": "Воспроизведение"}),
+        "Открыл вкладку «Воспроизведение».",
+    ])
+    outcome = await planner.run("открой вкладку воспроизведение")
+    assert outcome.ok and window.pressed == ["Воспроизведение"]
+
+
+async def test_after_a_miss_the_plan_does_not_walk_on_blindly() -> None:
+    """Правило «сорвался шаг — дальше не идём» остаётся: чинить можно, уходить нельзя."""
+    planner, window = _mending([
+        ("win.press", {"name": "нет такой"}),
+        ("win.louder", {}),
+        "готово",
+    ])
+    outcome = await planner.run("нажми и сделай громче")
+    assert not outcome.ok and "не удался" in outcome.stopped
+    assert window.other == [], "посторонний шаг после осечки не выполнен"
+
+
+async def test_two_misses_in_a_row_stop_the_plan() -> None:
+    planner, window = _mending([
+        ("win.press", {"name": "раз"}),
+        ("win.press", {"name": "два"}),
+        ("win.press", {"name": "Воспроизведение"}),
+    ])
+    outcome = await planner.run("нажми")
+    assert not outcome.ok and window.pressed == [], "третьей попытки нет"

@@ -105,6 +105,10 @@ UNREACHABLE_MARKS = ("страница не отвечает", "расширен
 #: Что умеет сказать плееру на машине мультимедийная кнопка. Перемотки, лайка
 #: и «что играет» тут нет намеренно: послать их нечем, а молча сделать вид, что
 #: получилось, — худшее из возможного.
+#: Сколько элементов страницы показывать плану: больше — дороже в токенах, а
+#: нужное почти всегда среди видимого на экране, с него перечень и начинается.
+PROBE_LIMIT = 40
+
 #: Кто умеет то же самое на машине.
 #: Сперва спрашиваем AIMP: он отвечает через своё невидимое окно, то есть
 #: слушается даже свёрнутым в трей, и знает, что именно играет. Мультимедийная
@@ -977,7 +981,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.4.0",
+        version="0.5.0",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1034,6 +1038,30 @@ class PageSkill(Skill):
         :param seconds: на сколько секунд перематывать (forward и back).
         """
         return await self._act(str(action), site=site, seconds=seconds)
+
+    @tool(routable=False, reversible=True, agent=True)
+    async def elements(self, site: str = "") -> ToolResult:
+        """Что можно нажать на открытой странице — кнопки и ссылки, по подписям, у ссылок с адресом.
+
+        Глаза агентного цикла на странице (25.09.2026): без них план угадывал
+        подписи вслепую — «нажми vosk», «нажми войти» — и промахивался. Сначала
+        то, что видно на экране.
+
+        :param site: в какой вкладке; пусто — в той, куда смотришь.
+        """
+        if not self.tools.has("browser.page_probe"):
+            return ToolResult.failure("со страницей работает только расширение браузера")
+        found = await self.tools.invoke("browser.page_probe", {"site": site, "limit": PROBE_LIMIT})
+        if not found.ok or not isinstance(found.value, Mapping):
+            return found
+        listed = [
+            f"{item.get('name')}" + (f" → {item['href']}" if item.get("href") else "")
+            for item in found.value.get("controls", [])
+            if isinstance(item, Mapping) and item.get("name")
+        ]
+        return ToolResult.success(
+            {"page": found.value.get("title", ""), "url": found.value.get("url", ""), "elements": listed}
+        )
 
     @tool(phrases=["нажми {control}", "нажми кнопку {control}", "нажми на {control}",
                    "открой {control} на странице", "открой {control} на сайте",

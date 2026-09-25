@@ -1260,7 +1260,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.10.0",
+        version="0.10.1",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1718,7 +1718,7 @@ class WindowsSkill(Skill):
 
     @tool(routable=False, reversible=True, agent=True)
     async def elements(self, window: str = "") -> ToolResult:
-        """Что можно нажать или заполнить в окне программы — кнопки, поля, пункты, по именам.
+        """Что можно нажать в окне программы Windows — кнопки, поля, пункты. Для страницы в браузере — page.elements.
 
         :param window: заголовок окна, как его называют; пусто — окно, которое впереди.
         """
@@ -1731,7 +1731,7 @@ class WindowsSkill(Skill):
 
     @tool(routable=False, reversible=True, agent=True, shows=True)
     async def press_element(self, name: str, window: str = "") -> ToolResult:
-        """Нажать кнопку, пункт, вкладку или ссылку в окне программы по названию — без мыши.
+        """Нажать кнопку или пункт в окне программы Windows по названию. Для страницы в браузере — page.press.
 
         Необратимое («Удалить», «Отправить», «Оплатить») само не нажимается:
         для него нужна прямая команда (`jarvis.core.risk`).
@@ -1747,7 +1747,7 @@ class WindowsSkill(Skill):
 
     @tool(routable=False, reversible=True, agent=True, shows=True)
     async def write_text(self, text: str, field: str = "", window: str = "") -> ToolResult:
-        """Вписать текст в поле окна программы. Enter не нажимает — отправляет владелец.
+        """Вписать текст в поле окна программы Windows. Enter не нажимает — отправляет владелец.
 
         :param text: что вписать.
         :param field: название поля; пусто — первое поле окна.

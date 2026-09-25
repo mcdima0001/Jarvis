@@ -1184,7 +1184,12 @@ async function jarvisRunPlan(plan) {
  */
 function jarvisProbe(limit) {
   const MAX_NAME = 60;
-  const CLICKABLE = 'button, [role="button"], [role="switch"], [role="menuitem"]';
+  // Ссылки и вкладки — с 25.09.2026: перечень стал глазами агентного цикла, а
+  // на странице почти всё, куда нужно попасть, — ссылки: результаты поиска,
+  // репозиторий, «Подписки» в меню. Без них план угадывал подписи вслепую.
+  const CLICKABLE =
+    'button, [role="button"], [role="switch"], [role="menuitem"], ' +
+    'a[href], [role="link"], [role="tab"]';
   const STABLE = ["data-test-id", "data-testid", "data-l", "aria-label", "name"];
 
   const seen = (element) => {
@@ -1219,14 +1224,21 @@ function jarvisProbe(limit) {
     return "";
   };
 
+  // Сначала то, что видно на экране, потом остальное: на странице выдачи сотни
+  // ссылок, и по порядку в документе предел съела бы шапка сайта.
+  const height = (typeof window !== "undefined" && window.innerHeight) || Infinity;
+  const onScreen = (element) => {
+    const box = element.getBoundingClientRect();
+    return box.bottom > 0 && box.top < height;
+  };
+  const all = Array.from(document.querySelectorAll(CLICKABLE)).filter(seen);
+  const ordered = all.filter(onScreen).concat(all.filter((element) => !onScreen(element)));
+
   const controls = [];
   const known = new Set();
-  for (const element of document.querySelectorAll(CLICKABLE)) {
+  for (const element of ordered) {
     if (controls.length >= (limit || 40)) {
       break;
-    }
-    if (!seen(element)) {
-      continue;
     }
     const name = String(
       element.getAttribute("aria-label") || element.getAttribute("title") || element.textContent || "",
@@ -1239,7 +1251,13 @@ function jarvisProbe(limit) {
       continue;
     }
     known.add(name.toLowerCase());
-    controls.push({ name, sel: selector });
+    const link = element.getAttribute && element.getAttribute("href");
+    const entry = { name, sel: selector };
+    // Адрес ссылки — чтобы план мог перейти по ней прямо, не угадывая подпись.
+    if (link && !link.startsWith("javascript:")) {
+      entry.href = element.href || link;
+    }
+    controls.push(entry);
   }
 
   return { controls, title: document.title, url: location.href };

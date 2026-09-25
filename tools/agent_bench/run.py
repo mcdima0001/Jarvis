@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -50,6 +51,10 @@ TASKS = Path(__file__).with_name("tasks.yaml")
 SETTLE_S = 4.0
 #: Те, кто «отвечает» всегда: попадание сюда — это не выполнение, а разговор.
 TALKERS = frozenset({"core.chat", "core.help", "fallback"})
+#: Разговор, заявивший о сделанном, — тоже ложный успех. Живой прогон
+#: 25.09.2026: «Сэр, прогноз погоды на неделю на Яндексе открыт», а не открыто
+#: ничего, — и стенд записал это в честные отказы.
+CLAIMS = re.compile(r"(открыт|открыл|включ[её]н|включил|запустил|готово|нашёл|найден|сделал)")
 
 
 @dataclass
@@ -175,7 +180,10 @@ async def live(app: Any, tasks: list[dict[str, Any]]) -> list[Outcome]:
         solved = matches(task["check"], titles=visible_titles(), url=await active_url(app))
         outcome = Outcome(
             number=number, said=task["say"], tool=result.tool or "—",
-            claimed=bool(result.ok) and (result.tool or "") not in TALKERS,
+            claimed=bool(result.ok) and (
+                (result.tool or "") not in TALKERS
+                or bool(CLAIMS.search((app.pipeline.last_reply or "").lower()))
+            ),
             asked=bool(result.confirm or result.choices),
             solved=solved, seconds=spent,
             tokens=app.llm.spending.total_tokens - before,

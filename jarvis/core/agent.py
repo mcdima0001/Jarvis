@@ -113,6 +113,15 @@ class Step:
     summary: str = ""
 
 
+def _eyes(spec: Any) -> bool:
+    """Инструмент только смотрит: рука плана без видимого действия.
+
+    Нужен на время починки сорвавшейся руки: посмотреть, что можно нажать,
+    можно всегда, а делать что-то другое — нет.
+    """
+    return bool(spec.agent) and not spec.shows and spec.reversible is True
+
+
 def _signature(tool: str, arguments: Mapping[str, Any]) -> str:
     """Отпечаток шага: по нему цикл узнаёт, что ходит по кругу."""
     return f"{tool}:{json.dumps(dict(arguments), sort_keys=True, ensure_ascii=False)}"
@@ -208,6 +217,9 @@ class Planner:
             )
 
         rechecked = False
+        #: Какая рука сорвалась и сейчас чинится; пусто — чинить нечего.
+        mending = ""
+        mending_why = ""
         for number in range(1, self._steps + 1):
             try:
                 response = await self._llm.complete(
@@ -255,6 +267,12 @@ class Planner:
                     ),
                 )
 
+            # Пока рука чинится, можно только посмотреть (глаза) или повторить
+            # её же иначе. Уйти к другим шагам, не исправив, — это и есть
+            # «идти дальше вслепую», от которого правило ниже и защищает.
+            if mending and name != mending and not _eyes(found.spec):
+                return Outcome(steps=tuple(history), stopped=f"шаг {mending} не удался: {mending_why}")
+
             signature = _signature(name, call.arguments)
             if signature in seen:
                 # Повтор того же шага означает, что модель ходит по кругу.
@@ -275,7 +293,23 @@ class Planner:
             if not result.ok:
                 # Сорвавшийся шаг обрывает план, как и в цепочке через союз:
                 # человек подразумевает порядок, а не независимые поручения.
-                return Outcome(steps=tuple(history), stopped=f"шаг {name} не удался: {brief}")
+                #
+                # Исключение — руки (`@tool(agent=True)`), и только один раз.
+                # Их осечка почти всегда исправима и сама говорит как: «не нашёл
+                # „Вкладка «Воспроизведение»“; есть: Воспроизведение, Запись…».
+                # Стенд 25.09.2026: три плана оборвались ровно на такой осечке,
+                # хотя следующим шагом могли нажать верное.
+                if not found.spec.agent or mending == name:
+                    return Outcome(steps=tuple(history), stopped=f"шаг {name} не удался: {brief}")
+                mending, mending_why = name, brief
+                messages.append(Message.user(
+                    f"Шаг {number}: {name} не удался — {brief}. Исправь именно этот шаг: "
+                    "посмотри, что есть, и повтори по-другому. К другим шагам не "
+                    "переходи; если исправить нечем — честно скажи, что не вышло."
+                ))
+                continue
+            if name == mending:
+                mending = mending_why = ""
 
             # План видит, что стало после шага, а не только что ответил
             # инструмент: инструмент говорит «открыл ютуб», а на экране главная
