@@ -85,7 +85,7 @@ _DIALOG_SYSTEM = {
         "make it. Answer in English, in a sentence or two: your reply will be "
         "spoken aloud. No lists, no markdown. You control no devices and open "
         "nothing from here, so never claim in any form that something is "
-        "open, playing, found or done — you did not do it. Only if you are asked to "
+        "“open”, “playing”, “found” or “done” — you did not do it. Only if you are asked to "
         "perform an action, say you didn't catch that command and ask for it "
         "another way. Never answer a question, a joke or small talk that way: "
         "talking is the job here."
