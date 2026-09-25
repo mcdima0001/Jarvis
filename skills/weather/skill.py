@@ -162,6 +162,15 @@ def _describe(code: int, language: str) -> str:
     return pair[0] if language == "ru" else pair[1]
 
 
+def _in_ru(name: object) -> str:
+    """«в городе Анталья», а без названия — «у вас»: координаты есть, имени нет."""
+    return f"в городе {name}" if name else "у вас"
+
+
+def _in_en(name: object) -> str:
+    return f"in {name}" if name else "where you are"
+
+
 #: Где владелец сейчас — у скилла `whereabouts`. Скилл скилл не импортирует.
 HERE_TOOL = "whereabouts.here"
 
@@ -308,9 +317,9 @@ class WeatherSkill(Skill):
         return ToolResult.success(
             value,
             speech={
-                "ru": f"{when_ru.capitalize()} в городе {name} от {low} до {high} "
+                "ru": f"{when_ru.capitalize()} {_in_ru(name)} от {low} до {high} "
                       f"градусов, {condition_ru}.{rain_ru}",
-                "en": f"{when_en.capitalize()} in {name}: {low} to {high} degrees, "
+                "en": f"{when_en.capitalize()} {_in_en(name)}: {low} to {high} degrees, "
                       f"{condition_en}.{rain_en}",
             },
         )
@@ -355,11 +364,11 @@ class WeatherSkill(Skill):
                 "condition": _describe(current["weather_code"], "en"),
             },
             speech={
-                "ru": f"Сейчас в городе {name} {temperature} "
+                "ru": f"Сейчас {_in_ru(name)} {temperature} "
                       f"{plural_form(abs(temperature), ('градус', 'градуса', 'градусов'))}, "
                       f"{_describe(current['weather_code'], 'ru')}, "
                       f"влажность {humidity} процентов.",
-                "en": f"Right now in {name}: {temperature} degrees, "
+                "en": f"Right now {_in_en(name)}: {temperature} degrees, "
                       f"{_describe(current['weather_code'], 'en')}, "
                       f"humidity {humidity} percent.",
             },

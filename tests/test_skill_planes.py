@@ -113,3 +113,21 @@ def test_a_failed_lookup_is_not_a_place() -> None:
     assert whereabouts.from_lookup({"success": False, "message": "Reserved range"}) is None
     place = whereabouts.from_lookup({"success": True, "city": "Измир", "country": "Турция", "latitude": 38.41, "longitude": 27.13})
     assert place == {"city": "Измир", "country": "Турция", "latitude": 38.41, "longitude": 27.13, "source": "IP"}
+
+
+def test_windows_position_is_read_in_invariant_numbers() -> None:
+    place = whereabouts.parse_windows("ok;36.8712;30.8321;116;WiFi" + chr(13) + chr(10))
+    assert place is not None
+    assert (place["latitude"], place["longitude"], place["accuracy_m"]) == (36.8712, 30.8321, 116)
+    assert place["source"] == "Windows, WiFi"
+
+
+@pytest.mark.parametrize("output", ["", "denied;Denied", "ok;36,87;30,83;116;WiFi", "ok;1;2"])
+def test_windows_without_a_position_is_not_a_place(output: str) -> None:
+    assert whereabouts.parse_windows(output) is None
+
+
+def test_a_town_is_a_city_too() -> None:
+    assert whereabouts.city_of({"city": "Анталья", "town": "Муратпаша"}) == "Анталья"
+    assert whereabouts.city_of({"village": "Кемер", "state": "Анталья"}) == "Кемер"
+    assert whereabouts.city_of({}) == ""

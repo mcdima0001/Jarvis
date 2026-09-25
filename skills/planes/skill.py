@@ -194,6 +194,10 @@ def describe(
     }
 
 
+def _capital(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 class PlanesSkill(Skill):
     """Какой самолёт взлетел рядом или летит над головой — по ленте Flightradar24."""
 
@@ -275,7 +279,8 @@ class PlanesSkill(Skill):
             {"flight": plane.flight, "callsign": plane.callsign, "airline": self._airlines.get(plane.airline, plane.airline),
              "aircraft": plane.model, "from": plane.origin, "to": plane.destination,
              "altitude_m": round(plane.altitude_ft * FEET), "climbing": plane.vertical_fpm > 0},
-            speech={language: prefix.get(language, "") + text for language, text in speech.items()},
+            # Авиакомпании может не быть в справочнике — тогда фраза начиналась бы с «рейс».
+            speech={language: _capital(prefix.get(language, "") + text) for language, text in speech.items()},
         )
 
     @tool(
