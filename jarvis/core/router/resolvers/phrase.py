@@ -20,20 +20,11 @@ from jarvis.core.contracts import Intent, Utterance
 from jarvis.core.tools import ToolRegistry
 
 from ..templates import compile_template as _compile
+from ..templates import second_request
 from ..templates import specificity as _specificity
 
 logger = logging.getLogger(__name__)
 
-#: Вторая просьба внутри слота: союз и повелительный глагол следом. Глаголы —
-#: повелительные, а не любые: «включи трек Я сошла с ума и не помню» и «напиши
-#: маме буду через час и куплю хлеб» — одна просьба, союз там живёт внутри.
-_SECOND_REQUEST = re.compile(
-    r"\sи\s+(?:потом\s+|затем\s+|ещё\s+|еще\s+)?"
-    r"(?:открой|включи|найди|покажи|нажми|запусти|переведи|поставь|сделай|отправь|"
-    r"закрой|выключи|перейди|зайди|скачай|сохрани|построй|посмотри|прочитай|прочти|"
-    r"проложи|скопируй|вставь)\b",
-    re.IGNORECASE,
-)
 
 
 class PhraseResolver:
@@ -94,7 +85,7 @@ class PhraseResolver:
             if not match:
                 continue
             arguments = {k: v.strip() for k, v in match.groupdict().items() if v}
-            if any(_SECOND_REQUEST.search(f" {value}") for value in arguments.values()):
+            if second_request(arguments):
                 # В слот попала вторая просьба: «найди на ютубе видео Veritasium
                 # и открой его» — `найди на {engine} {query}` забирал «видео … и
                 # открой его» целиком в поисковый запрос (стенд 25.09.2026). Две

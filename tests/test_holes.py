@@ -148,3 +148,44 @@ def test_a_found_place_stays_fresh_for_half_an_hour() -> None:
     assert skill._has_found({})
     skill._found = ("старое", (0.0, 0.0), time.monotonic() - photo.PLACE_FRESH_MIN * 60 - 1)
     assert not skill._has_found({})
+
+
+# --- вторая просьба не просачивается ни через один резолвер со слотами --------
+
+
+class Channels:
+    @tool(phrases=["найди канал {channel}"], reversible=True)
+    async def open_channel(self, channel: str) -> ToolResult:
+        """Открыть канал."""
+        return ToolResult.success(channel)
+
+
+async def test_the_loose_resolver_does_not_swallow_a_second_request() -> None:
+    """Живой прогон 25.09.2026: шаблон фраз уступил, а `loose` положил в канал
+    «veritasium и открой его» — и прозвучало «Открываю канал veritasium и открой его»."""
+    from jarvis.core.router.resolvers.loose import LooseResolver
+
+    registry = ToolRegistry()
+    for item in collect_tools(Channels(), namespace="page"):
+        registry.register(item)
+    loose = LooseResolver(registry)
+    found = await loose.resolve(
+        Utterance(text="найди на ютубе последнее видео канала veritasium и открой его")
+    )
+    assert found is None
+
+
+def test_the_second_request_check_is_shared() -> None:
+    from jarvis.core.router.templates import second_request
+
+    assert second_request({"channel": "veritasium и открой его"})
+    assert second_request({"q": "котов и потом включи музыку"})
+    assert not second_request({"track": "я сошла с ума и не помню"})
+    assert not second_request({"n": 5})
+
+
+def test_windows_in_a_request_is_not_required_in_the_name() -> None:
+    """«Открой настройки звука Windows» — решалось раньше, и должно решаться."""
+    assert windows.match_program("настройки звука windows", windows.BUILT_IN) == (
+        "настройки звука", "ms-settings:sound",
+    )

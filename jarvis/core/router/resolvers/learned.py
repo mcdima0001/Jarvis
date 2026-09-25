@@ -38,7 +38,7 @@ from jarvis.core.memory import DocumentStore
 if TYPE_CHECKING:  # только для типов — цикла импорта не создаём
     from jarvis.core.tools import ToolRegistry
 
-from ..templates import PLACEHOLDER, compile_template, literal_words, specificity
+from ..templates import PLACEHOLDER, compile_template, literal_words, second_request, specificity
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +377,8 @@ class LearnedResolver:
             if not entry.get("tool"):
                 continue
             arguments = fill(entry.get("arguments") or {}, match.groupdict())
+            if second_request(arguments):
+                continue
             if not arguments and (entry.get("arguments") or {}):
                 # Шаблон совпал, а подставить нечего — запись битая.
                 logger.debug("Выученный шаблон %r не удалось заполнить", key)

@@ -32,6 +32,8 @@ from jarvis.core.contracts import Intent, Utterance
 from jarvis.core.text.matching import sounds_alike, stem
 from jarvis.core.tools import ToolRegistry
 
+from ..templates import second_request
+
 logger = logging.getLogger(__name__)
 
 #: Сколько чужих слов допускается между двумя опорами. Четыре — это замер:
@@ -165,6 +167,9 @@ class LooseResolver:
                 if got is None:
                     continue
                 arguments, junk = got
+                if second_request(arguments):
+                    # Вторая просьба в слоте: «канал veritasium и открой его».
+                    continue
                 if not junk:
                     # Хоть одна фраза совпала начисто — значит это работа точных
                     # фраз, а не наша. Молчим целиком, иначе «поставь таймер на

@@ -81,6 +81,9 @@ BUILT_IN: dict[str, str] = {
     "сведения о системе": "msinfo32.exe",
     "system information": "msinfo32.exe",
     "звук": "mmsys.cpl",
+    "настройки звука": "ms-settings:sound",
+    "параметры звука": "ms-settings:sound",
+    "sound settings": "ms-settings:sound",
     "устройства воспроизведения": "mmsys.cpl",
     "управление дисками": "diskmgmt.msc",
     "службы": "services.msc",
@@ -119,6 +122,10 @@ _GENERIC = frozenset({
     "app", "application", "browser", "client", "tools", "media", "file",
     "files", "games", "game", "experience", "adobe", "microsoft", "mozilla",
     "google", "nvidia", "the", "for", "and", "x64", "x86", "bit", "beta",
+    # «Windows» в названии ничего не отличает — как «Microsoft»; а в просьбе
+    # «открой настройки звука Windows» после 25.09.2026 оно требовалось бы
+    # найти в названии, и задача перестала бы решаться.
+    "windows",
 })
 
 
@@ -1323,7 +1330,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.10.2",
+        version="0.10.3",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
