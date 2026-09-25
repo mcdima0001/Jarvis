@@ -1180,6 +1180,11 @@ def system_volume() -> float:
 #: веб-панели это правильно, а для колонок рано: текст ещё не прозвучал.
 VOICE_SOURCE = "voice"
 
+#: Заполнитель «секунду»: реплика прозвучала, но это ещё не ответ — работа идёт.
+#: Имя то же, что пишет голосовой конвейер (`FILLER_SOURCE`), — это содержание
+#: события, а не ссылка на код конвейера.
+FILLER_SOURCE = "voice.filler"
+
 
 def restores_volume(source: str, *, awaiting_command: bool) -> bool:
     """Возвращать ли громкость на этой реплике ассистента.
@@ -1330,7 +1335,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.11.0",
+        version="0.11.1",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1485,6 +1490,9 @@ class WindowsSkill(Skill):
 
     async def _on_replied(self, event: Event) -> None:
         """Ответ прозвучал — вернуть громкость, если это был ответ на команду."""
+        if event.source == FILLER_SOURCE:
+            await self._breathe()
+            return
         if not restores_volume(event.source, awaiting_command=self._awaiting_command):
             # Реплика от диспетчера означает «сейчас буду говорить»: до конца
             # речи страховка сработать не должна, а реплика бывает длинной.
@@ -1503,6 +1511,31 @@ class WindowsSkill(Skill):
             self.log.debug("Снова говорю — громкость пока не возвращаю")
             return
         await self._restore()
+
+    async def _breathe(self) -> None:
+        """«Секунду» отзвучало, а работа ещё идёт — вернуть музыку, пока ждём.
+
+        Просьба владельца 25.09.2026: «он сказал „минуту“ и не вернул громкость
+        музыки — неприятное ощущение пустоты и ожидания». `photo_place` шёл
+        18.8 с, и всё это время в комнате было тихо. Приглушение нужно, пока
+        ассистент слушает и говорит, а не пока он думает.
+
+        Настоящий ответ приглушит снова сам (`_on_speaking`), а переход, начатый
+        раньше, уступит новому: побеждает последний. 14.09.2026 здесь музыка
+        поднималась поверх ответа — возврат тогда не проверял, не начал ли
+        ассистент говорить снова. Проверка та же, что у обычного возврата.
+
+        **Видео не трогаем**: фильм, который пошёл на двадцать секунд ожидания и
+        снова встал на ответе, хуже тишины. Его отпустит конец ответа.
+        """
+        spoke = self._speech_count
+        if self._restore_delay > 0:
+            await asyncio.sleep(self._restore_delay)
+        if self._speech_count != spoke:
+            # Ответ уже зазвучал, пока колонки договаривали «секунду».
+            return
+        self.log.debug("Сказал «секунду» — пока думаю, музыку возвращаю")
+        await self._restore(keep_video=True)
 
     async def _warm_vlc(self) -> None:
         """Разогреть соединение с VLC, ничего им не управляя."""
@@ -1720,12 +1753,13 @@ class WindowsSkill(Skill):
         self.log.debug("Ответа не дождался — возвращаю громкость")
         await self._restore()
 
-    async def _restore(self, *, fade: bool = True) -> None:
+    async def _restore(self, *, fade: bool = True, keep_video: bool = False) -> None:
         """Вернуть громкость тем, кого приглушали.
 
         :param fade: вести плавно. ``False`` — поставить сразу: при остановке
             приложения плавность некому слушать, а недоведённый переезд оставил
             бы музыку тихой.
+        :param keep_video: не снимать видео с паузы — ответ ещё впереди.
         """
         if self._duck_timer is not None:
             self._duck_timer.cancel()
@@ -1733,7 +1767,10 @@ class WindowsSkill(Skill):
         self._awaiting_command = False
         # Пауза снимается первой и безусловно: остановленное навсегда видео —
         # худший исход из всех возможных, хуже навсегда приглушённой музыки.
-        await self._release_video()
+        # Исключение одно — ожидание после «секунду»: там ответ ещё впереди, и
+        # его конец видео и отпустит.
+        if not keep_video:
+            await self._release_video()
         saved = dict(self._ducked)
         if not saved:
             return

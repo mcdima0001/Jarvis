@@ -1373,3 +1373,59 @@ async def test_a_new_overlay_command_cancels_the_previous_hold() -> None:
 
     assert first.cancelled() or first.done(), "прежнее удержание снято"
     assert skill._overlay_hold is None
+
+
+# --- после «секунду» музыка возвращается, пока ассистент думает ---------------
+
+
+def _breathing() -> tuple[Any, list[dict[str, Any]]]:
+    import logging
+
+    class Breather(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-breathe")
+
+    skill = object.__new__(Breather)
+    skill._speech_count = 1
+    skill._restore_delay = 0.0
+    skill._awaiting_command = False
+    calls: list[dict[str, Any]] = []
+
+    async def restore(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    skill._restore = restore
+    return skill, calls
+
+
+async def test_music_comes_back_after_the_filler() -> None:
+    """Живой случай 25.09.2026: «где снято» шло 18.8 с, после «минуту» в
+    комнате было тихо — «неприятное ощущение пустоты и ожидания»."""
+    from types import SimpleNamespace
+
+    skill, calls = _breathing()
+    await skill._on_replied(SimpleNamespace(source=windows.FILLER_SOURCE))
+    assert calls == [{"keep_video": True}], "музыку — вернуть, видео — оставить на паузе"
+
+
+async def test_no_return_if_the_answer_already_started() -> None:
+    """14.09.2026 музыка поднималась поверх ответа, звучавшего сразу за
+    «секунду». Возврат обязан уступить, если ассистент уже заговорил снова."""
+    import asyncio
+    from types import SimpleNamespace
+
+    skill, calls = _breathing()
+    skill._restore_delay = 0.05
+
+    async def answer_begins() -> None:
+        await asyncio.sleep(0.01)
+        skill._speech_count += 1   # так делает _on_speaking на настоящем ответе
+
+    await asyncio.gather(
+        skill._on_replied(SimpleNamespace(source=windows.FILLER_SOURCE)), answer_begins()
+    )
+    assert calls == [], "ответ уже звучит — громкость не поднимаем"
+
+
+def test_the_filler_is_still_not_the_end_of_the_reply() -> None:
+    """Полный возврат (с видео) по-прежнему только на настоящем ответе."""
+    assert not windows.restores_volume(windows.FILLER_SOURCE, awaiting_command=False)
