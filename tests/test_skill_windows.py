@@ -1429,3 +1429,31 @@ async def test_no_return_if_the_answer_already_started() -> None:
 def test_the_filler_is_still_not_the_end_of_the_reply() -> None:
     """Полный возврат (с видео) по-прежнему только на настоящем ответе."""
     assert not windows.restores_volume(windows.FILLER_SOURCE, awaiting_command=False)
+
+
+# --- приложения-пакеты (26.09.2026) -------------------------------------------
+
+
+def test_packaged_apps_are_read_from_start_apps() -> None:
+    """«Открой Клаудии» запустило FL Cloud Plugins: Claude стоит пакетом, ярлыка у него нет."""
+    output = "\n".join([
+        "Claude\tClaude_pzs8sxrjxfjjc!Claude",
+        "Калькулятор\tMicrosoft.WindowsCalculator_8wekyb3d8bbwe!App",
+        "FL Cloud Plugins\t{6D809377-6AF0-444B-8957-A3773F02200E}\FL Cloud Plugins\FL Cloud Plugins.exe",
+        "Uninstall Foo\tFoo_123!Uninstall",
+        "",
+    ])
+    found = windows.parse_start_apps(output)
+    assert found == {
+        "Claude": "shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude",
+        "Калькулятор": "shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+    }
+
+
+@pytest.mark.parametrize("said", ["Клаудии", "клауди", "клод", "claude"])
+def test_claude_is_not_fl_cloud(said: str) -> None:
+    catalog = {
+        "FL Cloud Plugins": "C:\FL Cloud Plugins.lnk",
+        "Claude": "shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude",
+    }
+    assert windows.match_program(said, catalog)[0] == "Claude"

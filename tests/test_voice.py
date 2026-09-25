@@ -695,7 +695,8 @@ async def test_greeting_depends_on_the_time_of_day(
     await pipeline.announce(GREETING)
     await pipeline.announce(FAREWELL)
 
-    assert tts.said[0].startswith(("Доброе", "Добрый", "Доброй"))
+    # Ночью — «Здравствуйте» (23.09.2026): без этого тест падал после 23 часов.
+    assert tts.said[0].startswith(("Доброе", "Добрый", "Доброй", "Здравствуйте"))
     assert len(tts.said) == 2
 
 

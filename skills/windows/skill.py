@@ -540,6 +540,52 @@ def scan_program_files(roots: list[Path], *, limit: int = 300) -> dict[str, str]
     return found
 
 
+#: Приложения-пакеты (MSIX, Store) запускаются так, а не файлом: у них нет ни
+#: ярлыка в меню «Пуск», ни exe, который можно звать напрямую.
+APPS_FOLDER = "shell:AppsFolder\\"
+
+
+def parse_start_apps(output: str) -> dict[str, str]:
+    """Разобрать вывод `Get-StartApps` (строки «имя<TAB>AppID») — только пакеты.
+
+    Пакет узнаётся по «!» в AppID (`Claude_pzs8sxrjxfjjc!Claude`). Остальное
+    из этого списка — обычные ярлыки и exe, их уже находят `scan_start_menu` и
+    `scan_program_files`. Чистая функция — её проверяют тесты.
+    """
+    found: dict[str, str] = {}
+    for line in output.splitlines():
+        name, _, app_id = line.strip().partition("\t")
+        if not name or "!" not in app_id or _SKIP_SHORTCUT.search(name):
+            continue
+        found.setdefault(name.strip(), APPS_FOLDER + app_id.strip())
+    return found
+
+
+def scan_packaged_apps(timeout: float = 15.0) -> dict[str, str]:
+    """Приложения-пакеты из меню «Пуск»: имя → `shell:AppsFolder\\AppID`.
+
+    Живой случай 26.09.2026: «открой Клаудии» запустило FL Cloud Plugins.
+    Claude стоит пакетом, ярлыка-файла у него нет, и каталог о нём не знал
+    вовсе — а таких приложений у владельца 37. Список отдаёт `Get-StartApps`
+    (1.1 с), поэтому зовётся в фоне, а не при каждой пересборке.
+    """
+    if os.name != "nt":
+        return {}
+    script = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        "Get-StartApps | ForEach-Object { $_.Name + \"`t\" + $_.AppID }"
+    )
+    try:
+        done = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, timeout=timeout, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    return parse_start_apps(done.stdout.decode("utf-8", "replace"))
+
+
 def program_files_dirs() -> list[Path]:
     """Куда Windows и Steam ставят программы."""
     roots = [
@@ -1335,7 +1381,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.11.1",
+        version="0.11.2",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1367,8 +1413,17 @@ class WindowsSkill(Skill):
         self._focus_wait = float(self.context.setting("focus_wait_s", FOCUS_WAIT_S))
         #: Какая схема питания была до того, как мы её сменили.
         self._plan_before = ""
+        #: Приложения-пакеты (Claude, Калькулятор из Store): собираются в фоне.
+        self._packaged: dict[str, str] = {}
         self._rebuild()
         self._setup_ducking()
+        self.context.scope.spawn(self._add_packaged(), name="windows-packaged")
+
+    async def _add_packaged(self) -> None:
+        """Дописать в каталог приложения-пакеты: `Get-StartApps` идёт секунду, старт не ждёт."""
+        self._packaged = await asyncio.to_thread(scan_packaged_apps)
+        if self._packaged:
+            self._rebuild()
 
     def _setup_ducking(self) -> None:
         """Подписаться на голосовые события, чтобы приглушать чужой звук.
@@ -1926,6 +1981,8 @@ class WindowsSkill(Skill):
         catalog: dict[str, str] = dict(BUILT_IN)
         # Ярлыки точнее найденного перебором папок, поэтому идут позже.
         catalog.update(scan_program_files(program_files_dirs()))
+        # Пакеты раньше ярлыков: одноимённый ярлык, если есть, точнее.
+        catalog.update(self._packaged)
         catalog.update(scan_start_menu(start_menu_dirs()))
 
         # Своё из конфига идёт последним и перекрывает найденное. Значение тут
@@ -2952,6 +3009,7 @@ class WindowsSkill(Skill):
     @tool(phrases=["обнови список программ", "refresh programs"], reversible=True, routable=False)
     async def refresh(self) -> ToolResult:
         """Перечитать меню «Пуск» после установки новой программы."""
+        self._packaged = await asyncio.to_thread(scan_packaged_apps)
         self._rebuild()
         return ToolResult.success(
             len(self._catalog),

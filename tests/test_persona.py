@@ -203,7 +203,8 @@ def test_greeting_depends_on_time_of_day():
 def test_greeting_line_contains_time_of_day():
     """В приветствии подставлено время суток, а не «{greeting}»."""
     line = Persona(choice=_first).line(GREETING, "ru")
-    assert line.startswith(("Доброе", "Добрый", "Доброй"))
+    # Ночью — «Здравствуйте» (23.09.2026): без этого тест падал после 23 часов.
+    assert line.startswith(("Доброе", "Добрый", "Доброй", "Здравствуйте"))
 
 
 def test_language_falls_back_to_default():
