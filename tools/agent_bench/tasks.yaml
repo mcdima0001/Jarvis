@@ -74,7 +74,9 @@ tasks:
     ideal: [browser.open_site, core.plan]
 
   - say: открой страницу игры майнкрафт в стиме
-    check: {url: ["store.steampowered.com/app", "minecraft"]}
+    # Только сама страница игры: поиск Google со словом «minecraft» засчитывался
+    # как успех, хотя до Steam дело не дошло (живой прогон 25.09.2026).
+    check: {url: ["store.steampowered.com/app"]}
     ideal: [browser.open_site, browser.search, core.plan]
 
   - say: открой сведения о системе
