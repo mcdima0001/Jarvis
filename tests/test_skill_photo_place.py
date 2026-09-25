@@ -175,10 +175,14 @@ def test_nothing_to_say_is_an_empty_string() -> None:
 
 
 def test_map_link_points_at_the_spot() -> None:
-    """Ссылка ведёт на точку, а не на город целиком."""
+    """Ссылка ведёт на точку в Google Картах, а не на город целиком.
+
+    Google — по просьбе владельца 25.09.2026: там он и смотрит места.
+    """
     url = place.map_url(36.8969, 30.7133)
 
-    assert "mlat=36.896900" in url and "mlon=30.713300" in url
+    assert url.startswith("https://www.google.com/maps/")
+    assert "query=36.896900,30.713300" in url
 
 
 # --- файл вообще ли это ------------------------------------------------------

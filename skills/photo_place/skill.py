@@ -1160,11 +1160,14 @@ PLACE_FRESH_MIN = 30.0
 
 
 def map_url(latitude: float, longitude: float) -> str:
-    """Ссылка на точку в OpenStreetMap."""
-    return (
-        f"https://www.openstreetmap.org/?mlat={latitude:.6f}"
-        f"&mlon={longitude:.6f}#map=17/{latitude:.6f}/{longitude:.6f}"
-    )
+    """Ссылка на точку в Google Картах.
+
+    Google, а не OpenStreetMap, — по просьбе владельца (25.09.2026): там он и
+    смотрит места. Ищется сама точка, с меткой на ней. Данные для поиска места
+    (Overpass, Nominatim) по-прежнему из OpenStreetMap — это про то, где
+    искать, а не где показывать.
+    """
+    return f"https://www.google.com/maps/search/?api=1&query={latitude:.6f},{longitude:.6f}"
 
 
 def spoken_address(answer: dict[str, Any]) -> str:
@@ -1309,7 +1312,7 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.7.0",
+        version="0.7.1",
         spoken=("место по фото", "где снято", "photo place"),
     )
 
