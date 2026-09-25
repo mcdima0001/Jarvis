@@ -31,9 +31,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,9 @@ class Outcome:
     tool: str
     resolver: str = ""
     claimed: bool = False
+    #: Ассистент не доложил, а спросил разрешения — «нажать кнопку? Делать?».
+    #: Это не ложный успех: он честно остановился перед необратимым.
+    asked: bool = False
     solved: bool | None = None
     seconds: float = 0.0
     tokens: int = 0
@@ -71,7 +75,22 @@ class Outcome:
             return "—"
         if self.solved:
             return "решено"
+        if self.asked:
+            return "спросил"
         return "ЛОЖНЫЙ УСПЕХ" if self.claimed else "честный отказ"
+
+
+#: Свой лог у стенда: приложение без `__main__` в общий файл не пишет, а без лога
+#: не видно, дошла ли просьба до проверки и что та решила.
+LOG = ROOT / "logs" / "agent-bench.log"
+
+
+def _log_to_file() -> None:
+    handler = logging.FileHandler(LOG, mode="w", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)-28s %(message)s"))
+    root = logging.getLogger("jarvis")
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
 
 
 def load_tasks(path: Path = TASKS) -> list[dict[str, Any]]:
@@ -157,6 +176,7 @@ async def live(app: Any, tasks: list[dict[str, Any]]) -> list[Outcome]:
         outcome = Outcome(
             number=number, said=task["say"], tool=result.tool or "—",
             claimed=bool(result.ok) and (result.tool or "") not in TALKERS,
+            asked=bool(result.confirm or result.choices),
             solved=solved, seconds=spent,
             tokens=app.llm.spending.total_tokens - before,
             reply=(app.pipeline.last_reply or "")[:70],
@@ -179,11 +199,13 @@ def report(results: list[Outcome], *, mode: str) -> None:
         print(f"Ушло в разговор вместо дела:        {talk} из {total}")
     else:
         solved = sum(1 for item in results if item.solved)
-        lying = sum(1 for item in results if item.solved is False and item.claimed)
-        honest = sum(1 for item in results if item.solved is False and not item.claimed)
+        asked = sum(1 for item in results if item.solved is False and item.asked)
+        lying = sum(1 for item in results if item.solved is False and item.claimed and not item.asked)
+        honest = sum(1 for item in results if item.solved is False and not item.claimed and not item.asked)
         print(f"Решено:          {solved} из {total}")
         print(f"Ложный успех:    {lying} из {total}   <- худший исход, его не слышно")
         print(f"Честный отказ:   {honest} из {total}")
+        print(f"Спросил:         {asked} из {total}   <- остановился перед необратимым")
         seconds = sorted(item.seconds for item in results)
         if seconds:
             print(f"Время ответа:    медиана {seconds[len(seconds) // 2]:.1f} с, худшее {seconds[-1]:.1f} с")
@@ -205,7 +227,14 @@ async def main() -> int:
     tasks = load_tasks()
     if args.only:
         tasks = [task for number, task in enumerate(tasks, start=1) if number in set(args.only)]
-    app = JarvisApp.build(load_config())
+    # Стенд не учится. Первый живой прогон 25.09.2026 записал в выученное три
+    # собственных ложных успеха, и следующий прогон получил их мимо всякой
+    # проверки: мерил уже не систему, а память о прошлом замере. Заодно так
+    # стенд не портит память владельца.
+    config = load_config()
+    config = replace(config, router=replace(config.router, learn_commands=False))
+    _log_to_file()
+    app = JarvisApp.build(config)
     await app.start(ears=False, voice=False)
     try:
         if args.route_only:
