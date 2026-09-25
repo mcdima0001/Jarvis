@@ -21,6 +21,7 @@ import httpx
 from jarvis.core.contracts import ToolResult, detect_language
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.tools import tool
+from jarvis.core.tts.normalize import plural_form
 
 _GEOCODER = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST = "https://api.open-meteo.com/v1/forecast"
@@ -161,24 +162,35 @@ def _describe(code: int, language: str) -> str:
     return pair[0] if language == "ru" else pair[1]
 
 
+#: Где владелец сейчас — у скилла `whereabouts`. Скилл скилл не импортирует.
+HERE_TOOL = "whereabouts.here"
+
+
 class WeatherSkill(Skill):
     """Прогноз погоды и текущие условия."""
 
     meta = SkillMeta(
         name="weather",
         description="Погода и прогноз через Open-Meteo",
-        version="0.1.0",
+        version="0.2.0",
         spoken=("погода", "weather"),
     )
 
     async def on_setup(self) -> None:
-        """Прочитать город по умолчанию."""
-        self._default_city = str(self.context.setting("city", "Москва"))
+        """Прочитать город по умолчанию.
+
+        Пустой город (так и стоит с 25.09.2026) — город, где владелец сейчас:
+        спрашиваем `whereabouts.here`. Москва из настроек отвечала владельцу,
+        который был в Измире. `fallback_city` — на случай, когда место не
+        узнать (нет скилла, сеть молчит).
+        """
+        self._default_city = str(self.context.setting("city", "") or "")
+        self._fallback_city = str(self.context.setting("fallback_city", "Москва") or "Москва")
         self._timeout = float(self.context.setting("timeout", 15.0))
         self._client: httpx.AsyncClient | None = None
         # Координаты города меняются редко — второй раз спрашивать незачем.
         self._places: dict[str, dict[str, object]] = {}
-        self.log.info("Погода: город по умолчанию %s", self._default_city)
+        self.log.info("Погода: город по умолчанию %s", self._default_city or "где владелец")
 
     async def on_stop(self) -> None:
         """Закрыть соединения."""
@@ -227,20 +239,31 @@ class WeatherSkill(Skill):
             self._places[key] = similar
         return similar
 
+    async def _place(self, city: str, language: str) -> tuple[dict[str, object] | None, str]:
+        """Координаты города из просьбы, а без него — места, где владелец сейчас."""
+        city = (city or self._default_city).strip()
+        if city:
+            return await self._locate(city, language), city
+        if self.tools.has(HERE_TOOL):
+            here = await self.tools.invoke(HERE_TOOL, {})
+            if here.ok and isinstance(here.value, dict) and here.value.get("latitude") is not None:
+                name = str(here.value.get("city") or "")
+                return {"latitude": here.value["latitude"], "longitude": here.value["longitude"], "name": name}, name
+        return await self._locate(self._fallback_city, language), self._fallback_city
+
     @tool(phrases=["какая погода", "погода", "погода в {city}", "погода на завтра",
                    "what is the weather", "weather", "weather in {city}"],
           reversible=True)
     async def forecast(self, city: str = "", day: str = "сегодня") -> ToolResult:
         """Узнать погоду на сегодня, завтра или послезавтра.
 
-        :param city: город; пустой — город из настроек скилла.
+        :param city: город; пустой — где владелец сейчас.
         :param day: сегодня, завтра или послезавтра.
         """
-        city = (city or self._default_city).strip()
         language = detect_language(city, default="ru")
         offset = _DAY_WORDS.get(day.strip().lower(), 0)
 
-        place = await self._locate(city, language)
+        place, city = await self._place(city, language)
         if place is None:
             return ToolResult.failure(
                 f"город {city} не найден",
@@ -298,12 +321,11 @@ class WeatherSkill(Skill):
     async def now(self, city: str = "") -> ToolResult:
         """Узнать погоду прямо сейчас.
 
-        :param city: город; пустой — город из настроек скилла.
+        :param city: город; пустой — где владелец сейчас.
         """
-        city = (city or self._default_city).strip()
         language = detect_language(city, default="ru")
 
-        place = await self._locate(city, language)
+        place, city = await self._place(city, language)
         if place is None:
             return ToolResult.failure(
                 f"город {city} не найден",
@@ -333,7 +355,8 @@ class WeatherSkill(Skill):
                 "condition": _describe(current["weather_code"], "en"),
             },
             speech={
-                "ru": f"Сейчас в городе {name} {temperature} градусов, "
+                "ru": f"Сейчас в городе {name} {temperature} "
+                      f"{plural_form(abs(temperature), ('градус', 'градуса', 'градусов'))}, "
                       f"{_describe(current['weather_code'], 'ru')}, "
                       f"влажность {humidity} процентов.",
                 "en": f"Right now in {name}: {temperature} degrees, "
@@ -344,4 +367,4 @@ class WeatherSkill(Skill):
 
     async def health(self) -> HealthStatus:
         """Ключей не требует, поэтому исправен всегда, пока есть сеть."""
-        return HealthStatus.healthy(f"город по умолчанию {self._default_city}")
+        return HealthStatus.healthy(f"город по умолчанию {self._default_city or 'где владелец'}")

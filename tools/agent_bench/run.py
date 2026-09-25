@@ -194,10 +194,22 @@ async def tidy(app: Any, *, windows: set[int], tabs: set[int]) -> None:
     print(f"Закрыл окон: {len(titles) - len(still)}" + (f"; не закрылись: {', '.join(still)}" if still else ""))
 
 
-def matches(check: dict[str, Any], *, titles: list[str], url: str) -> bool:
-    """Прошла ли проверка состояния. Чистая функция — её проверяют тесты."""
+def matches(check: dict[str, Any], *, titles: list[str], url: str, reply: str = "") -> bool:
+    """Прошла ли проверка. Чистая функция — её проверяют тесты.
+
+    `title` и `url` — состояние машины, достаточно любого. `answer` — для
+    просьб «узнай», а не «открой»: регулярное выражение, которому обязан
+    соответствовать ответ. Если заданы оба вида, нужны оба: «рейс SU 1234»,
+    сказанный без открытой карты рейсов, скорее выдуман, чем найден. Регистр
+    в `answer` важен (номер рейса пишется заглавными); нужно без него — `(?i)`.
+    """
     wanted_titles = [str(item).lower() for item in check.get("title", [])]
     wanted_urls = [str(item).lower() for item in check.get("url", [])]
+    answer = str(check.get("answer", ""))
+    if answer and not re.search(answer, reply):
+        return False
+    if not wanted_titles and not wanted_urls:
+        return bool(answer)
     if wanted_titles and any(want in title.lower() for want in wanted_titles for title in titles):
         return True
     return bool(wanted_urls and url and any(want in url.lower() for want in wanted_urls))
@@ -242,7 +254,9 @@ async def live(app: Any, tasks: list[dict[str, Any]]) -> list[Outcome]:
         result = await app.say(task["say"])
         spent = time.monotonic() - started
         await asyncio.sleep(SETTLE_S)
-        solved = matches(task["check"], titles=visible_titles(), url=await active_url(app))
+        solved = matches(
+            task["check"], titles=visible_titles(), url=await active_url(app), reply=app.pipeline.last_reply or ""
+        )
         outcome = Outcome(
             number=number, said=task["say"], tool=result.tool or "—",
             claimed=bool(result.ok) and (

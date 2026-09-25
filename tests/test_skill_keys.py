@@ -172,6 +172,29 @@ def test_explicit_negative_reaction_still_wins() -> None:
     assert result is not None and result.keyword == "не работает"
 
 
+def test_a_question_gets_a_question_quip() -> None:
+    """«Он работает?» — вопрос, и «Вот и славно» на него невпопад (живой случай 25.09.2026)."""
+    react = keys.Reactions({"работает": ("Вот и славно.",)}, cooldown_s=0.0, questions=("Я тоже не знаю, сэр.",))
+    result = react.feed_pattern("он работает?", now=0.0)
+    assert result is not None and result.question
+    assert result.quip == "Я тоже не знаю, сэр."
+    plain = react.feed_pattern("он работает.", now=0.0)
+    assert plain is not None and not plain.question and plain.quip == "Вот и славно."
+
+
+def test_no_question_quips_means_silence() -> None:
+    react = keys.Reactions({"работает": ("Вот и славно.",)}, cooldown_s=0.0, questions=())
+    assert react.feed_pattern("работает?", now=0.0) is None
+    assert react.feed_pattern("работает", now=0.0) is not None
+
+
+def test_a_question_word_keeps_its_own_quips() -> None:
+    """«Почему?» и так вопрос — его реплики на вопрос и написаны."""
+    react = keys.Reactions({"почему": ("Хороший вопрос, сэр.",)}, cooldown_s=0.0, questions=("Я тоже не знаю.",))
+    result = react.feed_pattern("почему?", now=0.0)
+    assert result is not None and result.quip == "Хороший вопрос, сэр."
+
+
 def test_enter_finishes_the_last_word() -> None:
     """Слово в самом конце строки заканчивает Enter — реакция всё равно звучит."""
     react = keys.Reactions({"баг": ("Это не баг, сэр.",)})

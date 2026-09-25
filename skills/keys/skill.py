@@ -125,6 +125,23 @@ class Reaction(NamedTuple):
     keyword: str
     quip: str
     context: str
+    #: Слово кончилось знаком вопроса: «работает?» — не «работает».
+    question: bool = False
+
+
+#: Реплики на слово из списка, за которым стоит «?». Живой случай 25.09.2026:
+#: на «он работает?» прозвучало «Отлично, сэр. Пусть продолжает работать» —
+#: ответ на утверждение, которого не было. Владелец: «должен либо промолчать,
+#: либо сказать „я тоже не знаю, сэр“». Пустой список в конфиге — молчать.
+DEFAULT_QUESTION_QUIPS: tuple[str, ...] = (
+    "Я тоже не знаю, сэр.",
+    "Хотел бы и я знать, сэр.",
+    "Проверим — узнаем, сэр.",
+)
+
+#: Слова, которые сами вопрос: их реплики и так написаны на вопрос («Хороший
+#: вопрос, сэр»), и «?» после них ничего не меняет.
+_ASKING = ("почему", "зачем", "как", "когда", "где", "кто", "что", "сколько", "куда", "откуда")
 
 
 #: Реакции по умолчанию: подстрока в наборе → ироничные реплики, из которых
@@ -349,7 +366,11 @@ class Reactions:
         *,
         window: int = DEFAULT_WINDOW,
         cooldown_s: float = 60.0,
+        questions: tuple[str, ...] | list[str] = DEFAULT_QUESTION_QUIPS,
     ) -> None:
+        #: Реплики на вопрос; пусто — на вопрос молчим.
+        self._questions = tuple(questions)
+        self._question_turn = -1
         self._quips = {
             normalize(pattern): tuple(quips)
             for pattern, quips in mapping.items()
@@ -423,24 +444,36 @@ class Reactions:
         self._buffer = (self._buffer + char.lower())[-self._window :]
         if char.isalnum():
             return None  # слово ещё не кончилось
-        return self._match(self._buffer[:-1], time.monotonic() if now is None else now)
+        moment = time.monotonic() if now is None else now
+        return self._match(self._buffer[:-1], moment, question=char == "?")
 
     def finish(self, *, now: float | None = None) -> "Reaction | None":
         """Строка кончилась (Enter): последнее слово тоже закончено."""
         return self._match(self._buffer, time.monotonic() if now is None else now)
 
-    def _match(self, typed: str, moment: float) -> "Reaction | None":
-        """Реакция на слово, которым кончается `typed`, если оно в списке."""
+    def _match(self, typed: str, moment: float, *, question: bool = False) -> "Reaction | None":
+        """Реакция на слово, которым кончается `typed`, если оно в списке.
+
+        :param question: слово закончил знак вопроса. Реплика тогда не своя, а
+            из вопросных: на «работает?» «Вот и славно» — ответ невпопад.
+        """
         for pattern in self._patterns:
             if not ends_with_word(typed, pattern):
                 continue
             if not pattern.startswith(_NEGATIONS) and negated(typed, pattern):
                 # «не очень работает»: шутить «Вот и славно» тут невпопад.
                 return None
+            asking = question and pattern.split()[0] not in _ASKING
+            if asking and not self._questions:
+                return None  # на вопрос велено молчать
             last = self._fired.get(pattern)
             if last is not None and moment - last < self._cooldown:
                 return None
             self._fired[pattern] = moment
+            if asking:
+                self._question_turn += 1
+                quip = self._questions[self._question_turn % len(self._questions)]
+                return Reaction(keyword=pattern, quip=quip, context=typed, question=True)
             quips = self.options(pattern)
             index = self._turn.get(pattern, -1) + 1
             self._turn[pattern] = index
@@ -1326,7 +1359,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.4.2",
+        version="0.4.3",
         platforms=("windows",),
         spoken=("клавиатура", "кейс", "case", "keyboard"),
     )
@@ -1355,7 +1388,10 @@ class KeysSkill(Skill):
         self._react_llm = bool(self.context.setting("react_llm", False))
 
         self._triggers = Triggers(mapping, window=window, cooldown_s=cooldown)
-        self._reactions = Reactions(quips, window=window) if react and quips else None
+        questions = self.context.setting("question_quips", list(DEFAULT_QUESTION_QUIPS))
+        self._reactions = (
+            Reactions(quips, window=window, questions=tuple(questions or ())) if react and quips else None
+        )
         self._persist_reactions = True
         #: Замечать ли не ту раскладку («ghbdtn» вместо «привет»).
         self._layout: LayoutGuard | None = None
@@ -1448,13 +1484,17 @@ class KeysSkill(Skill):
         # Что именно сработало — иначе в логе видна одна реплика («Вот и
         # славно»), и не понять, на какое слово она была (просьба 14.09.2026).
         # Хвост набора короткий: это буфер реакций, а не переписка.
-        self.log.info("Реакция на «%s» (набрано: …%s)", reaction.keyword, reaction.context[-40:])
+        self.log.info("Реакция на «%s%s» (набрано: …%s)", reaction.keyword, "?" if reaction.question else "", reaction.context[-40:])
         # Повод — только сработавшее слово, не весь набор: в строке «Вы» на
         # панели видно, на что была шутка (просьба владельца 15.09.2026).
-        cause = f"{reaction.keyword[:1].upper()}{reaction.keyword[1:]} [ввод с клавиатуры]"
+        mark = "?" if reaction.question else ""
+        cause = f"{reaction.keyword[:1].upper()}{reaction.keyword[1:]}{mark} [ввод с клавиатуры]"
         self.context.announcer.offer(reaction.quip, importance=LOW, hold=False, cause=cause)
         self.context.scope.spawn(self._save_reactions(), name="keys-save")
-        if self._react_llm and self.context.llm.available:
+        # Вопросу модель впрок не пишет: сочинённое ложится в оборот слова и
+        # звучало бы потом на утверждение — «работает?» научило бы отвечать
+        # «Работает, сэр» на всё подряд.
+        if self._react_llm and self.context.llm.available and not reaction.question:
             self.context.scope.spawn(
                 self._write_ahead(reaction), name="keys-react"
             )
