@@ -234,3 +234,29 @@ async def test_two_misses_in_a_row_stop_the_plan() -> None:
     ])
     outcome = await planner.run("нажми")
     assert not outcome.ok and window.pressed == [], "третьей попытки нет"
+
+
+async def test_a_second_look_is_not_a_repeat() -> None:
+    """Стенд 25.09.2026: второй взгляд на страницу считался хождением по кругу,
+    и планы обрывались на «шаг повторился», хотя шли верно — после перехода
+    та же просьба «что можно нажать» показывает уже другую страницу."""
+    planner, window = _mending([
+        ("win.elements", {}),
+        ("win.press", {"name": "Воспроизведение"}),
+        ("win.elements", {}),
+        "Готово.",
+    ])
+    outcome = await planner.run("открой вкладку и посмотри")
+    assert outcome.ok, outcome.stopped
+    assert window.pressed == ["Воспроизведение"]
+
+
+async def test_looks_do_not_eat_the_action_budget() -> None:
+    """Пять действий и взгляды между ними умещаются: взгляд в шаги не входит."""
+    script: list[object] = []
+    for _ in range(5):
+        script += [("win.elements", {})]
+    script += [("win.press", {"name": "Воспроизведение"}), "Готово."]
+    planner, window = _mending(script[:4] + script[-2:])
+    outcome = await planner.run("посмотри и нажми")
+    assert outcome.ok and window.pressed == ["Воспроизведение"]

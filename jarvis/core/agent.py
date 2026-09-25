@@ -61,6 +61,13 @@ PLAN_TASK = "plan"
 #: означает, что модель ходит по кругу, и ходит она по нему за наши деньги.
 MAX_STEPS = 5
 
+#: Сколько взглядов (`windows.elements`, `page.elements`) можно сделать сверх
+#: шагов. Взгляд ничего не меняет и в шаги действий не входит — иначе «открыть,
+#: посмотреть, нажать, посмотреть, нажать» съедало весь предел, — но каждый
+#: виток всё равно везёт каталог в модель, и совсем без предела счёт мог бы
+#: разбежаться.
+MAX_LOOKS = 4
+
 #: Инструменты, которых цикл не видит.
 #:
 #: `core.plan` — чтобы план не построил план: вложенность тут не даёт ничего,
@@ -220,7 +227,11 @@ class Planner:
         #: Какая рука сорвалась и сейчас чинится; пусто — чинить нечего.
         mending = ""
         mending_why = ""
-        for number in range(1, self._steps + 1):
+        acted = 0
+        looked = 0
+        for number in range(1, self._steps + MAX_LOOKS + 1):
+            if acted >= self._steps:
+                break
             try:
                 response = await self._llm.complete(
                     messages, task=self._task, tools=schemas, tool_choice="auto"
@@ -238,7 +249,7 @@ class Planner:
                 verdict = await self._check(goal, answer, history, language)
                 if verdict is None or verdict.ok:
                     return Outcome(answer=answer, steps=tuple(history))
-                if rechecked or number == self._steps:
+                if rechecked or acted >= self._steps:
                     return Outcome(
                         steps=tuple(history), stopped=f"на экране не то — {verdict.reason}"
                     )
@@ -273,8 +284,19 @@ class Planner:
             if mending and name != mending and not _eyes(found.spec):
                 return Outcome(steps=tuple(history), stopped=f"шаг {mending} не удался: {mending_why}")
 
+            looking = _eyes(found.spec)
+            if looking:
+                # Взгляд не повтор: после перехода та же просьба «что можно
+                # нажать» даёт уже другую страницу. Стенд 25.09.2026 — второй
+                # взгляд считался хождением по кругу, и планы обрывались на
+                # «шаг повторился», хотя шли верно.
+                looked += 1
+                if looked > MAX_LOOKS:
+                    return Outcome(steps=tuple(history), stopped="слишком много взглядов без действия")
+            else:
+                acted += 1
             signature = _signature(name, call.arguments)
-            if signature in seen:
+            if not looking and signature in seen:
                 # Повтор того же шага означает, что модель ходит по кругу.
                 # Дальше она будет ходить по нему за наши деньги.
                 logger.info("Цикл повторяется на шаге %s, останавливаюсь", name)
