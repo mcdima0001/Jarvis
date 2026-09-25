@@ -21,6 +21,7 @@ from .router import Router
 
 if TYPE_CHECKING:  # только для типов — зависимости не создаём
     from jarvis.core.situation import Situation
+    from jarvis.core.verify import Checker
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ REPEAT_TOOL = "core.repeat"
 CHAT_TOOL = "core.chat"
 #: Резолвер модели: его догадке реплика без имени не доверяется.
 LLM_RESOLVER = "llm"
+#: Агентный цикл: туда уходит угаданное, не сошедшееся с просьбой.
+PLAN_TOOL = "core.plan"
 
 #: Ответ на отказ от подтверждения. Короткий намеренно: человек сказал «нет»,
 #: и обсуждать тут нечего.
@@ -75,6 +78,7 @@ class Dispatcher:
         events: EventBus | None = None,
         learner: LearnedResolver | None = None,
         situation: "Situation | None" = None,
+        checker: "Checker | None" = None,
     ) -> None:
         self._router = router
         self._registry = registry
@@ -84,6 +88,9 @@ class Dispatcher:
         #: Куда записывать «что просили в прошлый раз». Диспетчер тут
         #: единственный уместный: он один знает и намерение, и чем всё кончилось.
         self._situation = situation
+        #: Глаза для проверки угаданного моделью (`jarvis.core.verify`). Нет —
+        #: проверки нет, всё как раньше.
+        self._checker = checker
         #: Заданный вопрос, ждущий ответа. Единственное состояние между
         #: репликами во всей системе, и живёт оно здесь по той же причине:
         #: диспетчер — единственный, через кого проходит **каждая** реплика,
@@ -333,15 +340,73 @@ class Dispatcher:
             logger.info("Без имени, и команду угадывала модель — не отвечаю: %r", utterance.text)
             return ToolResult.success({"ignored": "без имени, разобрано моделью"}, tool="")
 
+        watched = self._watched(intent)
+        before = await self._checker.snapshot() if watched and self._checker else ""
         result = await self._call(utterance, intent)
+        verified = True
+        if watched and result.ok:
+            result, verified = await self._verified(utterance, intent, result, before)
 
         # Модель разобрала фразу, инструмент отработал — связка проверена
         # делом, и со второго раза она обойдётся без модели. Записывается
-        # только успех: закрепить промах хуже, чем не выучить ничего.
-        if self._learner is not None and result.ok and intent.resolver == "llm":
+        # только **подтверждённый** успех: до 25.09.2026 выучивался любой «ок»
+        # инструмента, и ложный успех («статья про Тверь» → главная Википедии)
+        # повторялся бы дальше бесплатно и вечно.
+        if self._learner is not None and result.ok and verified and intent.resolver == "llm":
             await self._learner.remember(utterance.text, intent)
 
         return self._voiced(utterance, result)
+
+    def _watched(self, intent: Intent) -> bool:
+        """Проверять ли глазами: угадала модель, и результат виден на экране.
+
+        Шаблоны и выученное — проверенная дорога, платить за их проверку
+        незачем. Инструменты без видимого результата (погода, курс) отвечают
+        сами за себя.
+        """
+        if self._checker is None or intent.resolver != LLM_RESOLVER:
+            return False
+        found = self._registry.get(intent.tool)
+        return found is not None and found.spec.shows and self._checker.able
+
+    async def _verified(
+        self, utterance: Utterance, intent: Intent, result: ToolResult, before: str
+    ) -> tuple[ToolResult, bool]:
+        """Посмотреть, что вышло, и не сошлось — отдать работу плану.
+
+        Стенд 25.09.2026: из 20 просьб без своего скилла 9 кончились ложным
+        успехом, и чаще всего это был один угаданный инструмент, согласившийся
+        на похожее: главная Википедии вместо статьи, вкладка ютуба вместо
+        подписок. План на такое и рассчитан — сделать ещё шаг, глядя на
+        результат предыдущего.
+        """
+        assert self._checker is not None
+        seen = await self._checker.settled(before)
+        said = result.speech_for(utterance.language) or ""
+        verdict = await self._checker.judge(
+            goal=utterance.text, did=f"{intent.tool} — {said}".strip(" —"),
+            seen=seen, language=utterance.language,
+        )
+        if verdict.ok:
+            return result, True
+        if intent.tool != PLAN_TOOL and self._registry.has(PLAN_TOOL):
+            logger.info("Угаданное не сошлось с просьбой — передаю плану: %s", verdict.reason)
+            goal = (
+                f"{utterance.text}\n\nПервая попытка ({intent.tool}) цели не достигла: "
+                f"{verdict.reason}. Сейчас на экране: {seen}"
+            )
+            planned = await self._registry.invoke(
+                PLAN_TOOL, {"goal": goal, "language": utterance.language}
+            )
+            return planned, False
+        return ToolResult.failure(
+            f"проверка не подтвердила: {verdict.reason}",
+            tool=intent.tool,
+            speech={
+                "ru": f"Не уверен, что вышло: {verdict.reason}.",
+                "en": f"I'm not sure it worked: {verdict.reason}.",
+            },
+        ), False
 
     async def _repeat(self, utterance: Utterance) -> ToolResult:
         """Провести прошлую реплику заново — тем же путём, что и сказанную вслух.

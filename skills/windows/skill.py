@@ -939,6 +939,34 @@ def window_handles() -> dict[int, str]:
     return found
 
 
+def foreground_title() -> str:
+    """Заголовок окна, которое сейчас впереди. Пусто — впереди ничего подписанного."""
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    handle = user32.GetForegroundWindow()
+    if not handle:
+        return ""
+    length = user32.GetWindowTextLengthW(handle)
+    if length <= 0:
+        return ""
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(handle, buffer, length + 1)
+    return buffer.value
+
+
+#: Служебные окна, которые видимы, но к делу не относятся: смотреть на них при
+#: проверке «что открылось» — только засорять ответ.
+_BACKGROUND_TITLES = frozenset({
+    "Program Manager", "Microsoft Text Input Application", "Windows Input Experience",
+    "Интерфейс ввода Windows", "MessageCenterUI",
+})
+
+#: Сколько заголовков отдавать проверке. Больше — дороже в токенах и не нужнее:
+#: только что открытое почти всегда впереди.
+OBSERVE_WINDOWS = 12
+
+
 def endpoint_volume():  # type: ignore[no-untyped-def]  # тип живёт только в pycaw
     """Получить регулятор громкости системы через pycaw.
 
@@ -1221,7 +1249,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.9.5",
+        version="0.9.6",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1660,6 +1688,22 @@ class WindowsSkill(Skill):
         return ToolResult.success(len(self._ducked))
 
     @tool(routable=False, reversible=True)
+    async def observe(self) -> ToolResult:
+        """Что сейчас на экране — текстом: окно впереди и заголовки открытых окон.
+
+        Это глаза проверки (`jarvis.core.verify`): стенд 25.09.2026 показал 9
+        ложных успехов из 20, и ловятся они не снимком экрана, а дешевле —
+        заголовками. Снимок стоит около 1900 токенов и уходит в облако, а
+        заголовок «Диспетчер задач» вместо «Диспетчер устройств» виден и так.
+        """
+        active = await asyncio.to_thread(foreground_title)
+        titles = [
+            title for title in (await asyncio.to_thread(window_handles)).values()
+            if title not in _BACKGROUND_TITLES and title != active
+        ]
+        return ToolResult.success({"active": active, "windows": titles[:OBSERVE_WINDOWS]})
+
+    @tool(routable=False, reversible=True)
     async def music_control(self, action: str) -> ToolResult:
         """Управлять музыкой, которая играет **на машине**, а не во вкладке.
 
@@ -1925,6 +1969,7 @@ class WindowsSkill(Skill):
             "show folder {folder}",
         ],
         reversible=True,
+        shows=True,
     )
     async def open_folder(self, folder: str) -> ToolResult:
         """Открыть папку в проводнике.
@@ -1984,7 +2029,7 @@ class WindowsSkill(Skill):
 
     @tool(phrases=["открой {program}", "запусти {program}",
                    "open {program}", "launch {program}", "start {program}"],
-          reversible=True, recognizes="_knows_program")
+          reversible=True, recognizes="_knows_program", shows=True)
     async def launch_program(self, program: str) -> ToolResult:
         """Запустить программу по названию — с обычными правами, без администратора.
 

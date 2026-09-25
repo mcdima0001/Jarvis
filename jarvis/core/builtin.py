@@ -39,6 +39,7 @@ from jarvis.core.version import current
 if TYPE_CHECKING:
     from jarvis.core.router import LearnedResolver
     from jarvis.core.skills import SkillManager
+    from jarvis.core.verify import Checker
 
 #: Договорённость об отмене обучения: любой скилл, который что-то запоминает
 #: сам, объявляет инструмент с таким именем — и попадает под общую команду
@@ -238,8 +239,11 @@ class CoreTools:
         sink: Any = None,
         output_device: str | int | None = None,
         output_names: Mapping[str, str] | None = None,
+        checker: "Checker | None" = None,
     ) -> None:
         self._llm = llm
+        #: Глаза плана: смотреть на экран после шага и перед докладом.
+        self._checker = checker
         #: Вывод звука — чтобы переключать его голосом. Выход из настроек
         #: помнится отдельно: «по умолчанию» возвращает к нему, а не к системному.
         self._sink = sink
@@ -542,7 +546,8 @@ class CoreTools:
     def _planner(self) -> Planner:
         """Цикл создаётся на каждую просьбу: своего состояния он не держит."""
         return Planner(
-            llm=self._llm, registry=self._registry, situation=self._situation
+            llm=self._llm, registry=self._registry, situation=self._situation,
+            checker=self._checker,
         )
 
     @tool(

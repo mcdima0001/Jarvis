@@ -45,6 +45,7 @@ from jarvis.core.tools import ToolRegistry
 if TYPE_CHECKING:  # только для типов — зависимостей не создаём
     from jarvis.core.llm import LLMService
     from jarvis.core.situation import Situation
+    from jarvis.core.verify import Checker, Verdict
 
 logger = logging.getLogger(__name__)
 
@@ -141,12 +142,15 @@ class Planner:
         situation: "Situation | None" = None,
         steps: int = MAX_STEPS,
         task: str = PLAN_TASK,
+        checker: "Checker | None" = None,
     ) -> None:
         self._llm = llm
         self._registry = registry
         self._situation = situation
         self._steps = max(1, steps)
         self._task = task
+        #: Глаза плана (`jarvis.core.verify`). Нет — план слеп, как раньше.
+        self._checker = checker if checker is not None and checker.able else None
 
     def _schemas(self) -> list[dict[str, Any]]:
         """Каталог для цикла: всё, что видит роутер, кроме спрятанного."""
@@ -196,6 +200,7 @@ class Planner:
                 Message.user(f"Вызвал {step.tool}, получилось: {step.summary}")
             )
 
+        rechecked = False
         for number in range(1, self._steps + 1):
             try:
                 response = await self._llm.complete(
@@ -206,8 +211,25 @@ class Planner:
                 return Outcome(steps=tuple(history), stopped=f"модель не ответила: {exc}")
 
             if not response.has_tool_calls:
-                # Модель считает, что дело кончено, и отвечает словами.
-                return Outcome(answer=response.text.strip(), steps=tuple(history))
+                # Модель считает, что дело кончено, и отвечает словами. Верить
+                # на слово нельзя: стенд 25.09.2026 — «репозиторий vosk открыт
+                # по адресу github.com/search?…», план сам назвал адрес поиска и
+                # сам же доложил об успехе. Поэтому сперва смотрим.
+                answer = response.text.strip()
+                verdict = await self._check(goal, answer, history, language)
+                if verdict is None or verdict.ok:
+                    return Outcome(answer=answer, steps=tuple(history))
+                if rechecked or number == self._steps:
+                    return Outcome(
+                        steps=tuple(history), stopped=f"на экране не то — {verdict.reason}"
+                    )
+                rechecked = True
+                messages.append(Message.assistant(answer))
+                messages.append(Message.user(
+                    f"Проверка по экрану: цель не достигнута — {verdict.reason}. "
+                    "Попробуй иначе, а если нечем — честно скажи, что не вышло."
+                ))
+                continue
 
             call = response.tool_calls[0]
             name = self._registry.resolve_function_name(call.name)
@@ -248,11 +270,36 @@ class Planner:
                 # человек подразумевает порядок, а не независимые поручения.
                 return Outcome(steps=tuple(history), stopped=f"шаг {name} не удался: {brief}")
 
+            # План видит, что стало после шага, а не только что ответил
+            # инструмент: инструмент говорит «открыл ютуб», а на экране главная
+            # вместо подписок.
+            screen = await self._checker.snapshot() if self._checker and found.spec.shows else ""
             messages.append(
                 Message.user(
                     f"Шаг {number}: вызван {name}, результат — {brief}. "
-                    f"Если цель достигнута, ответь текстом без вызова."
+                    + (f"На экране сейчас: {screen}. " if screen else "")
+                    + "Если цель достигнута, ответь текстом без вызова."
                 )
             )
 
         return Outcome(steps=tuple(history), stopped="исчерпан предел шагов")
+
+    async def _check(
+        self, goal: str, answer: str, history: Sequence[Step], language: str
+    ) -> "Verdict | None":
+        """Сверить доклад плана с экраном. ``None`` — проверять нечего.
+
+        Проверяем только план, который **сделал что-то видимое**: ответ на
+        вопрос без единого шага или шаги вроде погоды смотреть на экране
+        бессмысленно — там нечему совпадать.
+        """
+        if self._checker is None or not answer:
+            return None
+        visible = [
+            step for step in history
+            if (found := self._registry.get(step.tool)) is not None and found.spec.shows
+        ]
+        if not visible:
+            return None
+        seen = await self._checker.snapshot()
+        return await self._checker.judge(goal=goal, did=answer, seen=seen, language=language)

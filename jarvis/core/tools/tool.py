@@ -37,6 +37,7 @@ class _ToolMarker:
     routable: bool
     reversible: bool | None
     recognizes: str | None = None
+    shows: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -67,6 +68,11 @@ class ToolSpec:
     #: денег, а забытый `reversible` — отправленного не тому человеку
     #: сообщения.
     reversible: bool | None = None
+    #: Виден ли результат на экране: открылось окно, вкладка, страница. Такой
+    #: шаг, выбранный моделью, проверяется глазами (`jarvis.core.verify`) —
+    #: стенд 25.09.2026 показал 9 ложных успехов из 20. Прогнозу погоды флаг
+    #: не нужен: его результат — сам ответ.
+    shows: bool = False
 
     @property
     def unattended(self) -> bool:
@@ -114,6 +120,7 @@ def tool(
     routable: bool = True,
     reversible: bool | None = None,
     recognizes: str | None = None,
+    shows: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Пометить метод скилла как инструмент.
 
@@ -136,6 +143,9 @@ def tool(
         программой, и до модели, которая поняла бы их, они не доходили. Метод
         обязан быть быстрым и синхронным: он спрашивается на каждой фразе,
         совпавшей с шаблоном. Не узнал — шаблон уступает дальше по цепочке.
+    :param shows: результат виден на экране (окно, вкладка, страница). Такой
+        инструмент, выбранный моделью, проверяется: совпало ли увиденное с
+        просьбой. См. `jarvis.core.verify`.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -150,6 +160,7 @@ def tool(
                 routable=routable,
                 reversible=reversible,
                 recognizes=recognizes,
+                shows=shows,
             ),
         )
         return func
@@ -191,6 +202,7 @@ def collect_tools(instance: Any, *, namespace: str) -> list[Tool]:
                     skill=namespace,
                     routable=marker.routable,
                     reversible=marker.reversible,
+                    shows=marker.shows,
                 ),
                 handler=bound,
                 timeout=marker.timeout,

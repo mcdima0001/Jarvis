@@ -118,6 +118,12 @@ class RouterConfig:
     dialogue: bool = True
     #: Сколько последних реплик держать (считая обе стороны).
     dialogue_turns: int = 6
+    #: Чем смотреть на экран, проверяя угаданное моделью: инструмент → его
+    #: аргументы (`jarvis.core.verify`). Ядро не знает скиллы по именам, поэтому
+    #: список тут, а не в коде. Пусто — проверки нет, всё как раньше.
+    observe: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: Какой моделью судить, совпало ли увиденное с просьбой.
+    verify_task: str = "plan"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -60,6 +60,7 @@ from jarvis.core.state import Modes
 from jarvis.core.stt import FallbackSTT, build_stt
 from jarvis.core.tools import ToolRegistry, collect_tools
 from jarvis.core.tts import TTS, build_tts
+from jarvis.core.verify import Checker
 from jarvis.core.version import current, platform_line
 from jarvis.core.voice import VoicePipeline
 
@@ -296,12 +297,19 @@ class JarvisApp:
             threshold=config.router.confidence_threshold,
             events=events,
         )
+        # Глаза для проверки угаданного моделью: стенд 25.09.2026 показал
+        # 9 ложных успехов из 20 — «сделано», а на машине другое.
+        checker = Checker(
+            llm=llm, registry=registry,
+            observe=config.router.observe, task=config.router.verify_task,
+        ) if config.router.observe else None
         dispatcher = Dispatcher(
             router=router,
             registry=registry,
             events=events,
             learner=learner if config.router.learn_commands else None,
             situation=situation,
+            checker=checker,
         )
 
         # Встроенные инструменты ядра: диалог, справка, перезагрузка, модели.
@@ -323,6 +331,7 @@ class JarvisApp:
             sink=audio.sink,
             output_device=config.audio.output_device,
             output_names=config.audio.output_names,
+            checker=checker,
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)

@@ -747,7 +747,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.2.0",
+        version="0.2.1",
         spoken=("браузер", "browser"),
     )
 
@@ -876,7 +876,7 @@ class BrowserSkill(Skill):
                    "open the browser", "open site {site}", "go to {site}",
                    "open {site} in the browser", "open the {site} tab",
                    "switch to {site}"],
-          reversible=True)
+          reversible=True, shows=True)
     async def open_site(self, site: str = "") -> ToolResult:
         """Открыть сайт, служебную страницу браузера или открытую вкладку.
 
@@ -949,7 +949,7 @@ class BrowserSkill(Skill):
                    "найди на {engine} {query}", "поищи в {engine} {query}",
                    "покажи в браузере {query}",
                    "google {query}", "search {engine} for {query}"],
-          reversible=True)
+          reversible=True, shows=True)
     async def search(self, query: str, engine: str = "") -> ToolResult:
         """Открыть поисковую выдачу по запросу.
 

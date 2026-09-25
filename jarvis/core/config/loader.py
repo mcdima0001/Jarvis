@@ -372,6 +372,11 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             situation=bool(router.get("situation", True)),
             dialogue=bool(router.get("dialogue", True)),
             dialogue_turns=int(router.get("dialogue_turns", 6)),
+            observe={
+                str(name): dict(arguments or {})
+                for name, arguments in (router.get("observe") or {}).items()
+            },
+            verify_task=str(router.get("verify_task", "plan")),
             verbatim=tuple(
                 VerbatimRule(
                     words=frozenset(
