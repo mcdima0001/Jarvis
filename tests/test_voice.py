@@ -506,6 +506,16 @@ def test_late_name_without_name_in_text_is_not_a_call(pipeline: VoicePipeline) -
     assert pipeline._extract_command("Come from. You'll know where you're going", spoken_at=started) is None
 
 
+def test_a_debunked_name_closes_its_window(pipeline: VoicePipeline) -> None:
+    """Живой случай 26.09.2026, 00:52: «Братан, с тобой лежит» — не ко мне, и
+    следующий обрывок чужой речи «Всеми-» тоже не команда: окно открыло ложное имя."""
+    now = time.time()
+    pipeline._follow_up_until = now + 6
+    pipeline._name_heard_at = now
+    assert pipeline._extract_command("Братан, с тобой лежит, с тобой лежит.", spoken_at=now - 2.1) is None
+    assert pipeline._extract_command("Всеми-", spoken_at=now + 0.5) is None
+
+
 def test_name_at_the_start_still_passes_when_garbled(pipeline: VoicePipeline) -> None:
     """Настоящие команды без узнанного имени: детектор срабатывал не позже секунды от начала."""
     now = time.time()
