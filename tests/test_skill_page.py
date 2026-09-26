@@ -1556,3 +1556,75 @@ async def test_a_like_is_not_handed_to_the_player(loaded, monkeypatch) -> None:
 
     assert not result.ok
     await manager.stop()
+
+
+# --- трек из своей фонотеки (26.09.2026) --------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("said", "track", "local"),
+    [
+        ("Sunflower локально", "Sunflower", True),
+        ("Sunflower локально.", "Sunflower", True),
+        ("Linkin Park Faint с компьютера", "Linkin Park Faint", True),
+        ("What Is Love в аимпе", "What Is Love", True),
+        ("Sunflower", "Sunflower", False),
+        ("Локально", "Локально", False),
+    ],
+)
+def test_local_is_where_not_what(said: str, track: str, local: bool) -> None:
+    assert page.split_local(said) == (track, local)
+
+
+def _local_player(registry, asked: list[str]) -> None:
+    from jarvis.core.contracts import ToolResult
+    from jarvis.core.tools import collect_tools, tool
+
+    class Local:
+        @tool(routable=False, reversible=True)
+        async def play_track(self, track: str) -> ToolResult:
+            asked.append(track)
+            return ToolResult.success({"track": track}, speech={"ru": f"Включаю {track}."})
+
+    for item in collect_tools(Local(), namespace="aimp"):
+        registry.register(item)
+
+
+async def test_a_track_goes_to_aimp_when_the_page_cannot(loaded, monkeypatch) -> None:
+    """Живой случай 26.09.2026, 12:40: «включи трек Sunflower» ответило «расширение
+    не подключено», а AIMP в это время играл. Правило владельца 24.09 — своя музыка."""
+    manager, registry, _ = loaded
+    await manager.start()
+    asked: list[str] = []
+    _local_player(registry, asked)
+    monkeypatch.setattr(
+        registry, "invoke",
+        _refusing(registry.invoke, "browser.page_target",
+                  "работать со страницей умеет только расширение, а оно не подключено"),
+    )
+
+    result = await registry.invoke("page.play_item", {"track": "Sunflower"})
+
+    assert result.ok and asked == ["Sunflower"]
+    await manager.stop()
+
+
+async def test_locally_skips_the_browser(loaded, monkeypatch) -> None:
+    manager, registry, _ = loaded
+    await manager.start()
+    asked: list[str] = []
+    _local_player(registry, asked)
+    touched: list[str] = []
+    original = registry.invoke
+
+    async def watching(name, arguments=None, **kwargs):
+        touched.append(name)
+        return await original(name, arguments, **kwargs)
+
+    monkeypatch.setattr(registry, "invoke", watching)
+
+    result = await registry.invoke("page.play_item", {"track": "Sunflower локально"})
+
+    assert result.ok and asked == ["Sunflower"]
+    assert not any(name.startswith("browser.") for name in touched), "браузер не трогаем"
+    await manager.stop()

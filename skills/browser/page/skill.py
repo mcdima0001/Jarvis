@@ -121,6 +121,29 @@ PLAYING_TOOL = "aimp.now_playing"
 
 LOCAL_ACTIONS = frozenset({"pause", "play", "next", "previous"})
 
+#: Своя музыка — трек из фонотеки на машине (AIMP), а не из Яндекс Музыки.
+LOCAL_TRACK_TOOL = "aimp.play_track"
+
+#: Слова, которыми просят именно свою музыку: «включи трек Sunflower локально»
+#: (живой случай 26.09.2026, 12:42 — слово ушло в название и искалось на сайте).
+LOCAL_MARKS = (
+    "локально", "с компьютера", "с компа", "на компьютере", "из фонотеки",
+    "из своей музыки", "из моей музыки", "в аимпе", "в aimp", "locally",
+)
+
+
+def split_local(track: str) -> tuple[str, bool]:
+    """Отрезать от названия хвост «локально»: это не часть трека, а где его искать.
+
+    Чистая функция — её проверяют тесты.
+    """
+    text = track.strip().rstrip(" .,!")
+    low = text.lower()
+    for mark in LOCAL_MARKS:
+        if low.endswith(" " + mark):
+            return text[: -len(mark)].rstrip(" ,"), True
+    return text, False
+
 #: Что сказать вслух, когда команду принял плеер на машине. Своими словами, а
 #: не «расширение не подключено»: для человека это просто музыка.
 LOCAL_SAID = {
@@ -981,7 +1004,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.5.0",
+        version="0.5.1",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1217,6 +1240,12 @@ class PageSkill(Skill):
         :param track: название, как оно написано в списке.
         :param site: на каком сайте, если назван в просьбе; пусто — музыкальный сайт.
         """
+        # «Включи … локально» — своя музыка, браузер не трогаем вовсе.
+        track, local = split_local(track)
+        if local:
+            forced = await self._local_track(track)
+            if forced is not None:
+                return forced
         # «Включи ролик про котов», «включи клип Queen» — про видео сказано прямо,
         # и это исключение из правила «трек — в музыку» (владелец, 14.09.2026).
         first, _, rest = track.strip().partition(" ")
@@ -1226,10 +1255,25 @@ class PageSkill(Skill):
         if not site.strip():
             names = label_variants(track)
             if names:
-                return await self._elsewhere(
+                result = await self._elsewhere(
                     self._music_site, names, self._play_speech(names[0]), reason="трек — в музыкальный сайт"
                 )
+                if result.ok:
+                    return result
+                # Правило владельца 24.09.2026: браузер закрыт, расширение молчит
+                # или сети нет — музыка из своей фонотеки. Живой случай 26.09,
+                # 12:40: «включи трек Sunflower» ответило «расширение не
+                # подключено», а AIMP в это время играл.
+                return await self._local_track(track) or result
         return await self._play(track, site=site, fallback=self._music_site)
+
+    async def _local_track(self, track: str) -> ToolResult | None:
+        """Включить трек из своей фонотеки (AIMP). Нечем — `None`, пусть звучит прежний ответ."""
+        if not track or not self.tools.has(LOCAL_TRACK_TOOL):
+            return None
+        result = await self.tools.invoke(LOCAL_TRACK_TOOL, {"track": track})
+        self.log.info("Трек %r — в своей фонотеке: %s", track, "вышло" if result.ok else result.error)
+        return result
 
     @staticmethod
     def _play_speech(name: str) -> dict[str, tuple[str, ...]]:
