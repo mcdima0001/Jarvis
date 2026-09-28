@@ -56,6 +56,14 @@ RETRY_AFTER_S = 60.0
 #: Сколько ждать облако, прежде чем будить местную модель. Ноль — будить сразу.
 RACE_AFTER_S = 1.5
 
+#: То же, когда местная модель ещё не поднята. Поднимается она полминуты, и
+#: гонку с облаком, опоздавшим на десятые доли секунды, выиграть не может в
+#: принципе — только съест память и процессор. Живой случай 28.09.2026: в игре
+#: (тихий режим модель отпускает) облако отвечало за 1.6–1.7 с, и Whisper
+#: поднимался на четырёх фразах подряд. Пять секунд — облако уже не опоздало,
+#: а зависло, и начинать загрузку пора.
+COLD_RACE_AFTER_S = 5.0
+
 
 class FallbackSTT:
     """Основной распознаватель с подстраховкой на случай отказа."""
@@ -67,11 +75,15 @@ class FallbackSTT:
         *,
         retry_after_s: float = RETRY_AFTER_S,
         race_after_s: float = RACE_AFTER_S,
+        cold_race_after_s: float = COLD_RACE_AFTER_S,
     ) -> None:
         self._primary = primary
         self._backup = backup
         self._retry_after = retry_after_s
         self._race_after = max(0.0, race_after_s)
+        #: Ноль в `race_after_s` — «оба сразу» (слова владельца), и холодной
+        #: модели тоже; иначе холодная ждёт облако дольше.
+        self._cold_race_after = 0.0 if not self._race_after else max(self._race_after, cold_race_after_s)
         #: До какого момента не трогать основной путь.
         self._blocked_until = 0.0
         #: Поднимали ли уже запасной. Он тяжёлый, и поднимается один раз.
@@ -103,13 +115,10 @@ class FallbackSTT:
             self._backup_ready = False
 
     async def _wake_backup(self) -> None:
-        """Поднять местную модель — впервые и надолго."""
+        """Поднять местную модель — и держать, пока тихий режим не отпустит."""
         if self._backup_ready:
             return
-        logger.warning(
-            "Перехожу на местное распознавание — это займёт полминуты, "
-            "модель поднимается впервые"
-        )
+        logger.warning("Перехожу на местное распознавание — это займёт полминуты, модель поднимается")
         await self._backup.start()
         self._backup_ready = True
 
@@ -161,7 +170,8 @@ class FallbackSTT:
                 if local is None:
                     # Ждём облако столько, сколько оно обычно и отвечает; не
                     # ответило — будим местную модель, и дальше кто первый.
-                    done, _ = await asyncio.wait({cloud}, timeout=self._race_after)
+                    wait = self._race_after if self._backup_ready else self._cold_race_after
+                    done, _ = await asyncio.wait({cloud}, timeout=wait)
                     if not done:
                         local = asyncio.create_task(
                             self._local(audio, sample_rate), name="stt-local"

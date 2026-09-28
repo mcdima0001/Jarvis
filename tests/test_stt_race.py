@@ -54,7 +54,7 @@ async def test_the_cloud_wins_when_it_answers_in_time() -> None:
 async def test_the_local_model_starts_when_the_cloud_is_late() -> None:
     """Ровно тот случай, ради которого всё затевалось: сети нет, ответ нужен."""
     cloud, local = Engine("из облака", after=10.0), Engine("местное", after=0.05)
-    stt = FallbackSTT(cloud, local, race_after_s=0.05)  # type: ignore[arg-type]
+    stt = FallbackSTT(cloud, local, race_after_s=0.05, cold_race_after_s=0.1)  # type: ignore[arg-type]
     heard = await asyncio.wait_for(stt.transcribe(b"..."), timeout=2.0)
     assert heard.text == "местное", "кто первый, того и слышим"
     assert local.started == 1, "модель поднялась сама"
@@ -112,3 +112,13 @@ async def test_zero_means_both_at_once() -> None:
     heard = await asyncio.wait_for(stt.transcribe(b"..."), timeout=2.0)
     assert heard.text == "местное"
     assert cloud.asked == 1, "облако всё равно спрашивали — просто оно не успело"
+
+
+async def test_a_cold_model_does_not_race_a_slightly_late_cloud() -> None:
+    """Живой случай 28.09.2026: в игре модель отпущена, облако отвечало за
+    1.6–1.7 с при пороге 1.5 — и Whisper поднимался на каждой фразе."""
+    cloud, local = Engine("из облака", after=0.2), Engine("местное")
+    stt = FallbackSTT(cloud, local, race_after_s=0.05, cold_race_after_s=1.0)  # type: ignore[arg-type]
+    heard = await stt.transcribe(b"...")
+    assert heard.text == "из облака"
+    assert local.started == 0, "холодную модель ради опоздания в десятые доли не поднимаем"

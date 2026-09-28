@@ -773,7 +773,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.2.2",
+        version="0.2.3",
         spoken=("браузер", "browser"),
     )
 
@@ -962,7 +962,7 @@ class BrowserSkill(Skill):
         return ToolResult.success(
             {"url": url},
             speech={
-                "ru": (f"Открываю {name}.", f"{name} — открываю.", f"Секунду, {name}."),
+                "ru": (f"Открываю {name}.", f"{name} — открываю."),
                 "en": (f"Opening {name}.", f"{name}, coming up."),
             },
         )
@@ -1168,7 +1168,7 @@ class BrowserSkill(Skill):
             }
         else:
             speech = {
-                "ru": (f"Открываю {name}.", f"{name} — открываю.", f"Секунду, {name}."),
+                "ru": (f"Открываю {name}.", f"{name} — открываю."),
                 "en": (f"Opening {name}.", f"{name}, coming up."),
             }
         return ToolResult.success({"url": url, **result}, speech=speech)

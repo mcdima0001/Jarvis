@@ -1230,7 +1230,9 @@ async def test_site_correction_is_used(loaded, monkeypatch) -> None:
     assert asked, [list(plan[0]) for plan in plans]
     assert "возможно, вы искали" in asked[0][0]["suggest"]
     # И после подсказки трек всё-таки ищется снова — иначе нажатие бессмысленно.
-    assert "item" in plans[-1][0]
+    # (Последним идёт вопрос «что играет» — проверка, 28.09.2026; он не в счёт.)
+    searched = [plan for plan in plans if "now" not in plan[0]]
+    assert "item" in searched[-1][0]
     await manager.stop()
 
 
@@ -1627,4 +1629,40 @@ async def test_locally_skips_the_browser(loaded, monkeypatch) -> None:
 
     assert result.ok and asked == ["Sunflower"]
     assert not any(name.startswith("browser.") for name in touched), "браузер не трогаем"
+    await manager.stop()
+
+
+@pytest.mark.parametrize(
+    ("asked", "playing", "same"),
+    [
+        ("winner takes a doll", "Winner — Billion Dollar Babies", False),
+        ("abba, winner takes и дол", "The Winner Takes It All — ABBA", True),
+        ("нервы, волшануя", "Нервы — Волшебная", True),
+        ("линкин парк faint", "Faint — Linkin Park", True),
+        ("Sunflower", "Sunflower — Post Malone, Swae Lee", True),
+    ],
+)
+def test_what_plays_is_checked_against_what_was_asked(asked: str, playing: str, same: bool) -> None:
+    """Живой случай 28.09.2026: просили «winner takes a doll», заиграло «Winner —
+    Billion Dollar Babies», а ассистент сказал «Включаю winner takes a doll»."""
+    assert page.covers(asked, playing) is same
+
+
+async def test_the_reply_names_what_actually_plays(loaded, monkeypatch) -> None:
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "CONFIRM_EVERY_S", 0)
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [
+        {"done": "item", "detail": "winner takes a doll", "played": True},
+        {"done": "now", "detail": "Winner — Billion Dollar Babies"},
+    ]
+
+    result = await registry.invoke("page.play_item", {"track": "winner takes a doll"})
+
+    assert result.ok
+    assert "Billion Dollar Babies" in result.speech_for("ru")
+    assert result.speech_for("ru").startswith("Точно такого не нашёл")
     await manager.stop()

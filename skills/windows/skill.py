@@ -1381,7 +1381,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.11.2",
+        version="0.11.3",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -2347,8 +2347,9 @@ class WindowsSkill(Skill):
         return ToolResult.success(
             {"program": name, "target": target},
             speech={
-                "ru": (f"Запускаю {name}.", f"{name} запускается.", f"Открываю {name}.",
-                       f"Секунду, {name}."),
+                # Без «Секунду, {name}»: это слово заполнителя, и вместе вышло
+                # «Секунду, сэр. Секунду, Prism Launcher» (28.09.2026).
+                "ru": (f"Запускаю {name}.", f"{name} запускается.", f"Открываю {name}."),
                 "en": (f"Launching {name}.", f"Starting {name}.", f"{name}, coming up."),
             },
         )

@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -130,6 +131,28 @@ LOCAL_MARKS = (
     "локально", "с компьютера", "с компа", "на компьютере", "из фонотеки",
     "из своей музыки", "из моей музыки", "в аимпе", "в aimp", "locally",
 )
+
+
+#: Сколько ждать, пока сайт переключится на включённый трек, и как часто спрашивать.
+CONFIRM_WITHIN_S = 3.0
+CONFIRM_EVERY_S = 0.6
+
+
+def _title_words(text: str) -> set[str]:
+    return {romanize(word) for word in re.findall(r"\w+", text.lower()) if len(word) >= 3}
+
+
+def covers(asked: str, playing: str) -> bool:
+    """Похоже ли играющее на то, что просили: половина значимых слов просьбы — в названии.
+
+    Одного общего слова мало: на «winner takes a doll» (так расслышалось «The
+    Winner Takes It All») Яндекс поставил «Winner — Billion Dollar Babies», и
+    общее «winner» у них есть (живой случай 28.09.2026). Чистая функция.
+    """
+    wanted = _title_words(asked)
+    if not wanted:
+        return True
+    return len(wanted & _title_words(playing)) * 2 >= len(wanted)
 
 
 def split_local(track: str) -> tuple[str, bool]:
@@ -1004,7 +1027,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.5.1",
+        version="0.5.2",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1212,6 +1235,9 @@ class PageSkill(Skill):
                    # Правило для новых скиллов отсюда прямое: объявляй свою
                    # фразу, иначе «включи что-угодно» достанется музыке.
                    "включи {track}", "поставь {track}",
+                   # Распознавание теряет «в»: «ключи хутрап» (28.09.2026) ушло в
+                   # запуск программы, «ключи Tracks» (26.09) — сюда же, но моделью.
+                   "ключи трек {track}", "ключи {track}",
                    "play the track {track}", "play {track} on the page"],
           reversible=True)
     async def play_item(self, track: str, site: str = "") -> ToolResult:
@@ -1259,13 +1285,48 @@ class PageSkill(Skill):
                     self._music_site, names, self._play_speech(names[0]), reason="трек — в музыкальный сайт"
                 )
                 if result.ok:
-                    return result
+                    return await self._confirm_track(result, names[0])
                 # Правило владельца 24.09.2026: браузер закрыт, расширение молчит
                 # или сети нет — музыка из своей фонотеки. Живой случай 26.09,
                 # 12:40: «включи трек Sunflower» ответило «расширение не
                 # подключено», а AIMP в это время играл.
                 return await self._local_track(track) or result
         return await self._play(track, site=site, fallback=self._music_site)
+
+    async def _confirm_track(self, result: ToolResult, asked: str) -> ToolResult:
+        """Проверить, что заиграло, и назвать это, а не то, что просили.
+
+        Живой случай 28.09.2026, 13:34: «включи ABBA Winner Takes It All»
+        расслышалось как «winner takes a doll», Яндекс поставил «Winner —
+        Billion Dollar Babies», а ассистент сказал «Включаю winner takes a
+        doll». Ложный успех: его не слышно, пока не узнаешь песню. Название
+        берётся у сайта (`mediaSession`); не сообщил — остаётся прежний ответ.
+        """
+        if not result.choices and result.ok:
+            deadline = time.monotonic() + CONFIRM_WITHIN_S
+            playing = ""
+            while time.monotonic() < deadline:
+                await asyncio.sleep(CONFIRM_EVERY_S)
+                answer = await self._act("playing", site=self._music_site, soft=True)
+                if not answer.ok or not isinstance(answer.value, Mapping):
+                    break  # сайт не говорит, что играет, — и переспрашивать незачем
+                playing = str(answer.value.get("detail", "")).strip()
+                if not playing or covers(asked, playing):
+                    break
+                # Играет другое — возможно, ещё не переключился: спросим снова.
+            if playing:
+                self.situation.note("играет", playing, minutes=TRACK_FRESH_MIN)
+                if covers(asked, playing):
+                    return replace(result, speech=self._play_speech(playing))
+                self.log.info("Просили %r, а играет %r — говорю как есть", asked, playing)
+                return replace(
+                    result,
+                    speech={
+                        "ru": (f"Точно такого не нашёл, играет {playing}.",),
+                        "en": (f"Couldn't find that exactly, playing {playing}.",),
+                    },
+                )
+        return result
 
     async def _local_track(self, track: str) -> ToolResult | None:
         """Включить трек из своей фонотеки (AIMP). Нечем — `None`, пусть звучит прежний ответ."""

@@ -309,3 +309,12 @@ def test_no_voice_for_that_language_means_no_switch() -> None:
 
     reply = "Не могу найти информацию по запросу, сэр."
     assert voice_language(reply, "en", ("en",)) == "en"
+
+
+def test_a_russian_word_is_never_read_by_the_english_voice() -> None:
+    """Живой случай 28.09.2026: «Включаю winner takes a doll» — латиницы вдвое
+    больше, и английский голос прочёл «Vklyuchayu winner takes a doll»."""
+    from jarvis.core.tts.composite import voice_language
+
+    assert voice_language("Включаю winner takes a doll.", "ru", ("ru", "en")) == "ru"
+    assert voice_language("Ставлю abba, winner takes и дол.", "ru", ("ru", "en")) == "ru"

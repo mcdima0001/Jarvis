@@ -78,7 +78,12 @@ def voice_language(text: str, hint: str | None, available: Sequence[str]) -> str
         return hint
     if cyrillic >= latin * CLEAR_MAJORITY:
         found = "ru"
-    elif latin >= cyrillic * CLEAR_MAJORITY:
+    elif latin >= cyrillic * CLEAR_MAJORITY and not cyrillic:
+        # Английский голос — только тексту совсем без кириллицы. Русское слово
+        # он читает всегда плохо, а латиницу внутри русской фразы русский голос
+        # читает сносно (`normalize_for_speech`). Живой случай 28.09.2026:
+        # «Включаю winner takes a doll» — латиницы вдвое больше, и вышло
+        # «Vklyuchayu winner takes a doll».
         found = "en"
     else:
         return hint
