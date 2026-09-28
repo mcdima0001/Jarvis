@@ -439,8 +439,22 @@ def by_proximity(tabs: list[dict], current: dict | None) -> list[dict]:
     return sorted(tabs, key=rank)
 
 
+#: Слова, которыми вкладку описывают, а не называют.
+_TAB_FILLER = frozenset({
+    "где", "про", "которой", "котором", "там", "это", "тот", "той", "эту", "вот", "вкладка", "вкладку",
+    "страница", "страницу", "сайт", "with", "the", "tab", "about",
+})
+
+
+def _same_stem(said: str, own: str) -> bool:
+    """Одно ли слово в разных падежах: «монологом» и «монолог», «фармацевта» и «фармацевт»."""
+    if min(len(said), len(own)) < _MIN_PREFIX:
+        return said == own
+    return said.startswith(own) or own.startswith(said)
+
+
 def tabs_by_title(
-    tabs: list[dict], spoken: str, current: dict | None = None
+    tabs: list[dict], spoken: str, current: dict | None = None, *, by_words: bool = False
 ) -> list[int]:
     """Номера вкладок, чей заголовок похож на сказанное.
 
@@ -466,6 +480,10 @@ def tabs_by_title(
     # Whisper: «МаршалТех» на вкладке против «MarshallTech» в расшифровке.
     # Согласный костяк у обоих написаний одинаковый.
     sounds = skeleton(wanted)
+    # По словам — для описаний, а не названий: «вкладка с монологом фармацевта»
+    # (27.09.2026) целиком в заголовке не стоит, а каждое значимое слово — да,
+    # в своём падеже. Служебные слова («с», «где», «про») не требуются.
+    said = [stem(word) for word in _WORD.findall(wanted) if len(word) >= 3 and word not in _TAB_FILLER]
     found: list[int] = []
     for tab in by_proximity(tabs, current):
         title = str(tab.get("title", "")).lower()
@@ -481,6 +499,10 @@ def tabs_by_title(
             )
         if not matched and len(sounds) >= _MIN_SKELETON:
             matched = sounds in skeleton(page)
+        # Только для переключения (`by_words`): закрытие закрывает все
+        # подходящие вкладки, и «закрой вкладку с котами» снесло бы всё про котов.
+        if not matched and by_words and said:
+            matched = all(any(_same_stem(word, own) for own in words) for word in said)
         if matched:
             identifier = tab.get("tabId")
             if isinstance(identifier, int):
@@ -613,6 +635,18 @@ class _Extension:
     def connected(self) -> bool:
         """Подключено ли расширение прямо сейчас."""
         return self._server.connected
+
+    def expect(self) -> None:
+        """Браузер только что запущен нами — расширение скоро поздоровается, ждать снова стоит.
+
+        Живой случай 27.09.2026, 22:47: «открой браузер», через десять секунд
+        «переключись на вкладку …» — расширение ещё не подключилось, а ждать его
+        второй раз за запуск Jarvis не полагалось, и ответ был «не знаю такого
+        сайта».
+        """
+        if not self._server.connected:
+            self._waited = False
+            self._ready.clear()
 
     async def ready(self, timeout: float = 0.0) -> bool:
         """Дождаться расширения, если оно ещё не подключилось.
@@ -773,7 +807,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.2.3",
+        version="0.3.0",
         spoken=("браузер", "browser"),
     )
 
@@ -935,6 +969,16 @@ class BrowserSkill(Skill):
             through_extension = await self._open_special(spoken, name)
             if through_extension is not None:
                 return through_extension
+            if self._extension is None or not self._extension.connected:
+                # Может, это заголовок открытой вкладки, — но их видит только
+                # расширение, и «не знаю такого сайта» тут было бы неправдой.
+                return ToolResult.failure(
+                    f"не сайт из каталога, а вкладок без расширения не видно: {site!r}",
+                    speech={
+                        "ru": f"Не нашёл {name}: расширение не подключено, открытых вкладок не вижу.",
+                        "en": f"Couldn't find {name}: the extension isn't connected, so I can't see open tabs.",
+                    },
+                )
             return ToolResult.failure(
                 f"не понял, какой сайт открывать: {site!r}",
                 speech={
@@ -1068,7 +1112,9 @@ class BrowserSkill(Skill):
         системе не отдашь, а заголовки чужих вкладок ей неизвестны. Поэтому
         путь один — расширение; без него возвращаем ``None`` и отказываем.
         """
-        if not spoken or self._extension is None or not self._extension.connected:
+        if not spoken or self._extension is None:
+            return None
+        if not self._extension.connected and not await self._extension.ready(self._await_extension):
             return None
 
         pages = internal_page(spoken)
@@ -1088,7 +1134,7 @@ class BrowserSkill(Skill):
         # Открытая вкладка: «переключись на Marshall Tech».
         listed = await self._extension.call("tabs") or {}
         open_tabs = listed.get("tabs", [])
-        matching = tabs_by_title(open_tabs, spoken, listed.get("current"))
+        matching = tabs_by_title(open_tabs, spoken, listed.get("current"), by_words=True)
         if not matching:
             return None
 
@@ -1425,6 +1471,8 @@ class BrowserSkill(Skill):
     async def _open(self, url: str) -> bool:
         """Отдать ссылку браузеру. Открытие блокирующее — уводим в поток."""
         self.log.info("Открываю %s", url)
+        if self._extension is not None and not browser_running():
+            self._extension.expect()
         try:
             return await asyncio.to_thread(self._open_blocking, url)
         except Exception as exc:  # noqa: BLE001 — сбой браузера не роняет скилл

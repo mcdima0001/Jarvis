@@ -605,6 +605,29 @@ def test_short_words_close_nothing(spoken: str) -> None:
     assert browser.tabs_by_title(_TABS, spoken) == []
 
 
+_SERIES = [
+    {"tabId": 1, "title": "Монолог фармацевта 2 сезон 5 серия — смотреть онлайн", "active": False},
+    {"tabId": 2, "title": "YouTube", "active": True},
+    {"tabId": 3, "title": "Фармацевт — Википедия", "active": False},
+]
+
+
+@pytest.mark.parametrize(
+    ("spoken", "expected"),
+    [("с с монологом фармацевта", [1]), ("где монолог фармацевта", [1]), ("где видео про котов", [])],
+)
+def test_a_tab_is_found_by_description_word_by_word(spoken: str, expected: list[int]) -> None:
+    """Живой случай 27.09.2026: «переключись на вкладку с монологом фармацевта» —
+    фраза целиком в заголовке не стоит, а каждое слово в своём падеже — да."""
+    assert browser.tabs_by_title(_SERIES, spoken, by_words=True) == expected
+
+
+def test_closing_does_not_match_word_by_word() -> None:
+    """Закрытие закрывает все подходящие — «закрой вкладку с фармацевтом» не должно снести обе."""
+    assert browser.tabs_by_title(_SERIES, "с фармацевтом") == []
+    assert browser.tabs_by_title(_SERIES, "с фармацевтом", by_words=True) == [1, 3]
+
+
 def test_unrelated_title_is_not_closed() -> None:
     """Случайное слово не должно совпасть ни с одной вкладкой."""
     assert browser.tabs_by_title(_TABS, "борщ") == []
