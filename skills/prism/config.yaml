@@ -1,0 +1,7 @@
+# Настройки скилла «prism». Централизованно переопределить можно в
+# config.yaml → skills.settings.prism.
+
+# Где Prism Launcher держит сборки и где лежит он сам. Пусто — как ставит
+# установщик: %APPDATA%\PrismLauncher и %LOCALAPPDATA%\Programs\PrismLauncher.
+data_dir: ""
+program: ""
