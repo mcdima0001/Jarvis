@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jarvis.core.agent import Outcome, Planner, Step
-from jarvis.core.audio.outputs import Output, find_output, is_default, query_outputs
+from jarvis.core.audio.outputs import Output, config_value, find_output, is_default, query_outputs
 from jarvis.core.audio.protocol import SelectableSink
 from jarvis.core.contracts import LIVE_SPEECH, Choice, Intent, ToolResult, numbered
 from jarvis.core.dialogue import Conversation
@@ -218,6 +218,18 @@ class _Waiting:
 def _say_name(name: str, spellings: tuple[str, ...]) -> str:
     """Как назвать модуль вслух: первое русское имя из паспорта, иначе настоящее."""
     return next((spelling for spelling in spellings if any("а" <= char <= "я" for char in spelling.lower())), name)
+
+
+def _target(found: Output, outputs: list[Output]) -> str | int:
+    """Чем выбрать выход: именем, если оно однозначно, иначе номером.
+
+    Имя переживает сдвиг номеров (подключили гарнитуру — «Onboard Speaker»
+    уехал с 11 на 17), номер — нет. Но MME обрезает имена до 31 знака, и пять
+    выходов Voicemeeter зовутся одинаково; по такому имени sounddevice отвечает
+    «нашлось несколько», и тогда остаётся номер.
+    """
+    same = sum(1 for item in outputs if item.raw == found.raw and item.hostapi == found.hostapi)
+    return config_value(found) if same == 1 else found.index
 
 
 class CoreTools:
@@ -876,6 +888,7 @@ class CoreTools:
                     "en": "Speaking through the default output.",
                 },
             )
+        await self._refresh_devices()
         outputs = await self._list_outputs()
         found = find_output(device, outputs)
         if found is None:
@@ -887,11 +900,13 @@ class CoreTools:
                     "en": f"No output called {device}. Available: {known}.",
                 },
             )
-        sink.select(found.index)
+        # По имени, а не по номеру: номера PortAudio сдвигаются, когда
+        # подключают гарнитуру, и тот же номер открыл бы другое устройство.
+        sink.select(_target(found, outputs))
         await self._remember_output(found.name)
         # Ответ уже звучит через новый выход — он же и подтверждение.
         return ToolResult.success(
-            {"device": found.index, "name": found.name},
+            {"device": _target(found, outputs), "name": found.name},
             speech={
                 # Название после двоеточия: склонять его нечем, а «через
                 # колонка» звучит безграмотно.
@@ -916,11 +931,18 @@ class CoreTools:
             return
         if not name:
             return
-        found = next((item for item in await self._list_outputs() if item.name == name), None)
+        outputs = await self._list_outputs()
+        found = next((item for item in outputs if item.name == name), None)
         if found is None:
             logger.warning("Аудиовыход %r, выбранный голосом, сейчас не найден — говорю как в настройках", name)
             return
-        self._sink.select(found.index)
+        self._sink.select(_target(found, outputs))
+
+    async def _refresh_devices(self) -> None:
+        """Перечитать звуковые устройства, если их набор у Windows поменялся."""
+        refresh = getattr(self._sink, "refresh_devices", None)
+        if callable(refresh):
+            await refresh()
 
     async def _list_outputs(self) -> list[Output]:
         try:
@@ -934,7 +956,7 @@ class CoreTools:
         if device is None:
             return "выход по умолчанию"
         for output in outputs:
-            if device in (output.index, output.name):
+            if device in (output.index, output.name, config_value(output)):
                 return output.spoken
         return str(device)
 

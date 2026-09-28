@@ -15,6 +15,18 @@ programs:
   телеграм: AyuGram
   телега: AyuGram
   тг: AyuGram
+  # Minecraft у владельца — через Prism Launcher (28.09.2026: «заколебался
+  # говорить „запусти майнкрафт через призм лаунчер“»).
+  майнкрафт: Prism Launcher
+  майн: Prism Launcher
+  minecraft: Prism Launcher
+
+# Как называют программу, чей процесс зовётся иначе, — для «закрой» и «убей».
+# Запуск идёт через programs выше, а сама игра работает другим процессом.
+process_names:
+  майнкрафт: javaw.exe
+  майн: javaw.exe
+  minecraft: javaw.exe
 #   игра: D:/Games/game.exe
 #   рабочий проект: D:/Projects/track.rpp
 # «Закрой X» убирает окно: своя команда выхода → запрос окну (то же, что

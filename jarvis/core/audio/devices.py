@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
 import queue
+import sys
 import threading
 import time
 from typing import Any, AsyncIterator
@@ -46,6 +48,50 @@ def _import_sounddevice() -> Any:
             f"Установи: pip install 'jarvis-core[audio]'"
         ) from exc
     return sounddevice
+
+
+def system_devices() -> tuple[str, ...] | None:
+    """Какие звуковые устройства сейчас видит Windows (MME), по порядку. Не Windows — ``None``.
+
+    Нужно, чтобы заметить: список PortAudio устарел. Он читается один раз при
+    старте, а MME открывает устройство **по номеру**. Живой случай 28.09.2026:
+    Jarvis запущен без Bluetooth-гарнитуры, «Onboard Speaker» был первым; потом
+    гарнитура подключилась и встала первой, и «говори в динамик ноутбука»
+    уводило голос в неё — номер тот же, устройство под ним другое.
+    """
+    if sys.platform != "win32":
+        return None
+    from ctypes import wintypes
+
+    class OutCaps(ctypes.Structure):
+        _fields_ = [
+            ("wMid", wintypes.WORD), ("wPid", wintypes.WORD), ("vDriverVersion", wintypes.UINT),
+            ("szPname", wintypes.WCHAR * 32), ("dwFormats", wintypes.DWORD), ("wChannels", wintypes.WORD),
+            ("wReserved1", wintypes.WORD), ("dwSupport", wintypes.DWORD),
+        ]
+
+    class InCaps(ctypes.Structure):
+        _fields_ = [
+            ("wMid", wintypes.WORD), ("wPid", wintypes.WORD), ("vDriverVersion", wintypes.UINT),
+            ("szPname", wintypes.WCHAR * 32), ("dwFormats", wintypes.DWORD), ("wChannels", wintypes.WORD),
+            ("wReserved1", wintypes.WORD),
+        ]
+
+    try:
+        winmm = ctypes.WinDLL("winmm")
+        names: list[str] = []
+        for count, caps_type, get in (
+            (winmm.waveOutGetNumDevs(), OutCaps, winmm.waveOutGetDevCapsW),
+            (winmm.waveInGetNumDevs(), InCaps, winmm.waveInGetDevCapsW),
+        ):
+            for number in range(count):
+                caps = caps_type()
+                get(number, ctypes.byref(caps), ctypes.sizeof(caps))
+                names.append(caps.szPname)
+            names.append("|")
+        return tuple(names)
+    except (OSError, AttributeError):
+        return None
 
 
 def list_devices() -> str:
@@ -179,9 +225,13 @@ def _pieces(audio: bytes, sample_rate: int, *, ms: int = 100) -> list[bytes]:
 class SoundDeviceSink:
     """Воспроизведение звука."""
 
-    def __init__(self, config: AudioConfig) -> None:
+    def __init__(self, config: AudioConfig, *, source: "SoundDeviceSource | None" = None) -> None:
         self._config = config
         self._lock = asyncio.Lock()
+        #: Микрофон: перечитать список PortAudio можно, только закрыв его.
+        self._source = source
+        #: Каким был список устройств Windows, когда PortAudio его читал.
+        self._seen = system_devices()
         #: Куда звучать. Начинается с конфига, меняется голосом (`select`).
         self._device: str | int | None = config.output_device
         #: Просьба оборвать звучащее. Ставится из любого потока, снимается
@@ -211,6 +261,36 @@ class SoundDeviceSink:
         self._device = device
         logger.info("Аудиовыход: %s", device if device is not None else "по умолчанию")
 
+    async def refresh_devices(self) -> bool:
+        """Перечитать список устройств, если он у Windows изменился. Изменился ли."""
+        async with self._lock:
+            return await self._refresh()
+
+    async def _refresh(self) -> bool:
+        """То же без замка — для тех, кто его уже держит.
+
+        PortAudio перечитывает устройства только целиком (`Pa_Terminate`), а это
+        закрывает все потоки, поэтому микрофон на это время закрывается и тут же
+        открывается снова — около десятой секунды. Выход открывается на каждую
+        реплику и страдает меньше всех. Делается только когда список правда
+        изменился: подключили или отключили гарнитуру, колонку.
+        """
+        now = await asyncio.to_thread(system_devices)
+        if now is None or now == self._seen:
+            return False
+        sd = _import_sounddevice()
+        if self._source is not None:
+            await self._source.stop()
+        try:
+            sd._terminate()
+            sd._initialize()
+        finally:
+            self._seen = now
+            if self._source is not None:
+                await self._source.start()
+        logger.info("Звуковые устройства поменялись — список перечитан")
+        return True
+
     async def start(self) -> None:
         """Проверить, что звуковая подсистема доступна."""
         _import_sounddevice()
@@ -226,6 +306,7 @@ class SoundDeviceSink:
             return
         # Реплики не должны накладываться друг на друга.
         async with self._lock:
+            await self._refresh()
             self._interrupted.clear()
             await asyncio.to_thread(self._play_sync, audio, sample_rate)
 
@@ -256,6 +337,7 @@ class SoundDeviceSink:
         сорванный звук не повод рвать разговор.
         """
         async with self._lock:
+            await self._refresh()
             pipe: queue.Queue[bytes | None] = queue.Queue()
             player: asyncio.Task[None] | None = None
             prebuffer = b""

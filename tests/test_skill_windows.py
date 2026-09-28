@@ -1457,3 +1457,17 @@ def test_claude_is_not_fl_cloud(said: str) -> None:
         "Claude": "shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude",
     }
     assert windows.match_program(said, catalog)[0] == "Claude"
+
+
+def test_minecraft_is_launched_through_prism_by_config() -> None:
+    """«Заколебался говорить „запусти майнкрафт через призм лаунчер“» (28.09.2026)."""
+    config = Path(__file__).resolve().parent.parent / "skills" / "windows" / "config.yaml"
+    import yaml
+
+    data = yaml.safe_load(config.read_text("utf-8"))
+    for said in ("майнкрафт", "майн", "minecraft"):
+        assert data["programs"][said] == "Prism Launcher"
+        assert data["process_names"][said] == "javaw.exe"
+    catalog = {"Prism Launcher": "prism.lnk", "майн": "prism.lnk", "майнкрафт": "prism.lnk"}
+    assert windows.match_program("Майнкрафт", catalog)[0] == "майнкрафт"
+    assert windows.match_program("main", catalog)[0] == "майн"

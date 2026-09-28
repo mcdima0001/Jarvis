@@ -1392,6 +1392,12 @@ class WindowsSkill(Skill):
             str(key): str(value)
             for key, value in dict(self.context.setting("programs", {})).items()
         }
+        #: Как называют программу, чей процесс зовётся иначе: Minecraft — это
+        #: `javaw.exe`, и «убей майнкрафт» (27.09.2026, «Maintraft») не находил ничего.
+        self._process_names: dict[str, str] = {
+            str(key): str(value)
+            for key, value in dict(self.context.setting("process_names", {})).items()
+        }
         self._force_close = bool(self.context.setting("force_close", False))
         # Программы из трея: «закрой» для них означает «убери окно».
         self._tray_apps = TRAY_APPS | {
@@ -2024,7 +2030,11 @@ class WindowsSkill(Skill):
         spec.loader.exec_module(module)
         return module
 
-    @tool(phrases=["включи блютуз", "включи bluetooth", "включи блютус", "turn on bluetooth"], reversible=True, routable=False)
+    @tool(phrases=["включи блютуз", "включи bluetooth", "включи блютус", "turn on bluetooth",
+                   # «Запусти Bluetooth и подключись к HK Go Play» (27.09.2026)
+                   # искало программу Bluetooth, и до подключения не доходило.
+                   "запусти блютуз", "запусти bluetooth", "запусти блютус"],
+          reversible=True, routable=False)
     async def bluetooth_on(self) -> ToolResult:
         """Включить блютуз."""
         return await self._bt_radio("On")
@@ -2615,6 +2625,8 @@ class WindowsSkill(Skill):
         return await self._shutdown(program, force=False)
 
     @tool(phrases=["убей {program}", "заверши процесс {program}",
+                   # «Убей браузер» дважды расслышалось как «Ubi browser» (26–27.09.2026).
+                   "ubi {program}",
                    "выгрузи {program}", "kill {program}", "force close {program}"],
           reversible=False)
     async def kill_program(self, program: str) -> ToolResult:
@@ -2656,7 +2668,12 @@ class WindowsSkill(Skill):
     async def _shutdown(self, program: str, *, force: bool) -> ToolResult:
         """Общая часть закрытия и убийства: найти процесс и доложить итог."""
         processes = await self._processes()
-        found = match_program(program, process_catalog(processes))
+        catalog = process_catalog(processes)
+        running = {process.image.lower() for process in processes}
+        for name, image in getattr(self, "_process_names", {}).items():
+            if image.lower() in running:
+                catalog.setdefault(name, image)
+        found = match_program(program, catalog)
         if found is None:
             return ToolResult.failure(
                 f"процесс для {program!r} не найден среди запущенных",

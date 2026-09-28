@@ -208,9 +208,11 @@ def build_audio(config: AudioConfig, *, meter: "Meter | None" = None) -> AudioSt
             wake_word=wake_word,
         )
 
+    microphone = SoundDeviceSource(config)
     return AudioStack(
-        source=_with_echo_cancelling(SoundDeviceSource(config), config, meter=meter),
-        sink=SoundDeviceSink(config),
+        source=_with_echo_cancelling(microphone, config, meter=meter),
+        # Вывод знает микрофон: перечитать устройства можно, только закрыв его.
+        sink=SoundDeviceSink(config, source=microphone),
         vad=vad,
         wake_word=wake_word,
         hotwords=_build_hotwords(config, wake_word),

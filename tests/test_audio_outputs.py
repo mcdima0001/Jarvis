@@ -194,7 +194,9 @@ async def test_switch_by_voice_and_remember_by_name(monkeypatch: Any) -> None:
     result = await core.set_output("колонку")
 
     assert result.ok
-    assert sink.device == JBL
+    # Выбирается по имени, а не по номеру: номера сдвигаются, когда подключают
+    # гарнитуру (28.09.2026 голос уходил в гарнитуру вместо динамиков ноутбука).
+    assert sink.device == "Динамики (JBL Flip 6), MME"
     # Номер после перезапуска другой, поэтому помнится имя.
     assert documents.data[OUTPUT_MEMORY] == "Динамики (JBL Flip 6)"
     # Название стоит после двоеточия: «через колонка» звучит безграмотно.
@@ -227,7 +229,7 @@ async def test_restore_picks_remembered_output_at_start(monkeypatch: Any) -> Non
     sink = NullAudioSink()
     core = _core(sink, FakeDocuments({OUTPUT_MEMORY: "Onboard Speaker (Audio Device)"}), monkeypatch)
     await core.restore_output()
-    assert sink.device == ONBOARD
+    assert sink.device == "Onboard Speaker (Audio Device), MME"
 
 
 async def test_restore_keeps_config_when_remembered_output_is_gone(monkeypatch: Any) -> None:
@@ -249,3 +251,45 @@ async def test_without_selectable_sink_says_sound_is_off(monkeypatch: Any) -> No
     core = _core(object(), FakeDocuments(), monkeypatch)
     result = await core.set_output("колонку")
     assert not result.ok
+
+
+# --- устройства поменялись на ходу (28.09.2026) --------------------------------
+
+
+async def test_the_device_list_is_reread_when_windows_changes_it(monkeypatch: Any) -> None:
+    """Живой случай 28.09.2026: Jarvis запущен без гарнитуры, потом она подключилась
+    и встала первой — и «динамики ноутбука» под старым номером открывали её."""
+    from jarvis.core.audio import devices
+
+    seen = [("Onboard Speaker (Audio Device)", "|", "|")]
+    monkeypatch.setattr(devices, "system_devices", lambda: seen[0])
+    calls: list[str] = []
+    fake_sd = SimpleNamespace(_terminate=lambda: calls.append("terminate"), _initialize=lambda: calls.append("init"))
+    monkeypatch.setattr(devices, "_import_sounddevice", lambda: fake_sd)
+
+    class Mic:
+        async def stop(self) -> None:
+            calls.append("mic stop")
+
+        async def start(self) -> None:
+            calls.append("mic start")
+
+    sink = devices.SoundDeviceSink(SimpleNamespace(output_device=None), source=Mic())  # type: ignore[arg-type]
+    assert await sink.refresh_devices() is False, "ничего не менялось — ничего не трогаем"
+    assert calls == []
+
+    seen[0] = ("Динамики (HK GO + PLAY)", "Onboard Speaker (Audio Device)", "|", "|")
+    assert await sink.refresh_devices() is True
+    assert calls == ["mic stop", "terminate", "init", "mic start"]
+    assert await sink.refresh_devices() is False, "второй раз — уже свежий"
+
+
+def test_an_ambiguous_mme_name_falls_back_to_the_number() -> None:
+    """Пять выходов Voicemeeter в MME зовутся одинаково — по имени sounddevice их не различит."""
+    outputs = _outputs()
+    onboard = next(item for item in outputs if item.name.startswith("Onboard"))
+    assert builtin._target(onboard, outputs) == "Onboard Speaker (Audio Device), MME"
+    twin = Output(index=99, name="Динамики (VB-Audio Voicemeeter VAIO) 2", spoken="x",
+                  raw="Динамики (VB-Audio Voicemeeter ", hostapi="MME")
+    voicemeeter = next(item for item in outputs if item.raw.startswith("Динамики (VB-Audio"))
+    assert builtin._target(voicemeeter, [*outputs, twin]) == voicemeeter.index
