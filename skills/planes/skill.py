@@ -111,6 +111,13 @@ def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 6371.0 * 2 * math.asin(math.sqrt(a))
 
 
+def _airport_near(port: list[Any] | None, here: tuple[float, float], km: float) -> bool:
+    """Стоит ли аэропорт (запись справочника) ближе `km` к месту владельца."""
+    if not port:
+        return False
+    return distance_km(*here, float(port[2]), float(port[3])) <= km
+
+
 def just_took_off(
     planes: list[Plane],
     *,
@@ -123,8 +130,7 @@ def just_took_off(
     lat, lon = here
 
     def from_near(plane: Plane) -> bool:
-        port = airports.get(plane.origin)
-        return bool(port) and distance_km(lat, lon, float(port[2]), float(port[3])) <= near_airport_km
+        return _airport_near(airports.get(plane.origin), (lat, lon), near_airport_km)
 
     rising = [
         plane for plane in planes
@@ -172,8 +178,7 @@ def describe(
     head_ru = ", ".join(part for part in (who, f"рейс {flight}" if flight else "", model) if part)
     head_en = ", ".join(part for part in (who, f"flight {flight}" if flight else "", model) if part)
     route_ru = route_en = ""
-    port = airports.get(plane.origin)
-    local = bool(port) and distance_km(*here, float(port[2]), float(port[3])) <= near_airport_km
+    local = _airport_near(airports.get(plane.origin), here, near_airport_km)
     if local and plane.destination:
         destination = airport_name(plane.destination, airports)
         route_ru, route_en = f" — летит в {destination}", f" — bound for {destination}"
@@ -204,7 +209,7 @@ class PlanesSkill(Skill):
     meta = SkillMeta(
         name="planes",
         description="Самолёты рядом по Flightradar24: кто взлетел, кто над головой",
-        version="0.1.0",
+        version="0.1.1",
         spoken=("самолёт", "самолеты", "flightradar"),
     )
 

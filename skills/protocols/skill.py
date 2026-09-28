@@ -122,7 +122,7 @@ class ProtocolsSkill(Skill):
     meta = SkillMeta(
         name="protocols",
         description="Протоколы: одна фраза — набор действий",
-        version="0.3.1",
+        version="0.3.2",
         spoken=("протоколы", "protocols"),
     )
 
@@ -211,7 +211,7 @@ class ProtocolsSkill(Skill):
                     important=self._announced.pop(item.name, False),
                 )
 
-    def _tell(self, text: str, *, important: bool = False) -> None:
+    def _tell(self, text: str, *, important: bool = False) -> str:
         """Сказать вслух о протоколе, который запустился сам.
 
         Через политику речи без вопроса: решать, уместно ли говорить сейчас,
@@ -219,6 +219,7 @@ class ProtocolsSkill(Skill):
         подставит персона, поэтому в тексте оно полем `{address}`.
 
         :param important: досказываем начатое — тогда придерживать нечего.
+        :return: решение политики — ``say``, ``hold`` или ``drop``.
         """
         decision = self.context.announcer.offer(
             text, importance="urgent" if important else "normal", language="ru"

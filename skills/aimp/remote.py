@@ -145,9 +145,10 @@ def playing() -> Playing | None:
     buffer = ctypes.create_unicode_buffer(512)
     user32.GetWindowTextW(handle, buffer, 512)
     position = _ask(handle, ASK_POSITION) or 0
+    number = _ask(handle, ASK_NUMBER)
     return Playing(
         said=said_from_title(buffer.value),
-        number=_ask(handle, ASK_NUMBER) if _ask(handle, ASK_NUMBER) is not None else -1,
+        number=-1 if number is None else number,
         total=_ask(handle, ASK_LENGTH) or 0,
         state=_ask(handle, ASK_STATE) or 0,
         position_s=position / 1000.0,

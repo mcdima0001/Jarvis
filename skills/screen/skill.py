@@ -323,7 +323,7 @@ def capture(target: str, *, limit: int = LIMIT) -> tuple[bytes, tuple[int, int]]
     if size != image.size:
         from PIL import Image
 
-        image = image.resize(size, Image.LANCZOS)
+        image = image.resize(size, Image.Resampling.LANCZOS)
     # Снимок приходит с альфа-каналом, который PNG честно сохранит, а пользы от
     # него ноль: экран непрозрачен.
     if image.mode not in {"RGB", "L"}:
@@ -339,7 +339,7 @@ class ScreenSkill(Skill):
     meta = SkillMeta(
         name="screen",
         description="Зрение: смотрит на экран и отвечает на вопросы о том, что видно",
-        version="0.1.0",
+        version="0.1.1",
         platforms=("windows",),
         spoken=("экран", "зрение", "screen", "vision"),
     )

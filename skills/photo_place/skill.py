@@ -791,6 +791,8 @@ def _inside(area: dict[str, Any] | None, point: tuple[float, float]) -> bool:
     if area is None:
         return True
     box = area.get("boundingbox")
+    if box is None:
+        return True
     try:
         south, north, west, east = (float(value) for value in box)
     except (TypeError, ValueError):
@@ -1227,13 +1229,13 @@ def picture_for_model(path: Path, *, limit: int = LIMIT) -> tuple[str, tuple[int
     """
     from PIL import Image
 
-    with Image.open(path) as picture:
-        picture = picture.convert("RGB")
+    with Image.open(path) as opened:
+        picture = opened.convert("RGB")
         size = picture.size
         if max(size) > limit:
             scale = limit / max(size)
             size = (max(1, int(size[0] * scale)), max(1, int(size[1] * scale)))
-            picture = picture.resize(size, Image.LANCZOS)
+            picture = picture.resize(size, Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         picture.save(buffer, format="JPEG", quality=92)
     body = base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -1312,7 +1314,7 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.7.1",
+        version="0.7.2",
         spoken=("место по фото", "где снято", "photo place"),
     )
 

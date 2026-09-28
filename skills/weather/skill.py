@@ -15,6 +15,7 @@ from __future__ import annotations
 import itertools
 import re
 from datetime import date, timedelta
+from typing import Any
 
 import httpx
 
@@ -181,7 +182,7 @@ class WeatherSkill(Skill):
     meta = SkillMeta(
         name="weather",
         description="Погода и прогноз через Open-Meteo",
-        version="0.2.0",
+        version="0.2.1",
         spoken=("погода", "weather"),
     )
 
@@ -198,7 +199,7 @@ class WeatherSkill(Skill):
         self._timeout = float(self.context.setting("timeout", 15.0))
         self._client: httpx.AsyncClient | None = None
         # Координаты города меняются редко — второй раз спрашивать незачем.
-        self._places: dict[str, dict[str, object]] = {}
+        self._places: dict[str, dict[str, Any]] = {}
         self.log.info("Погода: город по умолчанию %s", self._default_city or "где владелец")
 
     async def on_stop(self) -> None:
@@ -213,7 +214,7 @@ class WeatherSkill(Skill):
             self._client = httpx.AsyncClient(timeout=self._timeout, follow_redirects=True)
         return self._client
 
-    async def _locate(self, city: str, language: str) -> dict[str, object] | None:
+    async def _locate(self, city: str, language: str) -> dict[str, Any] | None:
         """Найти координаты города, разобравшись с падежом.
 
         Из команды город приходит так, как его произнесли: «погода в Праге».
@@ -226,7 +227,7 @@ class WeatherSkill(Skill):
         # Геокодер отвечает похожим, а не точным: на «Твери» он выдаёт «Тверия»
         # в Израиле. Поэтому сначала ищем кандидата, чьё имя совпало буквально,
         # и только если такого нет — соглашаемся на первое похожее.
-        similar: dict[str, object] | None = None
+        similar: dict[str, Any] | None = None
         for candidate in _nominative_candidates(city.strip()):
             response = await self._http().get(
                 _GEOCODER, params={"name": candidate, "count": 1, "language": language}
@@ -248,7 +249,7 @@ class WeatherSkill(Skill):
             self._places[key] = similar
         return similar
 
-    async def _place(self, city: str, language: str) -> tuple[dict[str, object] | None, str]:
+    async def _place(self, city: str, language: str) -> tuple[dict[str, Any] | None, str]:
         """Координаты города из просьбы, а без него — места, где владелец сейчас."""
         city = (city or self._default_city).strip()
         if city:

@@ -50,6 +50,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from ctypes import wintypes
+from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1237,7 +1238,7 @@ class KeyboardWatcher:
                 on_layout = self._on_layout
                 if direction is not None and on_layout is not None:
                     # После Enter не правим: сообщение, скорее всего, уже ушло.
-                    self._to_loop(lambda: on_layout(direction, False))
+                    self._to_loop(partial(on_layout, direction, False))
                     if self._reactions is not None:
                         self._reactions.reset()
                     return
@@ -1245,7 +1246,7 @@ class KeyboardWatcher:
                 ending = self._reactions.finish()
                 self._reactions.reset()
                 if ending is not None and self._on_react is not None:
-                    self._to_loop(lambda: self._on_react(ending))
+                    self._to_loop(partial(self._on_react, ending))
             return
 
         char = self._translate(vk)
@@ -1280,7 +1281,7 @@ class KeyboardWatcher:
                     self._to_loop(lambda: on_layout(direction, False))
                 return
         if reaction is not None and self._on_react is not None:
-            self._to_loop(lambda: self._on_react(reaction))
+            self._to_loop(partial(self._on_react, reaction))
 
     def _fix_layout(self) -> None:
         """Стереть набранное не той раскладкой, впечатать то же в верной и переключить окно.
@@ -1359,7 +1360,7 @@ class KeysSkill(Skill):
     meta = SkillMeta(
         name="keys",
         description="Ловит набранные ключевые фразы и отвечает, не дожидаясь Enter.",
-        version="0.4.3",
+        version="0.4.4",
         platforms=("windows",),
         spoken=("клавиатура", "кейс", "case", "keyboard"),
     )
@@ -1438,7 +1439,8 @@ class KeysSkill(Skill):
         await self._load_reactions()
         if self._enabled and self._watcher is not None:
             self._watcher.start()
-            self.log.info("Слежу за клавиатурой: %s", ", ".join(self._triggers.phrases))
+            phrases = self._triggers.phrases if self._triggers is not None else ()
+            self.log.info("Слежу за клавиатурой: %s", ", ".join(phrases))
 
     async def on_stop(self) -> None:
         """Снять хук."""

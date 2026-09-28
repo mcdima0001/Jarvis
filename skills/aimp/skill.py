@@ -79,7 +79,7 @@ class AimpSkill(Skill):
     meta = SkillMeta(
         name="aimp",
         description="Своя музыка в AIMP: что играет, поиск по фонотеке, переключение треков.",
-        version="0.1.1",
+        version="0.1.2",
         spoken=("аимп", "aimp", "музыка", "music"),
     )
 
@@ -116,12 +116,13 @@ class AimpSkill(Skill):
         except OSError:
             stamp = 0.0
         if self._cached is None or stamp > self._cached_at:
-            self._cached = await asyncio.to_thread(library().playlists, self._folder)
-            self._cached_at = stamp
+            fresh: list[Any] = await asyncio.to_thread(library().playlists, self._folder)
+            self._cached, self._cached_at = fresh, stamp
             self.log.info(
                 "Фонотека AIMP: плейлистов %d, треков %d",
-                len(self._cached), sum(len(item) for item in self._cached),
+                len(fresh), sum(len(item) for item in fresh),
             )
+            return fresh
         return self._cached
 
     @tool(routable=False, reversible=True,

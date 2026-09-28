@@ -142,9 +142,19 @@ ignore = [
 # правки. Строгий режим тут не включён намеренно: проект зовёт чужие библиотеки
 # без типов (soundcard, vosk, telethon), и требовать аннотаций от них значит
 # утонуть в заглушках.
+#
+# Скиллы проверяются тоже (28.09.2026): `HealthStatus.ok(...)` вместо `.healthy`
+# дошёл до панели, потому что mypy смотрел только `jarvis/`. Все скиллы зовутся
+# `skill.py`, и без `explicit_package_bases` mypy считал их одним модулем
+# `skill`; с ним они — `skills.aimp.skill` и т. д., а `__init__.py` не нужны
+# (скиллы грузятся по пути, `jarvis/core/skills/discovery.py`). Платформа —
+# Windows: там проект живёт, и половина скиллов зовёт её API; на Linux-раннере
+# CI иначе сыпались бы ложные замечания про `ctypes.WinDLL`.
 [tool.mypy]
 python_version = "3.13"
-files = ["jarvis"]
+files = ["jarvis", "skills"]
+explicit_package_bases = true
+platform = "win32"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

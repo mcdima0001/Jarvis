@@ -1027,7 +1027,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.5.2",
+        version="0.5.3",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -2189,7 +2189,7 @@ class PageSkill(Skill):
             for selector in step.get("click", ())
         ]
         if not top:
-            return list(steps)
+            return [dict(step) for step in steps]
         return validate_plan(
             [{**step, "prefer": top} if "item" in step else step for step in steps]
         )

@@ -1381,7 +1381,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.11.3",
+        version="0.11.4",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -2532,7 +2532,7 @@ class WindowsSkill(Skill):
         # минуту подряд в логе «поставил снова (вкл)» чередовалось с «(выкл)».
         # Снаружи это и есть «протокол не выключился»: счётчик мигал на экране.
         self._stop_overlay_hold()
-        self._overlay_hold = self.context.scope.spawn(
+        self._overlay_hold: asyncio.Task[Any] | None = self.context.scope.spawn(
             self._hold_overlay(on, where), name="windows-overlay-hold"
         )
         return ToolResult.success(
