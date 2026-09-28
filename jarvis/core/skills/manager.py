@@ -19,7 +19,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from jarvis.core.bus import EventBus
-from jarvis.core.config import SkillsConfig
+from jarvis.core.config import SkillsConfig, load_skill_settings
 from jarvis.core.contracts import SkillLoaded, SkillUnloaded
 from jarvis.core.errors import SkillError, SkillLoadError, SkillUnsupportedPlatform
 from jarvis.core.situation import Situation
@@ -172,6 +172,21 @@ class SkillManager:
         updated[name] = dict(settings)
         self._config = replace(self._config, settings=updated)
 
+    def _reread_settings(self, candidate: SkillCandidate, name: str) -> None:
+        """Перечитать `config.yaml` скилла с диска — при каждой загрузке, а не только при старте.
+
+        Живой случай 28.09.2026: из настроек `windows` убрали псевдонимы
+        майнкрафта, сказали «переподключи все модули» — и модуль поднялся со
+        старыми, запомненными при запуске Jarvis. Код переподключение брало с
+        диска, а настройки — из памяти; перечитывала их только панель.
+        Переопределения из главного конфига накладываются поверх, как при старте.
+        """
+        path = candidate.path.parent / "config.yaml"
+        if candidate.path.name != "skill.py" or not path.is_file():
+            return
+        override = self._config.overrides.get(candidate.name) or self._config.overrides.get(name) or {}
+        self.set_settings(name, load_skill_settings(path, override))
+
     def tools_of(self, name: str) -> tuple[str, ...]:
         """Инструменты загруженного скилла; пусто, если он не загружен."""
         record = self._records.get(self.resolve(name))
@@ -275,6 +290,7 @@ class SkillManager:
             )
         if meta.name in self._records:
             raise SkillLoadError(f"скилл с именем {meta.name!r} уже загружен")
+        self._reread_settings(candidate, meta.name)
 
         instance = skill_class()
         scope = SkillScope(skill=meta.name, events=self._events, tools=self._tools)

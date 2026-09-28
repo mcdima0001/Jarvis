@@ -382,3 +382,50 @@ async def test_hanging_skill_is_unloaded_by_timeout(
 
     assert manager.loaded == ()
     assert not registry.has("hanging.ping"), "инструменты сняты, хоть остановка и не дождалась"
+
+
+_SETTING_SKILL = '''
+from jarvis.core.contracts import ToolResult
+from jarvis.core.skills import Skill, SkillMeta
+from jarvis.core.tools import tool
+
+
+class TunedSkill(Skill):
+    meta = SkillMeta(name="tuned", description="Читает настройку")
+
+    @tool(phrases=["что в настройке"])
+    async def value(self) -> ToolResult:
+        """Вернуть настройку."""
+        return ToolResult.success(self.context.setting("word", ""))
+'''
+
+
+async def test_reloading_rereads_the_skill_config(
+    tmp_path: Path, events: LocalEventBus, registry: ToolRegistry, memory, llm, tts
+) -> None:
+    """Живой случай 28.09.2026: из настроек `windows` убрали псевдонимы, сказали
+    «переподключи все модули» — и модуль поднялся со старыми, запомненными при старте."""
+    folder = tmp_path / "skills" / "tuned"
+    folder.mkdir(parents=True)
+    (folder / "skill.py").write_text(_SETTING_SKILL, encoding="utf-8")
+    (folder / "config.yaml").write_text("word: старое\n", encoding="utf-8")
+    manager = SkillManager(
+        config=SkillsConfig(
+            paths=(folder.parent,),
+            settings={"tuned": {"word": "старое"}},
+            overrides={"tuned": {}},
+        ),
+        events=events, tools=registry, memory=memory, llm=llm, tts=tts, root=tmp_path,
+    )
+    await manager.start()
+    assert (await registry.invoke("tuned.value")).value == "старое"
+
+    (folder / "config.yaml").write_text("word: новое\n", encoding="utf-8")
+    await manager.adopt("tuned")
+    assert (await registry.invoke("tuned.value")).value == "новое"
+
+    # Переопределение из главного конфига по-прежнему важнее файла.
+    manager._config = SkillsConfig(paths=(folder.parent,), overrides={"tuned": {"word": "главное"}})
+    await manager.adopt("tuned")
+    assert (await registry.invoke("tuned.value")).value == "главное"
+    await manager.stop()

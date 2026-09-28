@@ -355,11 +355,12 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             disabled=frozenset(str(n) for n in skills.get("disabled", ())),
             settings=_skill_settings(
                 skill_paths,
-                overrides={
+                overrides=(skill_overrides := {
                     str(k): dict(v or {})
                     for k, v in (skills.get("settings") or {}).items()
-                },
+                }),
             ),
+            overrides=skill_overrides,
         ),
         router=RouterConfig(
             confidence_threshold=float(router.get("confidence_threshold", 0.6)),

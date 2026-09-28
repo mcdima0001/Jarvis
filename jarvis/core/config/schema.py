@@ -73,6 +73,9 @@ class SkillsConfig:
     paths: tuple[Path, ...] = (Path("skills"),)
     disabled: frozenset[str] = frozenset()
     settings: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: `skills.settings` из главного конфига как есть — чтобы, перечитывая
+    #: `config.yaml` скилла при переподключении, наложить их снова.
+    overrides: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def settings_for(self, skill_name: str) -> Mapping[str, Any]:
         """Вернуть секцию конфига конкретного скилла (пустую, если её нет)."""

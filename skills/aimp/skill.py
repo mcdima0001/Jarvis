@@ -79,7 +79,7 @@ class AimpSkill(Skill):
     meta = SkillMeta(
         name="aimp",
         description="Своя музыка в AIMP: что играет, поиск по фонотеке, переключение треков.",
-        version="0.1.0",
+        version="0.1.1",
         spoken=("аимп", "aimp", "музыка", "music"),
     )
 
@@ -97,7 +97,7 @@ class AimpSkill(Skill):
         tracks = sum(len(item) for item in found)
         if not found:
             return HealthStatus.degraded(f"плейлистов AIMP не нашёл в {self._folder}")
-        return HealthStatus.ok(
+        return HealthStatus.healthy(
             f"плейлистов {len(found)}, треков {tracks}, "
             f"плеер {'запущен' if remote().running() else 'закрыт'}"
         )

@@ -199,6 +199,9 @@
   .toast.on { opacity: 1; transform: none; }
   .toast.error { border-color: var(--red); }
   .note { color: var(--muted); font-size: 13px; margin: 0 0 14px; max-width: 80ch; }
+  .count { margin: 0 0 10px; font-size: 14px; }
+  .count b { color: var(--cyan-soft); font-weight: 600; }
+  .count .part { color: var(--muted); }
   details.box { background: var(--panel); border: 1px solid var(--line); margin-bottom: 10px; }
   details.box > summary { cursor: pointer; padding: 10px 14px; list-style: none; display: flex; gap: 10px; align-items: center; }
   details.box > summary::before { content: "›"; color: var(--cyan); transition: 0.2s; display: inline-block; }
@@ -325,6 +328,7 @@
   <section id="tab-modules">
     <div id="drafts"></div>
     <p class="note">Нажми на название, чтобы открыть модуль: его команды, настройки и доработку с Claude. Выключенный модуль выгружается сразу и не загрузится после перезапуска (строка <code>skills.disabled</code> в config.yaml). Подмодуль работает только вместе с главным.</p>
+    <p id="modules-count" class="count"></p>
     <table><thead><tr><th>Модуль</th><th>Версия</th><th>Команд</th><th>Состояние</th><th>Включён</th><th></th></tr></thead><tbody id="modules"></tbody></table>
   </section>
 
@@ -743,6 +747,15 @@ async function loadUsage() {
 // --- модули ---------------------------------------------------------------
 async function loadModules() {
   const { modules } = await api("/api/modules");
+  // Сколько их всего — просьба владельца 28.09.2026: по длинной таблице не сосчитать.
+  const working = modules.filter((item) => item.loaded && item.healthy).length;
+  const limited = modules.filter((item) => item.loaded && !item.healthy).length;
+  const off = modules.filter((item) => !item.loaded && item.disabled).length;
+  const idle = modules.filter((item) => !item.loaded && !item.disabled).length;
+  const parts = [[working, "работают"], [limited, "с ограничениями"], [off, "выключены"], [idle, "не загружены"]]
+    .filter(([count]) => count > 0).map(([count, label]) => `${label} ${count}`);
+  $("modules-count").replaceChildren("Всего модулей: ", el("b", {}, String(modules.length)),
+    parts.length ? el("span", { class: "part" }, ` — ${parts.join(", ")}`) : "");
   $("modules").replaceChildren(...modules.map((item) => {
     const toggle = el("input", { type: "checkbox" });
     toggle.checked = !item.disabled;
