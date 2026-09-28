@@ -147,3 +147,17 @@ async def test_downloads_are_said_together_when_the_pause_ends_or_never(monkeypa
         ("Загрузилось 2 фотки.", False),
     ]
     assert skill._unsaid == []
+
+
+def test_a_stalled_unconfirmed_download_is_not_finished() -> None:
+    """Живой случай 28.09.2026: «Не подтверждено 729535.~» у Яндекс Браузера две
+    секунды не рос — и страж сказал «Файл загрузился» за пять минут до конца."""
+    watch = sentinel.DownloadWatch()
+    now = 1_000_000.0
+    stalled = {"Не подтверждено 729535.~": (253_246_901, now)}
+    assert watch.check({}, now) == []
+    assert watch.check(stalled, now) == []
+    assert watch.check(stalled, now) == [], "размер не менялся, но файл недокачан"
+    for name in ("Не подтверждено 729535.~", "Unconfirmed 12.crdownload", "setup.exe~", "Unconfirmed 5.tmp"):
+        assert sentinel.is_partial(name), name
+    assert not sentinel.is_partial("Подтверждение оплаты.pdf")

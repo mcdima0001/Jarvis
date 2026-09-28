@@ -37,7 +37,18 @@ from jarvis.core.tools import tool
 from jarvis.core.tts.normalize import plural_form
 
 #: Недокачанные файлы браузеров и качалок: о таких рано говорить «загрузилось».
-PARTIAL = (".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload", ".!ut")
+PARTIAL = (".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload", ".!ut", "~")
+#: Так браузеры на Chromium зовут загрузку, которую ещё не подтвердили, — при
+#: любом окончании. Живой случай 28.09.2026: «Не подтверждено 729535.~» у
+#: Яндекс Браузера две секунды не рос, и страж сказал «Файл загрузился», хотя
+#: до конца оставалось пять минут.
+UNCONFIRMED = ("не подтверждено ", "unconfirmed ")
+
+
+def is_partial(name: str) -> bool:
+    """Недокачанный ли это файл — по имени, которое ему дал браузер."""
+    low = name.lower()
+    return low.endswith(PARTIAL) or low.startswith(UNCONFIRMED)
 #: Насколько свежей должна быть правка файла, чтобы считать его только что
 #: скачанным, сек. Перекладывание файла туда-сюда время правки не меняет.
 FRESH_S = 120.0
@@ -223,7 +234,7 @@ class DownloadWatch:
         finished = [
             name for name, (size, changed) in files.items()
             if name not in self.known
-            and not name.lower().endswith(PARTIAL)
+            and not is_partial(name)
             and self.sizes.get(name, (None, 0.0))[0] == size
             and size > 0
             # Файл, который лежит тут давно, не «только что скачался», даже если
@@ -294,7 +305,7 @@ class SentinelSkill(Skill):
     meta = SkillMeta(
         name="sentinel",
         description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
-        version="0.1.6",
+        version="0.1.7",
         platforms=("windows",),
         spoken=("страж", "слежение", "sentinel"),
     )
