@@ -915,7 +915,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.5.0",
+        version="0.5.1",
         spoken=("браузер", "browser"),
     )
 
