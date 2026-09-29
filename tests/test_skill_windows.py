@@ -1439,22 +1439,22 @@ def test_packaged_apps_are_read_from_start_apps() -> None:
     output = "\n".join([
         "Claude\tClaude_pzs8sxrjxfjjc!Claude",
         "Калькулятор\tMicrosoft.WindowsCalculator_8wekyb3d8bbwe!App",
-        "FL Cloud Plugins\t{6D809377-6AF0-444B-8957-A3773F02200E}\FL Cloud Plugins\FL Cloud Plugins.exe",
+        "FL Cloud Plugins\t{6D809377-6AF0-444B-8957-A3773F02200E}\\FL Cloud Plugins\\FL Cloud Plugins.exe",
         "Uninstall Foo\tFoo_123!Uninstall",
         "",
     ])
     found = windows.parse_start_apps(output)
     assert found == {
-        "Claude": "shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude",
-        "Калькулятор": "shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+        "Claude": "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude",
+        "Калькулятор": "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
     }
 
 
 @pytest.mark.parametrize("said", ["Клаудии", "клауди", "клод", "claude"])
 def test_claude_is_not_fl_cloud(said: str) -> None:
     catalog = {
-        "FL Cloud Plugins": "C:\FL Cloud Plugins.lnk",
-        "Claude": "shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude",
+        "FL Cloud Plugins": "C:\\FL Cloud Plugins.lnk",
+        "Claude": "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude",
     }
     assert windows.match_program(said, catalog)[0] == "Claude"
 
@@ -1524,3 +1524,48 @@ def test_the_sweep_returns_what_the_default_device_restore_missed(
     assert asked == [True], "проверка смотрит все устройства, а не только выход по умолчанию"
     assert speakers.set == [1.0]
     assert headset.set == [] and other.set == []
+
+
+async def test_video_in_a_browser_tab_is_paused_and_only_it_is_resumed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Просьба владельца 29.09.2026: «любое видео — на паузу вместо приглушения».
+    Во вкладке его останавливает расширение; вернуть — ровно те вкладки."""
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+
+    from jarvis.core.contracts import ToolResult
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class Tools:
+        def has(self, name: str) -> bool:
+            return name.startswith("browser.")
+
+        async def invoke(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+            calls.append((name, arguments))
+            if name == windows.PAUSE_TABS_TOOL:
+                return ToolResult.success({"tabs": [41], "titles": ["Монолог фармацевта — YouTube"]})
+            return ToolResult.success({"tabs": [41]})
+
+    monkeypatch.setattr(windows, "sound_sessions", lambda **_: [])
+
+    class Holder(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-tabs")
+        tools = Tools()  # type: ignore[assignment]
+
+    skill = object.__new__(Holder)
+    skill._pause_video, skill._paused, skill._vlc_paused, skill._tabs_paused = True, (), False, []
+    skill._vlc = SimpleNamespace(ready=False)
+    skill._players = ()
+    skill._video_turn = asyncio.Lock()
+
+    await skill._hold_video()
+    assert skill._tabs_paused == [41]
+    await skill._hold_video()
+    assert [name for name, _ in calls] == [windows.PAUSE_TABS_TOOL], "второй раз поверх своей паузы не ставим"
+
+    await skill._release_video()
+    assert calls[-1] == (windows.RESUME_TABS_TOOL, {"tabs": [41]})
+    assert skill._tabs_paused == []

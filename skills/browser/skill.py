@@ -807,7 +807,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.3.0",
+        version="0.4.0",
         spoken=("браузер", "browser"),
     )
 
@@ -1347,6 +1347,41 @@ class BrowserSkill(Skill):
         :param limit: сколько кнопок вернуть.
         """
         return await self._page_call("probe", {"limit": limit}, site=site, tab=tab)
+
+    @tool(routable=False, reversible=True)
+    async def pause_videos(self) -> ToolResult:
+        """Поставить на паузу видео во вкладках, которые звучат.
+
+        Зовёт скилл `windows`, когда ассистент начинает говорить: видео при этом
+        не приглушается, а останавливается (просьба владельца 29.09.2026 —
+        «любое видео», не только VLC). Музыка во вкладке остаётся приглушением:
+        видео от неё расширение отличает по кадру (`jarvisVideos`).
+
+        Готовности расширения не ждёт: реплика не станет ждать, пока оно
+        проснётся, — тогда просто приглушится, как раньше.
+        """
+        if self._extension is None or not self._extension.connected:
+            return ToolResult.failure("расширение не подключено")
+        result = await self._extension.call("videos", op="pause")
+        if result is None:
+            return ToolResult.failure(self._extension.last_error or "расширение не ответило")
+        tabs = [int(item["tabId"]) for item in result.get("tabs", []) if "tabId" in item]
+        titles = [str(item.get("title") or "") for item in result.get("tabs", [])]
+        return ToolResult.success({"tabs": tabs, "titles": titles})
+
+    @tool(routable=False, reversible=True)
+    async def resume_videos(self, tabs: list[int]) -> ToolResult:
+        """Вернуть к игре видео, которые поставил на паузу `pause_videos`.
+
+        :param tabs: номера вкладок из ответа `pause_videos`. Запускается только
+            помеченное нами: остановленное владельцем так и останется стоять.
+        """
+        if self._extension is None or not self._extension.connected:
+            return ToolResult.failure("расширение не подключено")
+        result = await self._extension.call("videos", op="resume", tabIds=[int(tab) for tab in tabs])
+        if result is None:
+            return ToolResult.failure(self._extension.last_error or "расширение не ответило")
+        return ToolResult.success({"tabs": [item.get("tabId") for item in result.get("tabs", [])]})
 
     async def _page_call(
         self, action: str, params: dict, *, site: str, tab: int

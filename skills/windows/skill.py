@@ -1265,6 +1265,11 @@ def cut_for(system: float, *, quiet_db: float = QUIET_CUT_DB, loud_db: float = L
 #: Когда после возврата громкости проверять, вернулась ли она на самом деле, —
 #: паузы между проверками, секунды (итого 2, 10, 30 с, 2 и 5 минут).
 RECHECK_AFTER_S = (2.0, 8.0, 20.0, 90.0, 180.0)
+#: Видео во вкладках браузера ставит на паузу расширение — через скилл `browser`.
+PAUSE_TABS_TOOL = "browser.pause_videos"
+RESUME_TABS_TOOL = "browser.resume_videos"
+#: Сколько ждать расширение с паузой и возвратом, секунд.
+TABS_TIMEOUT_S = 2.0
 #: Насколько громкость сессии может отличаться от нашего приглушённого уровня,
 #: чтобы считать её так и оставшейся приглушённой.
 LOWERED_TOLERANCE = 0.015
@@ -1435,7 +1440,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.13.0",
+        version="0.14.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1537,6 +1542,8 @@ class WindowsSkill(Skill):
         )
         #: Остановлен ли VLC по HTTP — его возвращать тем же путём.
         self._vlc_paused = False
+        #: Вкладки, где расширение остановило видео, — их и вернуть.
+        self._tabs_paused: list[int] = []
         #: Пауза и возврат — по очереди, и это не педантизм. Реплика бывает
         #: короткой, а пауза идёт через чужие службы: без очереди «верни» успеет
         #: раньше «останови», и видео замрёт навсегда (поймано живой проверкой
@@ -1676,10 +1683,9 @@ class WindowsSkill(Skill):
         if not self._pause_video:
             return
         async with self._video_turn:
-            if self._paused or self._vlc_paused:
+            if self._paused or self._vlc_paused or self._tabs_paused:
                 return
-            await self._hold_vlc()
-            await self._hold_players()
+            await asyncio.gather(self._hold_vlc(), self._hold_players(), self._hold_tabs())
 
     async def _hold_vlc(self) -> None:
         """VLC — отдельно, и не из вредности: его не видно в звуковых сессиях.
@@ -1723,6 +1729,26 @@ class WindowsSkill(Skill):
         names = ", ".join(sorted({s.name for s in sessions if s.pid in found}))
         self.log.info("Ставлю видео на паузу на время реплики: %s", names)
 
+    async def _hold_tabs(self) -> None:
+        """Видео в браузере — через расширение: снаружи вкладку с фильмом от
+        вкладки с музыкой не отличить, а изнутри страницы — по кадру.
+
+        Предел ожидания короткий: реплика уже звучит, и опоздавшая пауза хуже,
+        чем никакой, — приглушение браузера тем временем всё равно работает.
+        """
+        if not self.tools.has(PAUSE_TABS_TOOL):
+            return
+        try:
+            result = await asyncio.wait_for(self.tools.invoke(PAUSE_TABS_TOOL, {}), TABS_TIMEOUT_S)
+        except TimeoutError:
+            self.log.debug("Расширение не успело поставить видео на паузу")
+            return
+        if not result.ok or not isinstance(result.value, dict) or not result.value.get("tabs"):
+            return
+        self._tabs_paused = [int(tab) for tab in result.value["tabs"]]
+        titles = ", ".join(title for title in result.value.get("titles", ()) if title)
+        self.log.info("Ставлю видео во вкладке на паузу на время реплики: %s", titles or self._tabs_paused)
+
     async def _release_video(self) -> None:
         """Вернуть видео к игре. Возвращаем ровно то, что сами остановили.
 
@@ -1730,9 +1756,15 @@ class WindowsSkill(Skill):
         прийти раньше неё — значит оставить видео замершим до следующей реплики.
         """
         async with self._video_turn:
-            if not self._paused and not self._vlc_paused:
+            if not self._paused and not self._vlc_paused and not self._tabs_paused:
                 return
             paused, self._paused = self._paused, ()
+            tabs, self._tabs_paused = self._tabs_paused, []
+            if tabs and self.tools.has(RESUME_TABS_TOOL):
+                try:
+                    await asyncio.wait_for(self.tools.invoke(RESUME_TABS_TOOL, {"tabs": tabs}), TABS_TIMEOUT_S)
+                except TimeoutError:
+                    self.log.warning("Расширение не ответило — видео во вкладке осталось на паузе")
             if self._vlc_paused:
                 self._vlc_paused = False
                 await asyncio.to_thread(self._vlc.play)

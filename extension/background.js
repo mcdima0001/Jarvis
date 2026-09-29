@@ -447,6 +447,41 @@ async function inPage(tab, func, args, allFrames) {
   return values.find((value) => value.done || (value.controls || []).length) || values[0] || {};
 }
 
+/**
+ * Поставить на паузу видео, которые звучат, или вернуть поставленные нами.
+ *
+ * Выполняется внутри страницы, поэтому самодостаточна. Видео — это картинка,
+ * а не звук в теге `<video>`: музыкальные сайты тоже играют через него, и
+ * у песни без клипа нет кадра (`videoWidth` ноль) либо он спрятан. Звонки
+ * (`srcObject` — живой поток WebRTC) не трогаются: пауза там — замершее лицо
+ * собеседника. Своё помечается, и вернуть можно только помеченное — видео,
+ * которое владелец остановил сам, ассистент не запустит.
+ */
+function jarvisVideos(op) {
+  const MARK = "jarvisPaused";
+  let count = 0;
+  for (const video of document.querySelectorAll("video")) {
+    if (op === "resume") {
+      if (video.dataset[MARK]) {
+        delete video.dataset[MARK];
+        if (video.paused) {
+          video.play().catch(() => {});
+          count += 1;
+        }
+      }
+      continue;
+    }
+    const box = video.getBoundingClientRect();
+    const picture = video.videoWidth > 0 && video.videoHeight > 0 && box.width >= 160 && box.height >= 90;
+    if (!video.paused && !video.muted && video.volume > 0 && !video.srcObject && picture) {
+      video.pause();
+      video.dataset[MARK] = "1";
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /** Показать вкладку и поднять её окно на передний план. */
 async function focusTab(tab) {
   await chrome.tabs.update(tab.id, { active: true });
@@ -596,6 +631,39 @@ async function run(action, params) {
       url: tab.url,
       audible: Boolean(tab.audible),
     };
+  }
+
+  if (action === "videos") {
+    // Видео на паузу, пока говорит ассистент (просьба владельца 29.09.2026:
+    // «любое видео ставилось на паузу вместо приглушения»). Ищем только во
+    // вкладках, откуда идёт звук: молчащая пауза не нужна, а обходить все
+    // вкладки — будить замороженные. Возвращаем — ровно те, что назвали.
+    const op = params.op === "resume" ? "resume" : "pause";
+    const wanted = new Set(params.tabIds || []);
+    const tabs =
+      op === "pause"
+        ? await chrome.tabs.query({ audible: true })
+        : (await chrome.tabs.query({})).filter((tab) => wanted.has(tab.id));
+    const touched = [];
+    for (const tab of tabs) {
+      if (!isWebUrl(tab.url)) {
+        continue;
+      }
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: true },
+          func: jarvisVideos,
+          args: [op],
+        });
+        const count = results.reduce((sum, item) => sum + ((item && item.result) || 0), 0);
+        if (count) {
+          touched.push({ tabId: tab.id, title: tab.title, count });
+        }
+      } catch (error) {
+        // Вкладка без доступа (магазин расширений, запрет сайта) — не наша.
+      }
+    }
+    return { op, tabs: touched };
   }
 
   if (action === "page" || action === "probe") {
