@@ -610,3 +610,21 @@ def test_a_slot_after_the_first_word_is_still_fine() -> None:
     key, stored = generalize("включи трек лунная соната", {"track": "лунная соната"})
     assert key == "включи трек {track}"
     assert stored == {"track": "{track}"}
+
+
+async def test_a_mishearing_in_a_foreign_script_is_not_learned(store) -> None:
+    """Живой случай 29.09.2026: «добавь басов» пришло как «दबाएं Баса» и выучилось."""
+    learner = LearnedResolver(store)
+    intent = Intent(tool="studio.press", arguments={"control": "бас"})
+    assert await learner.remember("दबाएं баса", intent) == ""
+    assert await learner.remember("нажми кнопку бас", intent) != ""
+
+
+async def test_foreign_script_leftovers_are_swept_at_start(registry: ToolRegistry, studio: Studio, store) -> None:
+    await store.write("commands", {
+        "दबाव басов": {"tool": "studio.press", "arguments": {"control": "бас"}, "at": time.time()},
+        "нажми кнопку бас": {"tool": "studio.press", "arguments": {"control": "бас"}, "at": time.time()},
+    })
+    learner = LearnedResolver(store, registry=registry)
+    assert await learner.forget_unknown() == ("दबाव басов",)
+    assert list(await store.read("commands")) == ["нажми кнопку бас"]

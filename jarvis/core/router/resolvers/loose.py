@@ -33,6 +33,7 @@ from jarvis.core.text.matching import sounds_alike, stem
 from jarvis.core.tools import ToolRegistry
 
 from ..templates import second_request
+from .phrase import recognized
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,12 @@ class LooseResolver:
                 arguments, junk = got
                 if second_request(arguments):
                     # Вторая просьба в слоте: «канал veritasium и открой его».
+                    continue
+                if not recognized(self._registry, spec.name, arguments):
+                    # «Добавь немного басов» совпало с «добавь {db} басов», но
+                    # «немного» не число — это не совпадение, ни чистое, ни с
+                    # мусором. Иначе оно глушило бы резолвер (29.09.2026), и
+                    # фраза, прежде узнаваемая, уходила в модель.
                     continue
                 if not junk:
                     # Хоть одна фраза совпала начисто — значит это работа точных

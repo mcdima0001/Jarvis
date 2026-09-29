@@ -79,6 +79,19 @@ _ADJACENT = re.compile(r"\{[^{}]+\}[\s,.:;–—-]*\{[^{}]+\}")
 #: Короче этого фраза не запоминается: «да», «нет», «ок» ничего не значат.
 MIN_UTTERANCE = 6
 
+#: Буквы, которых в речи владельца не бывает: всё, кроме кириллицы и латиницы.
+#: Облако в режиме `multi` иногда пишет русское слово чужим алфавитом —
+#: «добавь басов» пришло как «दबाएं Баса» (хинди), модель угадала команду, и
+#: ослышка выучилась навсегда, да ещё с выдуманным моделью шагом в 5 дБ
+#: (29.09.2026). Такая строка — случайность распознавания, а не формулировка:
+#: повториться дословно она не может, а место и доверие занимает.
+_FOREIGN_LETTERS = re.compile(r"[^\W\d_a-zA-ZÀ-ɏЀ-ӿ]")
+
+
+def foreign_script(text: str) -> bool:
+    """Есть ли в тексте буквы не кириллицы и не латиницы."""
+    return bool(_FOREIGN_LETTERS.search(text))
+
 #: Сколько формулировок держать в памяти.
 #:
 #: Предел нужен не ради места на диске, а потому что **память копит ошибки
@@ -318,7 +331,7 @@ class LearnedResolver:
         if self._registry is None:
             return ()
         known = await self._load()
-        dead = [key for key, entry in known.items() if self._is_dead(entry)]
+        dead = [key for key, entry in known.items() if self._is_dead(entry) or foreign_script(key)]
         if not dead:
             return ()
 
@@ -331,7 +344,7 @@ class LearnedResolver:
 
         self._known = data
         logger.info(
-            "Выученное почищено: %d формулировк(и) вели на исчезнувшие инструменты",
+            "Выученное почищено: %d формулировк(и) — на исчезнувшие инструменты или ослышки",
             len(dead),
         )
         return tuple(dead)
@@ -401,6 +414,9 @@ class LearnedResolver:
 
         key, arguments = generalize(utterance, intent.arguments)
         if len(key) < MIN_UTTERANCE:
+            return ""
+        if foreign_script(key):
+            logger.info("Формулировку %r не запоминаю: в ней чужой алфавит — это ослышка", key)
             return ""
 
         previous = known.get(key) or {}

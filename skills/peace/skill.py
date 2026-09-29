@@ -34,11 +34,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from jarvis.core.contracts import ToolResult
+from jarvis.core.contracts import ToolResult, parse_number
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.text import best_match
 from jarvis.core.tools import tool
@@ -89,6 +89,15 @@ class PeaceUnavailable(RuntimeError):
 
 
 # --- чистые функции ---------------------------------------------------------
+
+
+def amount_phrases(verbs: tuple[str, ...], parts: tuple[str, ...]) -> list[str]:
+    """Шаблоны с числом: «добавь {db} басов», «добавь басов на {db}»."""
+    found: list[str] = []
+    for verb in verbs:
+        for part in parts:
+            found += [f"{verb} {{db}} {part}", f"{verb} {part} на {{db}}"]
+    return found
 
 
 def decibels(value: float) -> str:
@@ -270,7 +279,7 @@ class PeaceSkill(Skill):
     meta = SkillMeta(
         name="peace",
         description="Эквалайзер Peace Nexus: пресеты, басы, середина, верха, баланс",
-        version="0.2.1",
+        version="0.3.0",
         platforms=("windows",),
         spoken=("пис", "peace", "эквалайзер"),
     )
@@ -554,15 +563,19 @@ class PeaceSkill(Skill):
     # --- басы, середина и верха --------------------------------------------
 
     @tool(reversible=True)
-    async def shift(self, part: str, db: float = 0.0) -> ToolResult:
+    async def shift(self, part: str, db: float = 0.0, less: bool = False) -> ToolResult:
         """Добавить или убавить басы, середину или верха на эквалайзере.
 
         :param part: «bass» — басы, «mid» — середина, «treble» — верха.
-        :param db: на сколько децибел; положительное — больше, отрицательное —
-            меньше. Ноль — шаг из настроек в сторону «больше».
+        :param db: на сколько децибел — **только если владелец назвал число**.
+            Не назвал — 0: шаг задан владельцем в настройках. Модель дважды
+            выдумывала здесь 5 при шаге 2 (26 и 29.09.2026).
+        :param less: убавить, а не добавить.
         """
         chosen = normalize_part(part)
-        step = float(db) if db else self._step
+        step = abs(float(db)) or self._step
+        if less or float(db) < 0:
+            step = -step
         choose = band_chooser(chosen, self._bass_below, self._treble_above)
         accusative, genitive = PART_SPEECH[chosen]
 
@@ -589,43 +602,78 @@ class PeaceSkill(Skill):
             },
         )
 
-    @tool(routable=False, phrases=["больше басов", "добавь басов", "добавь баса", "сделай басы громче"],
-          reversible=True)
-    async def more_bass(self) -> ToolResult:
-        """Больше басов."""
-        return await self.shift("bass", self._step)
+    # Число называют по-разному: «добавь 8 дб басов», «басов на восемь
+    # децибел», «убавь верха на 3». Без шаблона с числом фраза узнавалась как
+    # обычное «добавь басов», и число молча терялось: прибавлялся шаг из
+    # настроек (вопрос владельца 29.09.2026). Не число в слоте («добавь
+    # немного басов») шаблон отдаёт дальше — `_is_amount`.
 
-    @tool(routable=False, phrases=["меньше басов", "убавь басы", "убери басы", "сделай басы тише"],
-          reversible=True)
-    async def less_bass(self) -> ToolResult:
-        """Меньше басов."""
-        return await self.shift("bass", -self._step)
+    @tool(routable=False, recognizes="_is_amount", reversible=True,
+          phrases=["больше басов", "добавь басов", "добавь баса", "сделай басы громче",
+                   *amount_phrases(("добавь", "прибавь", "подними"), ("басов", "баса", "басы"))])
+    async def more_bass(self, db: float = 0.0) -> ToolResult:
+        """Больше басов.
 
-    @tool(routable=False, phrases=["больше середины", "добавь середины", "добавь средних",
-                                   "добавь вокала", "сделай середину громче"],
-          reversible=True)
-    async def more_mid(self) -> ToolResult:
-        """Больше середины."""
-        return await self.shift("mid", self._step)
+        :param db: на сколько децибел; не названо — шаг из настроек.
+        """
+        return await self.shift("bass", abs(db) or self._step)
 
-    @tool(routable=False, phrases=["меньше середины", "убавь середину", "убери середину",
-                                   "убавь средние", "сделай середину тише"],
-          reversible=True)
-    async def less_mid(self) -> ToolResult:
-        """Меньше середины."""
-        return await self.shift("mid", -self._step)
+    @tool(routable=False, recognizes="_is_amount", reversible=True,
+          phrases=["меньше басов", "убавь басы", "убери басы", "сделай басы тише",
+                   *amount_phrases(("убавь", "убери", "опусти"), ("басов", "баса", "басы"))])
+    async def less_bass(self, db: float = 0.0) -> ToolResult:
+        """Меньше басов.
 
-    @tool(routable=False, phrases=["больше верхов", "добавь верхов", "добавь высоких"],
-          reversible=True)
-    async def more_treble(self) -> ToolResult:
-        """Больше верхов."""
-        return await self.shift("treble", self._step)
+        :param db: на сколько децибел; не названо — шаг из настроек.
+        """
+        return await self.shift("bass", -(abs(db) or self._step))
 
-    @tool(routable=False, phrases=["меньше верхов", "убавь верха", "убери верха", "убавь высокие"],
-          reversible=True)
-    async def less_treble(self) -> ToolResult:
-        """Меньше верхов."""
-        return await self.shift("treble", -self._step)
+    @tool(routable=False, recognizes="_is_amount", reversible=True,
+          phrases=["больше середины", "добавь середины", "добавь средних",
+                   "добавь вокала", "сделай середину громче",
+                   *amount_phrases(("добавь", "прибавь", "подними"), ("середины", "середину", "средних"))])
+    async def more_mid(self, db: float = 0.0) -> ToolResult:
+        """Больше середины.
+
+        :param db: на сколько децибел; не названо — шаг из настроек.
+        """
+        return await self.shift("mid", abs(db) or self._step)
+
+    @tool(routable=False, recognizes="_is_amount", reversible=True,
+          phrases=["меньше середины", "убавь середину", "убери середину",
+                   "убавь средние", "сделай середину тише",
+                   *amount_phrases(("убавь", "убери", "опусти"), ("середины", "середину", "средние"))])
+    async def less_mid(self, db: float = 0.0) -> ToolResult:
+        """Меньше середины.
+
+        :param db: на сколько децибел; не названо — шаг из настроек.
+        """
+        return await self.shift("mid", -(abs(db) or self._step))
+
+    @tool(routable=False, recognizes="_is_amount", reversible=True,
+          phrases=["больше верхов", "добавь верхов", "добавь высоких",
+                   *amount_phrases(("добавь", "прибавь", "подними"), ("верхов", "верха", "высоких"))])
+    async def more_treble(self, db: float = 0.0) -> ToolResult:
+        """Больше верхов.
+
+        :param db: на сколько децибел; не названо — шаг из настроек.
+        """
+        return await self.shift("treble", abs(db) or self._step)
+
+    @tool(routable=False, recognizes="_is_amount", reversible=True,
+          phrases=["меньше верхов", "убавь верха", "убери верха", "убавь высокие",
+                   *amount_phrases(("убавь", "убери", "опусти"), ("верхов", "верха", "высокие"))])
+    async def less_treble(self, db: float = 0.0) -> ToolResult:
+        """Меньше верхов.
+
+        :param db: на сколько децибел; не названо — шаг из настроек.
+        """
+        return await self.shift("treble", -(abs(db) or self._step))
+
+    def _is_amount(self, arguments: Mapping[str, Any]) -> bool:
+        """Число ли в слоте: «8 дб» — да, «немного» — нет, и шаблон уступает."""
+        spoken = arguments.get("db")
+        return spoken is None or parse_number(str(spoken)) is not None
 
     # --- предусиление, баланс, окно ----------------------------------------
 

@@ -108,3 +108,28 @@ async def test_a_latin_name_does_not_flip_the_language() -> None:
     # А настоящая английская фраза по-прежнему английская: голова у неё своя.
     assert dominant_language("what is the weather today") == "en"
     assert dominant_language("open the browser please") == "en"
+
+
+async def test_a_slot_the_tool_does_not_recognise_does_not_silence_us() -> None:
+    """«Добавь немного басов» совпало с «добавь {db} басов», но «немного» не число:
+    это не чистое совпадение, и короткая «добавь басов» с мусором внутри должна
+    сработать, как до шаблона с числом (29.09.2026)."""
+
+    class Equalizer:
+        @tool(phrases=["добавь басов", "добавь {db} басов"], recognizes="_is_amount", reversible=True)
+        async def more_bass(self, db: str = "") -> ToolResult:
+            """Больше басов."""
+            return ToolResult.success(None)
+
+        def _is_amount(self, arguments: dict[str, str]) -> bool:
+            return "db" not in arguments or any(char.isdigit() for char in arguments["db"])
+
+    registry = ToolRegistry()
+    for item in collect_tools(Equalizer(), namespace="peace"):
+        registry.register(item)
+    loose = LooseResolver(registry)
+
+    found = await loose.resolve(Utterance(text="добавь немного басов"))
+    assert found is not None and found.tool == "peace.more_bass" and found.arguments == {}
+    # А число — работа точных фраз: тут `loose` молчит.
+    assert await loose.resolve(Utterance(text="добавь 8 дб басов")) is None

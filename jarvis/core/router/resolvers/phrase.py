@@ -109,17 +109,24 @@ class PhraseResolver:
         return None
 
     def _recognized(self, name: str, arguments: Mapping[str, str]) -> bool:
-        """Узнаёт ли инструмент значения из шаблона. Не объявил — узнаёт всё.
+        return recognized(self._registry, name, arguments)
 
-        Сломавшаяся проверка считается «узнал»: иначе ошибка в одном скилле
-        отнимала бы у него все его фразы разом.
-        """
-        found = self._registry.get(name)
-        recognizer = found.recognizer if found is not None else None
-        if recognizer is None:
-            return True
-        try:
-            return bool(recognizer(arguments))
-        except Exception:  # noqa: BLE001 — проверка не важнее самой команды
-            logger.exception("Проверка значения у %s упала — считаю узнанным", name)
-            return True
+
+def recognized(registry: ToolRegistry, name: str, arguments: Mapping[str, str]) -> bool:
+    """Узнаёт ли инструмент значения из шаблона. Не объявил — узнаёт всё.
+
+    Общая для точных фраз и для `loose`: шаблон, от значения которого инструмент
+    отказался, не считается совпадением нигде.
+
+    Сломавшаяся проверка считается «узнал»: иначе ошибка в одном скилле
+    отнимала бы у него все его фразы разом.
+    """
+    found = registry.get(name)
+    recognizer = found.recognizer if found is not None else None
+    if recognizer is None:
+        return True
+    try:
+        return bool(recognizer(arguments))
+    except Exception:  # noqa: BLE001 — проверка не важнее самой команды
+        logger.exception("Проверка значения у %s упала — считаю узнанным", name)
+        return True

@@ -364,3 +364,27 @@ async def test_reloaded_skill_reads_the_updated_api(tmp_path: Path) -> None:
     finally:
         sys.modules.pop("peace_api", None)
         sys.path.remove(str(tmp_path))
+
+
+async def test_a_named_amount_is_used_instead_of_the_step() -> None:
+    """«Добавь 8 дб басов» прибавляло шаг из настроек: число терялось (29.09.2026)."""
+    skill, api = await _skill()
+    result = await skill.more_bass(db=8)
+    assert result.ok and result.speech_for("ru") == "Добавил басов на 8 децибел."
+    result = await skill.less_bass(db=3)
+    assert result.speech_for("ru") == "Убавил басов на 3 децибела."
+
+
+async def test_the_model_does_not_pick_the_amount_for_the_owner() -> None:
+    """Модель дважды выдумала 5 дБ при шаге 2 — без названного числа берётся шаг."""
+    skill, api = await _skill()
+    assert (await skill.shift("bass")).speech_for("ru") == "Добавил басов на 2 децибела."
+    assert (await skill.shift("bass", less=True)).speech_for("ru") == "Убавил басов на 2 децибела."
+    assert (await skill.shift("bass", db=-4)).speech_for("ru") == "Убавил басов на 4 децибела."
+
+
+@pytest.mark.parametrize(("spoken", "ok"), [("8 дб", True), ("восемь децибел", True), ("немного", False)])
+def test_only_a_number_fills_the_amount_slot(spoken: str, ok: bool) -> None:
+    skill = peace.PeaceSkill()
+    assert skill._is_amount({"db": spoken}) is ok
+    assert skill._is_amount({}) is True
