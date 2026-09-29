@@ -367,3 +367,9 @@ async def test_quiet_mode_reloads_without_a_word(tmp_path: Path, monkeypatch: py
     await watch.skills_tick(now=start)
     assert await watch.skills_tick(now=start + 30) == "updated"
     assert skills.reloaded == ["peace"] and announcer.said == []
+
+
+def test_a_tool_call_is_not_the_owner_talking() -> None:
+    """Наблюдатель сам зовёт «что играет», и с `tool.invoked` в признаках разговора
+    сбрасывал себе отсчёт тишины: перезапуск ждал вечно (лог 29.09.2026)."""
+    assert "tool.invoked" not in CoreWatch.ACTIVE
