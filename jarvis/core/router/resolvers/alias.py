@@ -13,6 +13,8 @@ from typing import Mapping
 from jarvis.core.contracts import Intent, Utterance
 from jarvis.core.tools import ToolRegistry
 
+from .phrase import recognized
+
 logger = logging.getLogger(__name__)
 
 #: Насколько похожей должна быть фраза, чтобы считаться той же командой.
@@ -60,7 +62,11 @@ class AliasResolver:
         if not index:
             return None
 
-        matches = difflib.get_close_matches(text, list(index), n=1, cutoff=self._similarity)
+        matches = difflib.get_close_matches(text, list(index), n=5, cutoff=self._similarity)
+        # Инструмент, отказавшийся от фразы, не совпадение и здесь: команда
+        # набора для закрытой программы («сохрани проект» без FL Studio)
+        # отсеялась у точных фраз и тут же вернулась похожей (29.09.2026).
+        matches = [match for match in matches if recognized(self._registry, index[match], {})]
         if not matches:
             return None
 

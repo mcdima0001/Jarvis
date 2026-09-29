@@ -1,0 +1,31 @@
+# Minecraft (Java Edition) — клавиши по умолчанию. Игра — это javaw.exe.
+# Поменял управление в игре — поменяй и здесь.
+name: Minecraft
+processes: [javaw.exe, minecraft.windows.exe]
+places: ["в майне", "в майнкрафте", "в minecraft", "в игре"]
+commands:
+  screenshot:
+    phrases: ["сделай скрин", "сделай скриншот"]
+    keys: f2
+    alone: false
+    say: "Скриншот сделан."
+  camera:
+    phrases: ["смени вид", "переключи камеру", "вид от третьего лица", "вид от первого лица"]
+    keys: f5
+  hud:
+    phrases: ["спрячь интерфейс", "покажи интерфейс", "убери интерфейс"]
+    keys: f1
+  debug:
+    phrases: ["покажи координаты", "спрячь координаты", "открой отладку"]
+    keys: f3
+  fullscreen:
+    phrases: ["полноэкранный режим", "выйди из полноэкранного"]
+    keys: f11
+    alone: false
+  pause:
+    phrases: ["поставь игру на паузу", "открой меню игры"]
+    keys: esc
+  chat:
+    phrases: ["открой чат"]
+    keys: t
+    alone: false

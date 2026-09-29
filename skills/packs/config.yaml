@@ -1,0 +1,5 @@
+packs:
+  # Где ещё искать наборы, кроме skills/packs/packs/ — например, свои, вне репозитория.
+  folders: []
+  # Какие наборы не подключать: имя файла без .yaml (fl_studio, minecraft, vlc).
+  disabled: []

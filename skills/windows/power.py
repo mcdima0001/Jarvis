@@ -77,34 +77,60 @@ def press(combination: str) -> bool:
     графики, работает только на чтение. Зато горячая клавиша есть у него самого
     и у RTSS — её и нажимаем, а какая именно, задаёт владелец в настройках.
     """
-    if sys.platform != "win32" or not combination.strip():
+    keys = key_codes(combination)
+    if sys.platform != "win32" or not keys:
         return False
     import ctypes
 
-    codes = {
-        "ctrl": 0x11, "control": 0x11, "shift": 0x10, "alt": 0x12, "win": 0x5B,
-        "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74, "f6": 0x75,
-        "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
-        "space": 0x20, "tab": 0x09, "enter": 0x0D,
-    }
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 0x0001, 0x0002
+    # Скан-код вместе с виртуальным: часть игр читает клавиатуру по скан-кодам
+    # (DirectInput) и нажатие с одним виртуальным кодом не видит вовсе.
+    scans = [user32.MapVirtualKeyW(key, 0) for key in keys]
+    extended = [KEYEVENTF_EXTENDEDKEY if key in _EXTENDED else 0 for key in keys]
+    for key, scan, flag in zip(keys, scans, extended, strict=True):
+        user32.keybd_event(key, scan, flag, 0)
+    for key, scan, flag in reversed(list(zip(keys, scans, extended, strict=True))):
+        user32.keybd_event(key, scan, flag | KEYEVENTF_KEYUP, 0)
+    return True
+
+
+#: Названия клавиш → виртуальные коды Windows. Буквы и цифры — сами собой.
+KEY_NAMES = {
+    "ctrl": 0x11, "control": 0x11, "shift": 0x10, "alt": 0x12, "win": 0x5B,
+    **{f"f{number}": 0x6F + number for number in range(1, 25)},
+    "space": 0x20, "tab": 0x09, "enter": 0x0D, "esc": 0x1B, "escape": 0x1B,
+    "backspace": 0x08, "delete": 0x2E, "del": 0x2E, "insert": 0x2D, "ins": 0x2D,
+    "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+    "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
+    "printscreen": 0x2C, "pause": 0x13, "capslock": 0x14,
+    "plus": 0xBB, "minus": 0xBD, "comma": 0xBC, "period": 0xBE,
+    "num0": 0x60, "num1": 0x61, "num2": 0x62, "num3": 0x63, "num4": 0x64,
+    "num5": 0x65, "num6": 0x66, "num7": 0x67, "num8": 0x68, "num9": 0x69,
+    "multiply": 0x6A, "add": 0x6B, "subtract": 0x6D, "divide": 0x6F,
+    "volumemute": 0xAD, "volumedown": 0xAE, "volumeup": 0xAF,
+    "nexttrack": 0xB0, "prevtrack": 0xB1, "stop": 0xB2, "playpause": 0xB3,
+}
+
+#: Клавиши из «серого» блока: без флага расширенной клавиши стрелка читается
+#: как цифра на цифровом блоке.
+_EXTENDED = frozenset({0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22, 0x25, 0x26, 0x27, 0x28, 0x6F})
+
+
+def key_codes(combination: str) -> list[int]:
+    """«ctrl+shift+m» → виртуальные коды по порядку; пусто — не разобрали.
+
+    Чистая функция: её проверяют тесты на любой машине.
+    """
     keys: list[int] = []
     for part in combination.lower().replace(" ", "").split("+"):
-        if part in codes:
-            keys.append(codes[part])
-        elif len(part) == 1:
+        if part in KEY_NAMES:
+            keys.append(KEY_NAMES[part])
+        elif len(part) == 1 and (part.isascii() and part.isalnum()):
             keys.append(ord(part.upper()))
         else:
-            return False
-    if not keys:
-        return False
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    KEYEVENTF_KEYUP = 0x0002
-    for key in keys:
-        user32.keybd_event(key, 0, 0, 0)
-    for key in reversed(keys):
-        user32.keybd_event(key, 0, KEYEVENTF_KEYUP, 0)
-    return True
+            return []
+    return keys
 
 
 def hungry(names: Sequence[str], sizes: Mapping[str, float], least_gb: float) -> list[str]:

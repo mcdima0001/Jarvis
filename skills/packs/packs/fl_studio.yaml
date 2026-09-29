@@ -1,0 +1,54 @@
+# FL Studio — горячие клавиши по умолчанию (FL Studio 20–21).
+# Поменял сочетание в самой программе — поменяй и здесь.
+name: FL Studio
+processes: [FL64.exe, FL.exe]
+places: ["во фл", "во флке", "в фл студии", "в fl studio", "в студии"]
+commands:
+  play:
+    phrases: ["запусти проигрывание", "останови проигрывание", "проиграй проект", "плей"]
+    keys: space
+  record:
+    phrases: ["включи запись", "выключи запись", "начни запись", "останови запись"]
+    keys: r
+  save:
+    phrases: ["сохрани проект"]
+    keys: ctrl+s
+    say: "Проект сохранён."
+  save_version:
+    phrases: ["сохрани новую версию", "сохрани версию проекта"]
+    keys: ctrl+n
+    say: "Сохранил новую версию."
+  undo:
+    phrases: ["отмени последнее действие", "шаг назад"]
+    keys: ctrl+alt+z
+    alone: false
+  playlist:
+    phrases: ["открой плейлист", "покажи плейлист"]
+    keys: f5
+    alone: false
+  channel_rack:
+    phrases: ["открой стойку каналов", "покажи каналы", "открой ченнел рэк"]
+    keys: f6
+  piano_roll:
+    phrases: ["открой пианоролл", "открой пиано ролл", "покажи пианоролл"]
+    keys: f7
+  mixer:
+    phrases: ["открой микшер", "покажи микшер"]
+    keys: f9
+  browser:
+    phrases: ["открой браузер плагинов", "покажи браузер сэмплов"]
+    keys: alt+f8
+  metronome:
+    phrases: ["включи метроном", "выключи метроном"]
+    keys: ctrl+m
+  song_mode:
+    phrases: ["переключи режим песни", "режим паттерна", "режим песни"]
+    keys: l
+  export_wav:
+    phrases: ["экспорт в вав", "экспортируй в wav", "отрендери трек"]
+    keys: ctrl+r
+    say: "Открыл экспорт."
+  export_mp3:
+    phrases: ["экспорт в мп3", "экспортируй в mp3"]
+    keys: ctrl+shift+r
+    say: "Открыл экспорт в MP3."

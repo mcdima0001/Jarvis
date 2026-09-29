@@ -1,0 +1,43 @@
+# VLC — горячие клавиши по умолчанию (VLC 3).
+# Пауза и возврат на время реплики ассистента — не здесь, а у скилла windows
+# (веб-интерфейс VLC). Тут то, что просят словами.
+name: VLC
+processes: [vlc.exe]
+places: ["в влц", "в vlc", "в плеере", "в видеоплеере"]
+commands:
+  play_pause:
+    phrases: ["пауза", "продолжи", "поставь на паузу", "сними с паузы"]
+    keys: space
+    alone: false
+  fullscreen:
+    phrases: ["на весь экран", "выйди из полноэкранного"]
+    keys: f
+    alone: false
+  next:
+    phrases: ["следующая серия", "включи следующую серию"]
+    keys: n
+  previous:
+    phrases: ["предыдущая серия", "включи предыдущую серию"]
+    keys: p
+  subtitles:
+    phrases: ["смени субтитры", "включи субтитры", "выключи субтитры"]
+    keys: v
+  audio_track:
+    phrases: ["смени озвучку", "другая озвучка", "смени аудиодорожку"]
+    keys: b
+  forward_10:
+    phrases: ["перемотай вперёд", "вперёд на десять секунд"]
+    keys: alt+right
+    alone: false
+  back_10:
+    phrases: ["перемотай назад", "назад на десять секунд"]
+    keys: alt+left
+    alone: false
+  forward_minute:
+    phrases: ["вперёд на минуту", "перемотай на минуту вперёд"]
+    keys: ctrl+right
+    alone: false
+  back_minute:
+    phrases: ["назад на минуту", "перемотай на минуту назад"]
+    keys: ctrl+left
+    alone: false
