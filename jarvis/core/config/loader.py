@@ -18,6 +18,7 @@ from jarvis.core.errors import ConfigError
 
 from .schema import (
     RESTART_AUTO,
+    SKILLS_AUTO,
     AECConfig,
     AppConfig,
     AttentionConfig,
@@ -92,7 +93,13 @@ def _restart(data: Mapping[str, Any]) -> RestartConfig:
         raise ConfigError(
             f"runtime.restart.auto: {auto!r} — ожидается одно из {', '.join(sorted(RESTART_AUTO))}"
         )
+    skills = str(data.get("skills", "tell")).lower()
+    if skills not in SKILLS_AUTO:
+        raise ConfigError(
+            f"runtime.restart.skills: {skills!r} — ожидается одно из {', '.join(sorted(SKILLS_AUTO))}"
+        )
     return RestartConfig(
+        skills=skills,
         carryover_s=float(data.get("carryover_s", 180.0)),
         auto=auto,
         idle_s=float(data.get("idle_s", 120.0)),

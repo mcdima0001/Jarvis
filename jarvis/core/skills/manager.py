@@ -231,6 +231,11 @@ class SkillManager:
             )
         return tuple(listed + orphans)
 
+    def candidate(self, name: str) -> SkillCandidate | None:
+        """Откуда загружен скилл (по имени из паспорта или по папке)."""
+        record = self._records.get(self.resolve(name))
+        return record.candidate if record is not None else None
+
     def get(self, name: str) -> Skill | None:
         """Вернуть экземпляр скилла по имени (из паспорта или папки)."""
         record = self._records.get(self.resolve(name))

@@ -412,6 +412,7 @@ class JarvisApp:
             watched=(Path(__file__).resolve().parents[1], config.source, config.root / ".env"),
             events=events, modes=modes, jobs=jobs, dispatcher=dispatcher,
             registry=registry, announcer=announcer, check=check_build,
+            skills=skills, root=config.root,
         )
         lifecycle.code_changed = watch.code_changed
         # Только живому сеансу: `--check` и `--say` перезапускать некому.

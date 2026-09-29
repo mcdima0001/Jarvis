@@ -261,3 +261,109 @@ def test_the_restart_mode_is_checked_by_the_loader(tmp_path: Path) -> None:
     config.write_text("runtime:\n  restart:\n    auto: always\n", "utf-8")
     with pytest.raises(ConfigError, match="runtime.restart.auto"):
         load_config(config, root=tmp_path)
+
+
+# --- скиллы обновились на диске ---------------------------------------------------------------
+
+
+class _Skills:
+    """Менеджер скиллов на папках во временном каталоге."""
+
+    def __init__(self, root: Path) -> None:
+        from jarvis.core.skills.discovery import discover
+
+        self._root = root
+        self._discover = discover
+        self.loaded = ("peace", "browser", "page")
+        self.disabled: frozenset[str] = frozenset()
+        self.reloaded: list[str] = []
+        self.adopted: list[str] = []
+
+    def candidates(self) -> list[Any]:
+        return self._discover([self._root])
+
+    def candidate(self, name: str) -> Any:
+        return next((c for c in self.candidates() if c.name == name), None)
+
+    def resolve(self, name: str) -> str:
+        return name
+
+    async def reload(self, name: str) -> None:
+        self.reloaded.append(name)
+
+    async def adopt(self, name: str) -> None:
+        self.adopted.append(name)
+
+
+def _skill_tree(root: Path) -> None:
+    for folder in ("peace", "browser", "browser/page"):
+        (root / folder).mkdir(parents=True)
+        (root / folder / "skill.py").write_text("x = 1", "utf-8")
+
+
+async def _skill_watch(tmp_path: Path, *, mode: str = "tell") -> tuple[CoreWatch, _Skills, _Announcer]:
+    root = tmp_path / "skills"
+    _skill_tree(root)
+    skills, announcer = _Skills(root), _Announcer()
+    watch = CoreWatch(
+        lifecycle=Lifecycle(asyncio.Event()), settings=RestartConfig(auto="off", skills=mode),
+        watched=[], skills=skills, announcer=announcer,  # type: ignore[arg-type]
+    )
+    await watch.start()
+    return watch, skills, announcer
+
+
+async def test_updated_skills_are_reloaded_and_said_in_one_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.core import restart
+
+    monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "")
+    watch, skills, announcer = await _skill_watch(tmp_path)
+    assert await watch.skills_tick() == "same"
+
+    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = 2", "utf-8")
+    (tmp_path / "skills" / "browser" / "page" / "skill.py").write_text("x = 2", "utf-8")
+    start = time.monotonic() + 100
+    assert await watch.skills_tick(now=start) == "changing"
+    assert await watch.skills_tick(now=start + 5) == "settling"
+    assert await watch.skills_tick(now=start + 30) == "updated"
+    # Подскилл — сам по себе: главный браузер не тронут.
+    assert sorted(skills.reloaded) == ["page", "peace"]
+    assert announcer.said == ["{address}, на 2 модуля пришли обновления, обновил."]
+    assert await watch.skills_tick(now=start + 60) == "same"
+
+
+async def test_a_skill_that_does_not_import_is_left_as_it_was(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.core import restart
+
+    monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "SyntaxError: invalid syntax")
+    watch, skills, announcer = await _skill_watch(tmp_path)
+    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = (", "utf-8")
+    start = time.monotonic() + 100
+    await watch.skills_tick(now=start)
+    assert await watch.skills_tick(now=start + 30) == "failed"
+    assert skills.reloaded == []
+    assert "peace" in announcer.said[0] and "не поднялся" in announcer.said[0]
+    # Второй раз ту же правку не пробуем.
+    assert await watch.skills_tick(now=start + 60) == "same"
+
+
+async def test_a_manual_reload_moves_the_baseline(tmp_path: Path) -> None:
+    """«Переподключи модуль» голосом — наблюдатель не повторяет и не докладывает."""
+    from jarvis.core.contracts import SkillLoaded
+
+    watch, skills, announcer = await _skill_watch(tmp_path)
+    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = 3", "utf-8")
+    await watch._on_skill_loaded(SkillLoaded(source="skills", skill="peace"))
+    assert await watch.skills_tick() == "same"
+
+
+async def test_quiet_mode_reloads_without_a_word(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.core import restart
+
+    monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "")
+    watch, skills, announcer = await _skill_watch(tmp_path, mode="quiet")
+    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = 4", "utf-8")
+    start = time.monotonic() + 100
+    await watch.skills_tick(now=start)
+    assert await watch.skills_tick(now=start + 30) == "updated"
+    assert skills.reloaded == ["peace"] and announcer.said == []

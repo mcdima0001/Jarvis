@@ -68,9 +68,13 @@ class RestartConfig:
     check_s: float = 30.0
     #: Инструмент «что сейчас играет» (`{"playing": [...]}`); пусто — звук не проверяется.
     busy_tool: str = ""
+    #: Скилл обновился на диске: `tell` — переподключить и коротко сказать,
+    #: `quiet` — переподключить молча, `off` — не трогать.
+    skills: str = "tell"
 
 
 RESTART_AUTO = frozenset({"idle", "tell", "off"})
+SKILLS_AUTO = frozenset({"tell", "quiet", "off"})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

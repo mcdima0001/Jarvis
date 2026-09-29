@@ -11,7 +11,10 @@
 * **состояние переживает перезапуск** — `Carryover`: режимы, последние реплики
   разговора, заданный вопрос; о брошенных поручениях ассистент говорит сам;
 * **перезапуск сам, когда ядро обновилось** — `CoreWatch`: файлы ядра на диске
-  не те, с которыми запускались, владелец молчит, ничего не играет.
+  не те, с которыми запускались, владелец молчит, ничего не играет;
+* **скилл обновился — переподключается сам** (тот же `CoreWatch`): перезапуск
+  ради него не нужен, хватает `SkillManager.reload`, и короткое «на два модуля
+  пришли обновления, обновил» (просьба владельца 29.09.2026).
 
 **Перед любым перезапуском новый код собирается пробно** (`build_check`, 2 с).
 Упавший при старте Jarvis из трея не поднимется сам, а голосом его уже не
@@ -32,9 +35,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from jarvis.core.contracts import AnnouncementRequested, Intent
+from jarvis.core.attention import LOW, NORMAL
+from jarvis.core.contracts import AnnouncementRequested, Intent, SkillLoaded
 from jarvis.core.pending import Pending
 from jarvis.core.state import BRIEF, DEAF, QUIET
+from jarvis.core.tts.normalize import plural_form
 
 if TYPE_CHECKING:
     from jarvis.core.attention import Announcer
@@ -43,6 +48,8 @@ if TYPE_CHECKING:
     from jarvis.core.dialogue import Conversation
     from jarvis.core.jobs import Jobs
     from jarvis.core.router.dispatcher import Dispatcher
+    from jarvis.core.skills import SkillManager
+    from jarvis.core.skills.discovery import SkillCandidate
     from jarvis.core.state import Modes
     from jarvis.core.tools import ToolRegistry
 
@@ -71,6 +78,24 @@ _UNFINISHED = {
 }
 _TELL = (
     "Ядро обновилось, {address}. Скажите «перезапустись», когда будет удобно."
+)
+
+#: Что в папке скилла считается им самим: код и его настройки. Данные, которые
+#: скилл пишет себе сам, сюда не входят — иначе он переподключал бы себя по кругу.
+SKILL_FILES = frozenset({".py", ".yaml"})
+#: Файлы скилла не менялись столько секунд — правка закончена.
+SKILL_SETTLE_S = 20.0
+#: Столько секунд без разговора — и скилл можно переподключить: это не
+#: перезапуск, глухоты нет, но команду, идущую через него, рвать нельзя.
+SKILL_IDLE_S = 20.0
+
+#: Пробный импорт скилла в отдельном процессе: сломанный код не выгружает рабочий.
+_IMPORT_SKILL = (
+    "import sys; from pathlib import Path; "
+    "from jarvis.core.skills.discovery import SkillCandidate; "
+    "from jarvis.core.skills.loader import import_module, find_skill_class; "
+    "c = SkillCandidate(name=sys.argv[1], path=Path(sys.argv[2]), parent=sys.argv[3]); "
+    "find_skill_class(import_module(c), path=c.path)"
 )
 
 
@@ -107,6 +132,57 @@ def changed(before: Mapping[str, tuple[int, int]], after: Mapping[str, tuple[int
     """Что поменялось: изменённые, новые и удалённые файлы, по именам."""
     names = {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
     return sorted(Path(name).name for name in names)
+
+
+def skill_prints(candidates: Iterable[SkillCandidate]) -> dict[str, dict[str, tuple[int, int]]]:
+    """Отпечатки скиллов: метка (`browser/page`) → отпечаток её файлов.
+
+    Файл подскилла лежит внутри папки главного, но принадлежит подскиллу: каждый
+    файл относится к самой глубокой папке скилла, в которой лежит. Иначе правка
+    `page` переподключала бы весь браузер.
+    """
+    folders = {candidate.label: candidate.path.parent for candidate in candidates}
+    prints: dict[str, dict[str, tuple[int, int]]] = {label: {} for label in folders}
+    by_depth = sorted(folders.items(), key=lambda item: len(item[1].parts), reverse=True)
+    for label, folder in folders.items():
+        if not folder.is_dir():
+            continue
+        for item in folder.rglob("*"):
+            if item.suffix not in SKILL_FILES or "__pycache__" in item.parts:
+                continue
+            owner = next((name for name, where in by_depth if where in item.parents), label)
+            if owner != label:
+                continue
+            try:
+                stat = item.stat()
+            except OSError:
+                continue
+            prints[label][str(item)] = (stat.st_mtime_ns, stat.st_size)
+    return prints
+
+
+def skill_check(candidate: SkillCandidate, *, root: Path, timeout: float = BUILD_TIMEOUT_S) -> str:
+    """Импортировать скилл с диска в отдельном процессе; пусто — импортируется."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        done = subprocess.run(  # noqa: S603 — наш интерпретатор и наш код
+            [sys.executable, "-c", _IMPORT_SKILL, candidate.name, str(candidate.path), candidate.parent],
+            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, creationflags=flags, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"пробный импорт не запустился: {exc}"
+    if done.returncode == 0:
+        return ""
+    tail = (done.stderr or done.stdout or "").strip().splitlines()
+    return tail[-1] if tail else f"код выхода {done.returncode}"
+
+
+def updated_line(count: int) -> str:
+    """«{address}, на два модуля пришли обновления, обновил.»"""
+    modules = plural_form(count, ("модуль", "модуля", "модулей"))
+    came = "пришло обновление" if count % 10 == 1 and count % 100 != 11 else "пришли обновления"
+    return f"{{address}}, на {count} {modules} {came}, обновил."
 
 
 def build_check(config: Path, *, root: Path, timeout: float = BUILD_TIMEOUT_S) -> str:
@@ -375,6 +451,8 @@ class CoreWatch:
         registry: ToolRegistry | None = None,
         announcer: Announcer | None = None,
         check: Callable[[], Awaitable[str]] | None = None,
+        skills: SkillManager | None = None,
+        root: Path | None = None,
     ) -> None:
         self._lifecycle = lifecycle
         self._settings = settings
@@ -394,6 +472,12 @@ class CoreWatch:
         self._settled: dict[str, tuple[int, int]] | None = None
         self._last_busy = ""
         self._task: asyncio.Task[None] | None = None
+        #: Скиллы: отпечатки на момент загрузки каждого и что видели в прошлый раз.
+        self._skills = skills
+        self._root = root or Path.cwd()
+        self._skill_base: dict[str, dict[str, tuple[int, int]]] = {}
+        self._skill_seen: dict[str, dict[str, tuple[int, int]]] = {}
+        self._skill_seen_at = 0.0
 
     @property
     def service_name(self) -> str:
@@ -405,10 +489,13 @@ class CoreWatch:
 
     async def start(self) -> None:
         self._baseline = await asyncio.to_thread(fingerprint, self._watched)
+        if self._skills is not None:
+            self._skill_base = await asyncio.to_thread(skill_prints, self._skills.candidates())
         if self._events is not None:
             for name in self.ACTIVE:
                 self._events.subscribe(name, self._on_activity)
-        if self._settings.auto != "off":
+            self._events.subscribe(SkillLoaded.NAME, self._on_skill_loaded)
+        if self._settings.auto != "off" or self._settings.skills != "off":
             self._task = asyncio.create_task(self._loop(), name="core-watch")
 
     async def stop(self) -> None:
@@ -420,13 +507,95 @@ class CoreWatch:
     async def _on_activity(self, event: object) -> None:
         self._active_at = time.monotonic()
 
+    async def _on_skill_loaded(self, event: object) -> None:
+        """Скилл загрузили — кто угодно: голосом, из панели, мы сами.
+
+        Его новый отпечаток и есть новая точка отсчёта. Иначе после «переподключи
+        модуль» он переподключился бы второй раз, а доклад соврал бы про обновление.
+        """
+        if self._skills is None or not isinstance(event, SkillLoaded):
+            return
+        candidate = self._skills.candidate(event.skill)
+        if candidate is not None:
+            self._skill_base[candidate.label] = skill_prints([candidate])[candidate.label]
+
     async def _loop(self) -> None:
         while True:
             await asyncio.sleep(self._settings.check_s)
             try:
-                await self.tick()
+                core = await self.tick() if self._settings.auto != "off" else "same"
+                # Ядро ждёт перезапуска — скиллы подхватятся вместе с ним.
+                if core == "same":
+                    await self.skills_tick()
             except Exception:  # noqa: BLE001 — наблюдатель не должен ронять ассистента
                 logger.exception("Наблюдатель за ядром споткнулся")
+
+    async def skills_tick(self, now: float | None = None) -> str:
+        """Переподключить скиллы, обновившиеся на диске. Возвращает, что решил."""
+        if self._skills is None or self._settings.skills == "off":
+            return "off"
+        moment = time.monotonic() if now is None else now
+        candidates = {candidate.label: candidate for candidate in self._skills.candidates()}
+        current = await asyncio.to_thread(skill_prints, candidates.values())
+        changed = sorted(
+            label for label in current if current[label] != self._skill_base.get(label)
+        )
+        if not changed:
+            self._skill_seen = {}
+            return "same"
+        if current != self._skill_seen:
+            if not self._skill_seen:
+                logger.info("Скиллы на диске обновились: %s", ", ".join(changed))
+            self._skill_seen, self._skill_seen_at = current, moment
+            return "changing"
+        if moment - self._skill_seen_at < SKILL_SETTLE_S:
+            return "settling"
+        if moment - self._active_at < SKILL_IDLE_S or (self._jobs is not None and self._jobs.running):
+            return "busy"
+
+        updated: list[str] = []
+        failed: list[str] = []
+        disabled = self._skills.disabled
+        for label in changed:
+            candidate = candidates[label]
+            # Главный переподключается вместе с подскиллами — отдельно их не трогаем.
+            if candidate.parent in changed or candidate.name in disabled:
+                continue
+            error = await asyncio.to_thread(skill_check, candidate, root=self._root)
+            if error:
+                logger.warning("Скилл %s обновился, но не импортируется — оставляю прежний: %s", label, error)
+                failed.append(label)
+                continue
+            try:
+                loaded = self._skills.resolve(candidate.name)
+                if loaded in self._skills.loaded:
+                    await self._skills.reload(loaded)
+                else:
+                    await self._skills.adopt(candidate.name)
+            except Exception as exc:  # noqa: BLE001 — один скилл не роняет наблюдателя
+                logger.warning("Скилл %s после обновления не поднялся: %s", label, exc)
+                failed.append(label)
+                continue
+            updated.append(label)
+        # Точка отсчёта — то, что на диске сейчас: не вышедшее ждёт новой правки,
+        # а не пробуется каждые полминуты.
+        self._skill_base.update({label: current[label] for label in changed})
+        self._skill_seen = {}
+        if updated:
+            logger.info("Скиллы переподключены после обновления: %s", ", ".join(updated))
+        self._tell_skills(updated, failed)
+        return "updated" if updated else "failed"
+
+    def _tell_skills(self, updated: list[str], failed: list[str]) -> None:
+        if self._settings.skills != "tell" or self._announcer is None:
+            return
+        if updated:
+            self._announcer.offer(updated_line(len(updated)), importance=LOW)
+        for label in failed:
+            self._announcer.offer(
+                f"{{address}}, модуль {label} после обновления не поднялся, подробности в логе.",
+                importance=NORMAL,
+            )
 
     async def tick(self, now: float | None = None) -> str:
         """Один взгляд на диск. Возвращает, что решил, — для тестов и лога."""
