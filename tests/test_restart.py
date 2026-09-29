@@ -373,3 +373,14 @@ def test_a_tool_call_is_not_the_owner_talking() -> None:
     """Наблюдатель сам зовёт «что играет», и с `tool.invoked` в признаках разговора
     сбрасывал себе отсчёт тишины: перезапуск ждал вечно (лог 29.09.2026)."""
     assert "tool.invoked" not in CoreWatch.ACTIVE
+
+
+async def test_a_manual_reload_of_a_skill_with_a_subskill_is_not_repeated(tmp_path: Path) -> None:
+    """Живой лог 29.09.2026: «переподключи модуль браузер» — и через полминуты
+    браузер переподключился сам ещё раз: файлы `page` засчитались браузеру."""
+    from jarvis.core.contracts import SkillLoaded
+
+    watch, skills, announcer = await _skill_watch(tmp_path)
+    (tmp_path / "skills" / "browser" / "skill.py").write_text("x = 5", "utf-8")
+    await watch._on_skill_loaded(SkillLoaded(source="skills", skill="browser"))
+    assert await watch.skills_tick() == "same"

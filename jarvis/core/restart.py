@@ -523,7 +523,12 @@ class CoreWatch:
             return
         candidate = self._skills.candidate(event.skill)
         if candidate is not None:
-            self._skill_base[candidate.label] = skill_prints([candidate])[candidate.label]
+            # Считать по всем скиллам, а не по одному: иначе файлы подскилла
+            # (`browser/page`) засчитываются главному, отпечаток не сходится с
+            # полным обходом, и ручное «переподключи модуль браузер» через
+            # полминуты повторялось само — с докладом (живой лог 29.09.2026).
+            prints = skill_prints(self._skills.candidates())
+            self._skill_base[candidate.label] = prints.get(candidate.label, {})
 
     async def _loop(self) -> None:
         while True:
