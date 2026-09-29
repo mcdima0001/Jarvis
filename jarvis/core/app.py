@@ -38,7 +38,15 @@ from jarvis.core.llm import LLMService, ProfileRegistry, build_provider
 from jarvis.core.llm.usage import UsageLog
 from jarvis.core.memory import Memory, build_memory
 from jarvis.core.meter import LoadReporter, Meter
-from jarvis.core.persona import FAREWELL, GREETING, Persona
+from jarvis.core.persona import BACK, FAREWELL, GREETING, Persona
+from jarvis.core.restart import (
+    Carryover,
+    CoreWatch,
+    Lifecycle,
+    announce_unfinished,
+    build_check,
+    restart_file,
+)
 from jarvis.core.router import (
     AliasResolver,
     Dispatcher,
@@ -153,6 +161,10 @@ class JarvisApp:
     panel: ControlPanel | None = None
     #: Синтез — чтобы заранее приготовить реплики, нужные без сети.
     tts: TTS | None = None
+    #: Выключение и перезапуск: кто попросил и как (`jarvis.core.restart`).
+    lifecycle: Lifecycle | None = None
+    #: Что переживает перезапуск: режимы, разговор, заданный вопрос.
+    carryover: Carryover | None = None
 
     # --- сборка ------------------------------------------------------------
 
@@ -228,6 +240,13 @@ class JarvisApp:
         # заводится здесь, до обоих: иначе инструменту нечего было бы дёргать,
         # а `run` пришлось бы искать его у себя внутри.
         stopping = asyncio.Event()
+
+        # Перезапуск — та же остановка, после которой трей поднимает процесс
+        # снова. Перед ним новый код собирается пробно: в сломанный не уходим.
+        async def check_build() -> str:
+            return await asyncio.to_thread(build_check, config.source, root=config.root)
+
+        lifecycle = Lifecycle(stopping, check=check_build)
 
         # Политика «когда уместно заговорить самому». Одна на всю систему:
         # каждый, кому есть что сказать без вопроса, знает только **что**
@@ -325,7 +344,8 @@ class JarvisApp:
             situation=situation,
             stt=stt,
             jobs=jobs,
-            shutdown=stopping.set,
+            shutdown=lifecycle.shutdown,
+            restart=lifecycle.restart,
             meter=meter,
             conversation=conversation,
             sink=audio.sink,
@@ -380,6 +400,23 @@ class JarvisApp:
         ):
             runner.add(service, needs=needs)
 
+        carryover = Carryover(
+            restart_file(config.memory.dir),
+            modes=modes, conversation=conversation, dispatcher=dispatcher, jobs=jobs,
+            max_age_s=config.runtime.restart.carryover_s,
+        )
+        # Ядро на диске новее запущенного — перезапуститься, когда владелец молчит.
+        watch = CoreWatch(
+            lifecycle=lifecycle,
+            settings=config.runtime.restart,
+            watched=(Path(__file__).resolve().parents[1], config.source, config.root / ".env"),
+            events=events, modes=modes, jobs=jobs, dispatcher=dispatcher,
+            registry=registry, announcer=announcer, check=check_build,
+        )
+        lifecycle.code_changed = watch.code_changed
+        # Только живому сеансу: `--check` и `--say` перезапускать некому.
+        runner.add(watch, needs=EARS)
+
         panel = (
             ControlPanel(
                 config=config, events=events, registry=registry, skills=skills, llm=llm,
@@ -411,6 +448,8 @@ class JarvisApp:
             core=core_tools,
             panel=panel,
             tts=tts,
+            lifecycle=lifecycle,
+            carryover=carryover,
         )
 
     # --- жизненный цикл ----------------------------------------------------
@@ -489,19 +528,35 @@ class JarvisApp:
                 pass
 
         await self.start()
+        carried = self.carryover.restore() if self.carryover is not None else None
         # Приветствие и прощание — свойство живого сеанса, а не запуска
         # сервисов: служебные режимы (`--check`, `--say`) остаются молчаливыми.
-        if self.persona.greet_on_start:
+        # После перезапуска — не «добрый день», а «снова на связи»; после
+        # перезапуска на новое ядро, которого владелец не просил, — ничего.
+        if carried is not None and carried.restart:
+            if not carried.quietly:
+                await self.pipeline.announce(BACK)
+        elif self.persona.greet_on_start:
             await self.pipeline.announce(GREETING)
+        if carried is not None:
+            announce_unfinished(self.events, carried)
         if self.tts is not None:
             # Пока сеть есть: без неё облачный голос эту фразу уже не скажет.
             await self.tts.prewarm(STT_OUTAGE, language="ru")
         try:
             await stop_event.wait()
         finally:
-            if self.persona.farewell_on_stop:
+            lifecycle = self.lifecycle
+            restarting = lifecycle is not None and lifecycle.restarting
+            # Перед перезапуском «до свидания» неверно: «перезапускаюсь» уже сказано.
+            if self.persona.farewell_on_stop and not restarting:
                 await self.pipeline.announce(FAREWELL)
-            await self.stop("получен сигнал остановки")
+            # До остановки: она отменяет поручения, а их надо успеть переписать.
+            if self.carryover is not None:
+                self.carryover.save(
+                    restart=restarting, quietly=lifecycle is not None and lifecycle.quietly
+                )
+            await self.stop("перезапуск" if restarting else "получен сигнал остановки")
 
     # --- работа ------------------------------------------------------------
 

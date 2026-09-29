@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from jarvis.core.agent import Outcome, Planner, Step
 from jarvis.core.audio.outputs import Output, config_value, find_output, is_default, query_outputs
@@ -249,6 +249,7 @@ class CoreTools:
         stt: Any = None,
         jobs: Jobs | None = None,
         shutdown: Callable[[], None] | None = None,
+        restart: Callable[[str], Awaitable[str]] | None = None,
         meter: Meter | None = None,
         conversation: Conversation | None = None,
         sink: Any = None,
@@ -286,6 +287,8 @@ class CoreTools:
         #: Чем попросить приложение выключиться. Инструмент сам этого не умеет
         #: и не должен: остановка сервисов — дело composition root.
         self._shutdown = shutdown
+        #: Чем попросить перезапуск; отвечает пусто или причину отказа.
+        self._restart = restart
         #: Прерванный план, ждущий разрешения. Один на систему: вопрос тоже один
         #: (`pending.py`), и двух прерванных планов сразу быть не может.
         self._waiting: _Waiting | None = None
@@ -1023,6 +1026,54 @@ class CoreTools:
         return ToolResult.success(
             {"stopping": True},
             speech={"ru": "Завершаю работу.", "en": "Shutting down."},
+        )
+
+    @tool(
+        name="restart",
+        phrases=[
+            "перезапустись",
+            "перезагрузись",
+            "перезапусти себя",
+            "перезагрузи себя",
+            "перезапусти ядро",
+            "перезагрузи ядро",
+            "обнови ядро",
+            "перезапусти джарвиса",
+            "restart yourself",
+            "restart",
+        ],
+        routable=False,
+        reversible=False,
+    )
+    async def restart(self) -> ToolResult:
+        """Перезапустить ассистента целиком — чтобы подхватить новое ядро.
+
+        Ядро внутри процесса не перезагружается намеренно (`jarvis.core.restart`):
+        это и есть перезапуск, только быстрый и честный. Режимы, разговор и
+        заданный вопрос переживают его, а новый код перед этим собирается
+        пробно — в сломанный ассистент не перезапускается.
+        """
+        if self._restart is None:
+            return ToolResult.failure(
+                "перезапуск недоступен: приложение собрано без него",
+                speech={"ru": "Не могу перезапуститься в этом режиме.", "en": "I can't restart in this mode."},
+            )
+        refused = await self._restart("по команде владельца")
+        if refused:
+            broken = refused.startswith("новый код")
+            return ToolResult.failure(
+                refused,
+                speech={
+                    "ru": "Новый код не собирается, перезапуск отменил. Подробности в логе."
+                    if broken else "Перезапускаться умею, только когда запущен из трея.",
+                    "en": "The new code doesn't build, restart cancelled." if broken
+                    else "I can only restart when running from the tray.",
+                },
+            )
+        return ToolResult.success(
+            {"restarting": True},
+            speech={"ru": ("Перезапускаюсь.", "Секунду, перезапускаюсь.", "Сейчас вернусь."),
+                    "en": ("Restarting.", "Back in a moment.")},
         )
 
     @tool(

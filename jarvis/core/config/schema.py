@@ -52,6 +52,28 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class RestartConfig:
+    """Перезапуск: что переживает его и когда он случается сам (`core/restart.py`)."""
+
+    #: Состояние прошлого запуска возвращается, если новый поднялся за столько секунд.
+    carryover_s: float = 180.0
+    #: Ядро на диске обновилось: `idle` — перезапуститься самому, когда владелец
+    #: молчит; `tell` — сказать об этом; `off` — ничего.
+    auto: str = "idle"
+    #: Сколько секунд тишины от владельца считать «молчит».
+    idle_s: float = 120.0
+    #: Сколько файлы ядра должны не меняться, прежде чем перезапуск: не посреди правки.
+    settle_s: float = 60.0
+    #: Как часто смотреть на диск, секунд.
+    check_s: float = 30.0
+    #: Инструмент «что сейчас играет» (`{"playing": [...]}`); пусто — звук не проверяется.
+    busy_tool: str = ""
+
+
+RESTART_AUTO = frozenset({"idle", "tell", "off"})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeConfig:
     """Исполнение блокирующих задач и предохранители."""
 
@@ -64,6 +86,7 @@ class RuntimeConfig:
     #: Как часто писать сводку в лог, секунд. Ноль — не писать, но счёт вести:
     #: тогда итог виден по команде «сколько ты ешь».
     meter_seconds: float = 60.0
+    restart: RestartConfig = field(default_factory=RestartConfig)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

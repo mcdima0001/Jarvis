@@ -40,6 +40,7 @@ DONE = "done"             # команда выполнена, своей реп
 FAILED = "failed"         # команда не выполнилась и не объяснила почему
 GREETING = "greeting"     # запуск
 FAREWELL = "farewell"     # остановка
+BACK = "back"             # поднялся после перезапуска, о котором просили
 
 #: Бытовой разговор: то, на что живой человек отвечает не думая.
 #:
@@ -70,7 +71,7 @@ TOO_OFTEN = "too_often"     # просят не частить
 NO_NETWORK = "no_network"   # сети нет
 
 #: Служебные реплики — их говорит сам конвейер.
-SERVICE: tuple[str, ...] = (LISTENING, WORKING, DONE, FAILED, GREETING, FAREWELL)
+SERVICE: tuple[str, ...] = (LISTENING, WORKING, DONE, FAILED, GREETING, FAREWELL, BACK)
 
 #: Бытовые — их говорит `core.smalltalk` в ответ на прямое обращение.
 CHATTER: tuple[str, ...] = (HELLO, HOW_ARE_YOU, THANKS, PRAISE, HERE, BYE)
@@ -305,6 +306,22 @@ PHRASES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
             "Call me when you need me, {address}.",
             "Signing off, {address}.",
             "Have a good one, {address}.",
+        ),
+    },
+    BACK: {
+        "ru": (
+            "Снова на связи, {address}.",
+            "Я вернулся, {address}.",
+            "Перезапустился, {address}. Слушаю.",
+            "Готово, {address}, я снова здесь.",
+            "На месте, {address}. Всё поднялось.",
+        ),
+        "en": (
+            "Back online, {address}.",
+            "I'm back, {address}.",
+            "Restarted, {address}. Listening.",
+            "All systems back up, {address}.",
+            "Here again, {address}.",
         ),
     },
     HELLO: {

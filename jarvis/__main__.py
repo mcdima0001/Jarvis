@@ -219,6 +219,9 @@ async def _amain(
     if tray is not None:
         tray.attach(app)
     await app.run()
+    if tray is not None and app.lifecycle is not None and app.lifecycle.restarting:
+        # Попросили голосом или сам на новое ядро: процесс поднимет трей.
+        tray.restart = True
     return 0
 
 

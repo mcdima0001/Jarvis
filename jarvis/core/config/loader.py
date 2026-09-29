@@ -17,6 +17,7 @@ import yaml
 from jarvis.core.errors import ConfigError
 
 from .schema import (
+    RESTART_AUTO,
     AECConfig,
     AppConfig,
     AttentionConfig,
@@ -29,6 +30,7 @@ from .schema import (
     ModelPrice,
     PersonaConfig,
     ProviderConfig,
+    RestartConfig,
     RouterConfig,
     RuntimeConfig,
     SkillsConfig,
@@ -81,6 +83,23 @@ def _expand(value: Any) -> Any:
     if isinstance(value, list):
         return [_expand(item) for item in value]
     return value
+
+
+def _restart(data: Mapping[str, Any]) -> RestartConfig:
+    """Настройки перезапуска; неизвестный режим — ошибка конфига, а не молчаливый `off`."""
+    auto = str(data.get("auto", "idle")).lower()
+    if auto not in RESTART_AUTO:
+        raise ConfigError(
+            f"runtime.restart.auto: {auto!r} — ожидается одно из {', '.join(sorted(RESTART_AUTO))}"
+        )
+    return RestartConfig(
+        carryover_s=float(data.get("carryover_s", 180.0)),
+        auto=auto,
+        idle_s=float(data.get("idle_s", 120.0)),
+        settle_s=float(data.get("settle_s", 60.0)),
+        check_s=max(1.0, float(data.get("check_s", 30.0))),
+        busy_tool=str(data.get("busy_tool", "") or ""),
+    )
 
 
 def _section(data: Mapping[str, Any], name: str) -> Mapping[str, Any]:
@@ -347,6 +366,7 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             tool_timeout=float(runtime.get("tool_timeout", 30.0)),
             meter=bool(runtime.get("meter", True)),
             meter_seconds=float(runtime.get("meter_seconds", 60.0)),
+            restart=_restart(_section(runtime, "restart")),
         ),
         skills=SkillsConfig(
             paths=(skill_paths := tuple(

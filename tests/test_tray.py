@@ -205,6 +205,21 @@ async def test_restart_from_menu_stops_and_remembers(tmp_path: Path) -> None:
     assert session.restart is True
 
 
+async def test_restart_from_menu_goes_through_the_app_lifecycle(tmp_path: Path) -> None:
+    """Через приложение: оно сохранит режимы и разговор и не станет прощаться."""
+    from jarvis.core.restart import Lifecycle
+
+    session = _session()
+    app = _app(tmp_path)
+    app.lifecycle = Lifecycle(app.stopping)
+    session.attach(app)
+    assert app.lifecycle.restartable is True
+    await asyncio.to_thread(session.on_action, "restart")
+    await asyncio.wait_for(app.stopping.wait(), timeout=1.0)
+    assert app.lifecycle.restarting is True
+    assert session.restart is True
+
+
 async def test_quit_before_the_app_is_built_is_not_lost(tmp_path: Path) -> None:
     session = _session()
     session.on_action("quit")

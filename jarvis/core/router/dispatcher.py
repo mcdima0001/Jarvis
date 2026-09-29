@@ -217,6 +217,14 @@ class Dispatcher:
         """Вопрос, на который ждут ответа. Пусто — ничего не ждём."""
         return self._pending
 
+    def ask_again(self, question: Pending) -> None:
+        """Вернуть вопрос, заданный до перезапуска (`jarvis.core.restart`).
+
+        Срок годности у вопроса по стенным часам, поэтому протухший вернётся
+        протухшим и ответ на него ничего не выполнит.
+        """
+        self._pending = question
+
     async def _settle(self, utterance: Utterance) -> ToolResult | None:
         """Прочитать реплику как ответ на заданный вопрос.
 

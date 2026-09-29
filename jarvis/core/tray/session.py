@@ -356,6 +356,8 @@ class TraySession:
         self._live_log = live_log
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stopping: asyncio.Event | None = None
+        #: Перезапуск через приложение: оно сохранит состояние и не станет прощаться.
+        self._restart_app: Callable[[], None] | None = None
         self._quit_early = False
         #: Как замолчать: ставится при подключении приложения.
         self._hush: Callable[[], object] | None = None
@@ -388,6 +390,11 @@ class TraySession:
         """Подключиться к приложению. Зовётся из петли asyncio до `app.run()`."""
         self._loop = asyncio.get_running_loop()
         self._stopping = app.stopping
+        lifecycle = getattr(app, "lifecycle", None)
+        if lifecycle is not None:
+            # Перезапуск голосом доступен только тому, кто сам поднимет процесс.
+            lifecycle.restartable = True
+            self._restart_app = lifecycle.requested_from_tray
         self.name = app.config.app.name
         self.root = app.config.root
         self.panel_url = app.panel.url if app.panel is not None else None
@@ -426,7 +433,10 @@ class TraySession:
         elif action in ("restart", "quit"):
             self.restart = action == "restart"
             self._set(STOPPING)
-            self._request_stop()
+            if self.restart and self._loop is not None and self._restart_app is not None:
+                self._loop.call_soon_threadsafe(self._restart_app)
+            else:
+                self._request_stop()
         else:
             logger.warning("Значок в трее: неизвестное действие %s", action)
 

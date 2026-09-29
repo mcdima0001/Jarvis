@@ -1435,7 +1435,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.12.0",
+        version="0.13.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -2085,6 +2085,22 @@ class WindowsSkill(Skill):
         names = ", ".join(sorted({s.name for s in sessions if s.pid in pids}))
         self.log.info("Музыка на машине: %s (%s, окон: %d)", action, names, sent)
         return ToolResult.success({"action": action, "players": names, "windows": sent})
+
+    @tool(routable=False, reversible=True)
+    async def sound_playing(self) -> ToolResult:
+        """Какие программы сейчас звучат — кроме самого ассистента.
+
+        Спрашивает ядро, прежде чем перезапуститься на новый код само
+        (`runtime.restart.busy_tool`): под музыку или фильм владелец может
+        позвать в любую секунду, а перезапуск — это четырнадцать секунд глухоты.
+        """
+        try:
+            sessions = [described for _, described in await asyncio.to_thread(sound_sessions, every_device=True)]
+        except Exception as exc:  # noqa: BLE001 — нет pycaw или COM не в духе
+            return ToolResult.failure(f"звуковые сессии не прочитались: {exc}")
+        own = os.getpid()
+        playing = sorted({s.name or str(s.pid) for s in sessions if s.playing and s.pid != own})
+        return ToolResult.success({"playing": playing})
 
     @tool(routable=False, reversible=True)
     async def restore_others(self) -> ToolResult:
