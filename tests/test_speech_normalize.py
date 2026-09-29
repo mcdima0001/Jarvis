@@ -212,3 +212,14 @@ def test_version_is_read_with_dots_not_as_a_fraction() -> None:
     assert normalize_for_speech("Версия 1.12.3") == "Версия один точка двенадцать точка три"
     # Обычная дробь и дата дробью и остаются.
     assert normalize_for_speech("22.5 градуса") == "двадцать два запятая пять градуса"
+
+
+def test_letters_and_digits_together_are_not_read_as_minus() -> None:
+    """Живой случай 29.09.2026: «рейс S7» звучало «Эс минус семь»."""
+    said = normalize_for_speech("Airbus A320, рейс PC1234")
+    assert "минус" not in said
+    assert "Эй триста двадцать" in said
+
+
+def test_s7_is_read_as_the_brand() -> None:
+    assert normalize_for_speech("S7 Airlines, Boeing 737") == "Эс Севен Эйрлайнс, Боинг семьсот тридцать семь"

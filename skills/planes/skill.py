@@ -145,12 +145,32 @@ def nearest(planes: list[Plane], *, here: tuple[float, float]) -> Plane | None:
     return min(flying, key=lambda plane: distance_km(*here, plane.latitude, plane.longitude), default=None)
 
 
-def airport_name(code: str, airports: dict[str, list[Any]]) -> str:
-    """Город аэропорта, а для незнакомого — сам код."""
+def airport_name(code: str, airports: dict[str, list[Any]], *, russian: bool = False) -> str:
+    """Город аэропорта, а для незнакомого — сам код.
+
+    :param russian: по-русски, если справочник знает русское имя (пятое поле);
+        иначе латиницей, как в OurAirports.
+    """
     port = airports.get(code)
     if not port:
         return code
+    if russian and len(port) > 4 and port[4]:
+        return str(port[4])
     return str(port[0] or _SUFFIXES.sub("", str(port[1])) or code)
+
+
+def to_city(name: str) -> str:
+    """«в Анталья» → «в Анталью»: винительный падеж для «летит в …».
+
+    Склоняется только последнее слово на «-а» и «-я» — у остального
+    винительный совпадает с именительным (Новосибирск, Казань) или город не
+    склоняется вовсе (Сочи, Осло). Латиница не трогается.
+    """
+    found = re.search(r"(\w+)$", name)
+    if found is None or len(found.group(1)) < 3:
+        return name
+    ending = {"а": "у", "я": "ю"}.get(found.group(1)[-1])
+    return name[:-1] + ending if ending else name
 
 
 def spoken_flight(flight: str) -> str:
@@ -171,6 +191,8 @@ def describe(
 
     Аэропорт вылета рядом не называется: «из Gaziemir» — это пригород, где
     стоит аэропорт Измира, и владельцу он ничего не скажет. Своё — «летит в …».
+    Города по-русски, где справочник их знает; маршрут без предлогов
+    («Стамбул — Новосибирск»), чтобы не склонять то, что не умеем.
     """
     who = airlines.get(plane.airline, "")
     flight = spoken_flight(plane.flight or plane.callsign)
@@ -179,15 +201,16 @@ def describe(
     head_en = ", ".join(part for part in (who, f"flight {flight}" if flight else "", model) if part)
     route_ru = route_en = ""
     local = _airport_near(airports.get(plane.origin), here, near_airport_km)
+    to_ru = airport_name(plane.destination, airports, russian=True)
+    to_en = airport_name(plane.destination, airports)
     if local and plane.destination:
-        destination = airport_name(plane.destination, airports)
-        route_ru, route_en = f" — летит в {destination}", f" — bound for {destination}"
+        route_ru, route_en = f" — летит в {to_city(to_ru)}", f" — bound for {to_en}"
     elif plane.origin or plane.destination:
-        origin = airport_name(plane.origin, airports)
-        destination = airport_name(plane.destination, airports)
-        route_ru = f" — из {origin} в {destination}" if plane.origin and plane.destination else (
-            f" — в {destination}" if plane.destination else f" — из {origin}")
-        route_en = f" — {origin} to {destination}" if plane.origin and plane.destination else ""
+        from_ru = airport_name(plane.origin, airports, russian=True)
+        from_en = airport_name(plane.origin, airports)
+        route_ru = f" — маршрут {from_ru} — {to_ru}" if plane.origin and plane.destination else (
+            f" — летит в {to_city(to_ru)}" if plane.destination else f" — вылетел из аэропорта {from_ru}")
+        route_en = f" — {from_en} to {to_en}" if plane.origin and plane.destination else ""
     metres = int(round(plane.altitude_ft * FEET, -2))
     kilometres = max(1, round(distance_km(*here, plane.latitude, plane.longitude)))
     height_ru = f"высота {metres} {plural_form(metres, ('метр', 'метра', 'метров'))}" if metres else "у самой земли"
@@ -209,7 +232,7 @@ class PlanesSkill(Skill):
     meta = SkillMeta(
         name="planes",
         description="Самолёты рядом по Flightradar24: кто взлетел, кто над головой",
-        version="0.1.1",
+        version="0.2.0",
         spoken=("самолёт", "самолеты", "flightradar"),
     )
 

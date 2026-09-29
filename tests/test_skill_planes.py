@@ -34,8 +34,9 @@ IZMIR = (38.4127, 27.1384)
 AIRPORTS = {
     "ADB": ["Gaziemir", "Adnan Menderes International Airport", 38.2924, 27.157],
     "DUB": ["Dublin", "Dublin Airport", 53.4213, -6.2701],
-    "ATH": ["Spata-Artemida", "Athens International Airport", 37.9364, 23.9445],
-    "PEK": ["Beijing", "Beijing Capital International Airport", 40.0801, 116.585],
+    "ATH": ["Spata-Artemida", "Athens International Airport", 37.9364, 23.9445, "Афины"],
+    "PEK": ["Beijing", "Beijing Capital International Airport", 40.0801, 116.585, "Пекин"],
+    "AYT": ["Antalya", "Antalya International Airport", 36.8987, 30.8005, "Анталья"],
 }
 AIRLINES = {"SXS": "SunExpress", "CCA": "Air China"}
 
@@ -93,8 +94,25 @@ def test_a_local_departure_says_where_it_goes() -> None:
 def test_a_far_flight_names_both_ends() -> None:
     plane = planes.parse_feed({"b": _feed()["b"]})[0]
     said = planes.describe(plane, here=IZMIR, airports=AIRPORTS, airlines=AIRLINES, rising=False)["ru"]
-    assert "из Spata-Artemida в Beijing" in said
+    assert "маршрут Афины — Пекин" in said
     assert "набирает" not in said
+
+
+def test_the_destination_is_named_in_russian_and_declined() -> None:
+    """Живой случай 29.09.2026: «летит в Novosibirsk» — город латиницей."""
+    plane = planes.parse_feed({"a": _row(flight="XQ886", lat=38.35, lon=27.16, alt=1600, vs=2200, dest="AYT")})[0]
+    said = planes.describe(plane, here=IZMIR, airports=AIRPORTS, airlines=AIRLINES, rising=True)
+    assert "летит в Анталью." in said["ru"]
+    assert "bound for Antalya." in said["en"]
+
+
+@pytest.mark.parametrize(("city", "into"), [
+    ("Анталья", "Анталью"), ("Москва", "Москву"), ("Йошкар-Ола", "Йошкар-Олу"),
+    ("Новосибирск", "Новосибирск"), ("Казань", "Казань"), ("Сочи", "Сочи"),
+    ("Минеральные Воды", "Минеральные Воды"), ("Dublin", "Dublin"),
+])
+def test_cities_go_into_the_accusative(city: str, into: str) -> None:
+    assert planes.to_city(city) == into
 
 
 @pytest.mark.parametrize(("flight", "spoken"), [("XQ886", "XQ 886"), ("TK2325", "TK 2325"), ("U26124", "U2 6124"), ("", "")])

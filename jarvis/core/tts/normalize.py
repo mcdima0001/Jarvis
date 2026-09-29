@@ -56,6 +56,12 @@ DEFAULT_PRONUNCIATION: dict[str, str] = {
     "chrome": "Хром",
     "windows": "Виндоус",
     "explorer": "Проводник",
+    "boeing": "Боинг",
+    "airbus": "Эйрбас",
+    "airlines": "Эйрлайнс",
+    "airways": "Эйрвэйз",
+    "max": "Макс",
+    "s7": "Эс Севен",
     # Названия задач из конфига: попадают в речь через core.set_model.
     "dialog": "диалог",
     "code": "код",
@@ -114,6 +120,13 @@ def _speak_token(token: str, dictionary: Mapping[str, str]) -> str:
 
     if token.isdigit():
         return token
+
+    # Буквы вперемешку с цифрами (S7, A320) читаются кусками. Целиком они
+    # уходили в аббревиатуру «Эс-7», и дефис перед цифрой синтез читал как
+    # «минус»: «рейс Эсминус семь» (живой случай 29.09.2026).
+    pieces = re.findall(r"[A-Za-z]+|\d+", token)
+    if len(pieces) > 1:
+        return " ".join(_speak_token(piece, dictionary) for piece in pieces).strip()
 
     # Аббревиатуры до четырёх букв читаем по буквам: OBS -> О-Би-Эс звучит
     # понятнее, чем «обс».
