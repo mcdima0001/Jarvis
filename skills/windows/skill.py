@@ -2469,7 +2469,9 @@ class WindowsSkill(Skill):
             # ответить отказом. Порядок именно такой: установленная программа
             # важнее сайта, у Steam и Telegram есть и то, и другое.
             if self.tools.has("browser.open_site"):
-                site = await self.tools.invoke("browser.open_site", {"site": program})
+                # Без поиска: «открой службы» — это ослышка программы, и
+                # подсказка ниже полезнее страницы поисковика.
+                site = await self.tools.invoke("browser.open_site", {"site": program, "search": False})
                 if site.ok:
                     return site
 

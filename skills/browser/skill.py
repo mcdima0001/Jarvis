@@ -27,9 +27,14 @@ import asyncio
 import json
 import re
 import secrets
+import time
 import webbrowser
+from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote_plus, urlsplit
+
+import httpx
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.net import WebSocketServer
@@ -237,6 +242,85 @@ _MIN_SKELETON = 5
 
 #: Насколько похожим должно быть название, чтобы считаться тем же сайтом.
 _SIMILARITY = 0.8
+
+# --- официальный сайт по названию -------------------------------------------
+#
+# «Открой госуслуги» (29.09.2026): программы такой нет, в каталоге сайтов — тоже,
+# и ассистент отвечал «не знаю программу Госуслуги. Может быть: службы?».
+# Каталог руками не дописать под всё, что назовут, а первая ссылка поисковика —
+# это и реклама, и фишинг: «госуслуги» как раз то, что подделывают. Поэтому
+# адрес берётся из Викиданных — **официальный сайт** (свойство P856) сущности с
+# таким названием. Замер на 23 названиях: 16 верно, 1 мимо (megamarket.ua вместо
+# .ru), 6 не нашлось — им открывается поиск. DuckDuckGo в тот же час не ответил
+# ни на один запрос, поэтому не он.
+
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+#: Без понятного имени с адресом Викиданные отвечают 403.
+WIKIDATA_AGENT = "Jarvis (https://github.com/mcdima0001/Jarvis) httpx"
+#: Сущность — сайт или сервис, судя по её описанию. «Дром» — это и сайт, и
+#: коммуна во Франции, «Озон» — и маркетплейс, и поп-группа O-Zone.
+_WEBLIKE = re.compile(
+    r"сайт|интернет|портал|онлайн|маркетплейс|веб|сервис|платформ|социальн|поисков|магазин|"
+    r"энциклопеди|website|online|portal|marketplace|platform|search engine|social network|web",
+    re.IGNORECASE,
+)
+#: Насколько основной домен должен совпасть с названием, чтобы описанию не верить.
+DOMAIN_SIMILARITY = 0.85
+#: Сколько секунд ждать Викиданные на одно название.
+LOOKUP_TIMEOUT_S = 6.0
+#: Сколько помнить найденное: сайты не переезжают каждый день.
+FOUND_TTL_S = 30 * 24 * 3600
+
+
+def main_domain(url: str) -> str:
+    """Основной домен без зоны: «https://drom.grandbourg.fr» → «grandbourg»."""
+    host = (urlsplit(url).hostname or "").lower()
+    parts = host.split(".")
+    return parts[-2] if len(parts) >= 2 else host
+
+
+def fits_site(name: str, url: str, description: str) -> bool:
+    """Годится ли сущность в ответ на «открой {name}».
+
+    Либо основной домен и есть название латиницей («госуслуги» → gosuslugi.ru),
+    либо описание говорит, что это сайт или сервис. Одного совпадения подписи
+    мало: «Дром» — коммуна во Франции с доменом grandbourg.fr.
+    """
+    wanted = re.sub(r"[^a-z0-9]", "", romanize(name.lower()).lower())
+    if wanted and SequenceMatcher(None, wanted, main_domain(url)).ratio() >= DOMAIN_SIMILARITY:
+        return True
+    return bool(_WEBLIKE.search(description))
+
+
+def pick_site(name: str, found: list[dict[str, Any]], entities: dict[str, Any]) -> tuple[str, str] | None:
+    """Первая по выдаче сущность с официальным сайтом, похожая на сайт: (адрес, подпись)."""
+    for item in found:
+        claims = (entities.get(item.get("id", "")) or {}).get("claims", {}).get("P856") or ()
+        for claim in claims:
+            url = (((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value")) or ""
+            address = safe_url(str(url)) if url else None
+            if address and fits_site(name, address, str(item.get("description") or "")):
+                return address, str(item.get("label") or name)
+    return None
+
+
+async def official_site(client: httpx.AsyncClient, name: str) -> tuple[str, str] | None:
+    """Официальный сайт по названию из Викиданных: по-русски, потом латиницей."""
+    for query, language in ((name, "ru"), (romanize(name.lower()), "en")):
+        found = (await client.get(WIKIDATA_API, params={
+            "action": "wbsearchentities", "search": query, "language": language, "uselang": language,
+            "type": "item", "limit": 7, "format": "json",
+        })).json().get("search", [])
+        if not found:
+            continue
+        entities = (await client.get(WIKIDATA_API, params={
+            "action": "wbgetentities", "ids": "|".join(item["id"] for item in found),
+            "props": "claims", "format": "json",
+        })).json().get("entities", {})
+        picked = pick_site(name, found, entities)
+        if picked is not None:
+            return picked
+    return None
 
 
 def safe_url(url: str) -> str | None:
@@ -807,7 +891,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.4.0",
+        version="0.5.0",
         spoken=("браузер", "browser"),
     )
 
@@ -815,6 +899,8 @@ class BrowserSkill(Skill):
         """Прочитать настройки: домашняя страница, поисковик, свои сайты."""
         self._server: WebSocketServer | None = None
         self._extension: _Extension | None = None
+        #: Клиент к Викиданным — искать официальный сайт по названию.
+        self._lookup: httpx.AsyncClient | None = None
         #: Значение по умолчанию: моста может не быть вовсе, а читают его всегда.
         self._await_extension = 0.0
         self._home = str(self.context.setting("home", DEFAULT_HOME))
@@ -916,6 +1002,42 @@ class BrowserSkill(Skill):
         """Закрыть порт."""
         if self._server is not None:
             await self._server.stop()
+        if self._lookup is not None:
+            await self._lookup.aclose()
+            self._lookup = None
+
+    @property
+    def _found_file(self) -> Path:
+        return self.context.root / "memory" / "browser" / "found_sites.json"
+
+    async def _find_site(self, name: str) -> tuple[str, str] | None:
+        """Официальный сайт по названию: из памяти, иначе из Викиданных."""
+        key = name.lower().strip()
+        try:
+            remembered = json.loads(self._found_file.read_text("utf-8"))
+        except (OSError, ValueError):
+            remembered = {}
+        entry = remembered.get(key)
+        if isinstance(entry, dict) and time.time() - float(entry.get("at", 0)) < FOUND_TTL_S:
+            return str(entry["url"]), str(entry.get("label") or name)
+        if self._lookup is None:
+            self._lookup = httpx.AsyncClient(timeout=LOOKUP_TIMEOUT_S, headers={"User-Agent": WIKIDATA_AGENT})
+        try:
+            found = await asyncio.wait_for(official_site(self._lookup, name), LOOKUP_TIMEOUT_S)
+        except (TimeoutError, httpx.HTTPError, ValueError) as exc:
+            self.log.info("Официальный сайт %r не нашёлся: %s", name, exc or type(exc).__name__)
+            return None
+        if found is None:
+            self.log.info("Официального сайта %r в Викиданных нет", name)
+            return None
+        self.log.info("Официальный сайт %r: %s (%s)", name, found[0], found[1])
+        remembered[key] = {"url": found[0], "label": found[1], "at": time.time()}
+        try:
+            self._found_file.parent.mkdir(parents=True, exist_ok=True)
+            self._found_file.write_text(json.dumps(remembered, ensure_ascii=False, indent=1), "utf-8")
+        except OSError as exc:
+            self.log.debug("Найденный сайт не запомнился: %s", exc)
+        return found
 
     # --- открытие ----------------------------------------------------------
 
@@ -937,11 +1059,13 @@ class BrowserSkill(Skill):
                    "open {site} in the browser", "open the {site} tab",
                    "switch to {site}"],
           reversible=True, shows=True)
-    async def open_site(self, site: str = "") -> ToolResult:
+    async def open_site(self, site: str = "", search: bool = True) -> ToolResult:
         """Открыть сайт, служебную страницу браузера или открытую вкладку.
 
         :param site: название сайта («ютуб»), служебной страницы («расширения»),
             заголовок открытой вкладки или адрес; пусто — домашняя страница.
+        :param search: сайта не нашлось — открыть поиск по названию. Запуск
+            программы, пробующий сайт запасным путём, просит без поиска.
         """
         name = clean_spoken(site) or "браузер"
         spoken = clean_spoken(site)
@@ -963,12 +1087,19 @@ class BrowserSkill(Skill):
                 )
 
         url = self._home if not spoken else site_url(spoken, self._sites)
+        found: tuple[str, str] | None = None
         if url is None:
             # Не сайт — может быть, служебная страница браузера или уже
             # открытая вкладка. И то, и другое умеет только расширение.
             through_extension = await self._open_special(spoken, name)
             if through_extension is not None:
                 return through_extension
+            found = await self._find_site(spoken)
+            if found is not None:
+                url = found[0]
+            elif search:
+                return await self.search(spoken)
+        if url is None:
             if self._extension is None or not self._extension.connected:
                 # Может, это заголовок открытой вкладки, — но их видит только
                 # расширение, и «не знаю такого сайта» тут было бы неправдой.
@@ -991,7 +1122,7 @@ class BrowserSkill(Skill):
 
         # С расширением всё делается вкладкой в уже открытом окне; без него
         # остаются окна и заголовки — путь хуже, но рабочий.
-        through_tab = await self._open_tab(url, name, reuse=reuse)
+        through_tab = await self._open_tab(url, name, reuse=reuse, found=found)
         if through_tab is not None:
             return through_tab
 
@@ -1005,11 +1136,19 @@ class BrowserSkill(Skill):
 
         return ToolResult.success(
             {"url": url},
-            speech={
-                "ru": (f"Открываю {name}.", f"{name} — открываю."),
-                "en": (f"Opening {name}.", f"{name}, coming up."),
-            },
+            speech=self._opening(name, found),
         )
+
+    @staticmethod
+    def _opening(name: str, found: tuple[str, str] | None) -> dict[str, tuple[str, ...]]:
+        """Что сказать, открывая. Найденное в Викиданных — с адресом: промах виден сразу."""
+        if found is not None:
+            host = (urlsplit(found[0]).hostname or found[0]).removeprefix("www.")
+            return {"ru": (f"Открываю {name}: {host}.",), "en": (f"Opening {name}: {host}.",)}
+        return {
+            "ru": (f"Открываю {name}.", f"{name} — открываю."),
+            "en": (f"Opening {name}.", f"{name}, coming up."),
+        }
 
     # «За гугли» и «за гугл» — не опечатка: Whisper слышит «загугли» как два
     # слова и разбор уходил в платную модель. Дописать услышанное дешевле,
@@ -1175,7 +1314,9 @@ class BrowserSkill(Skill):
             self.log.info("Веду открытую вкладку: %s", url)
         return moved
 
-    async def _open_tab(self, url: str, name: str, *, reuse: bool) -> ToolResult | None:
+    async def _open_tab(
+        self, url: str, name: str, *, reuse: bool, found: tuple[str, str] | None = None
+    ) -> ToolResult | None:
         """Открыть адрес вкладкой через расширение.
 
         :return: готовый ответ, либо ``None``, если расширения нет или оно не
@@ -1213,10 +1354,7 @@ class BrowserSkill(Skill):
                 ),
             }
         else:
-            speech = {
-                "ru": (f"Открываю {name}.", f"{name} — открываю."),
-                "en": (f"Opening {name}.", f"{name}, coming up."),
-            }
+            speech = self._opening(name, found)
         return ToolResult.success({"url": url, **result}, speech=speech)
 
     @tool(phrases=["закрой вкладку", "закрой вкладку {site}",

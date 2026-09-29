@@ -906,3 +906,71 @@ async def test_current_extension_is_left_alone() -> None:
     bridge, server = _bridge(expect_version="0.9.5")
     await bridge.on_message(_json.dumps({"event": "hello", "version": "0.9.5"}))
     assert server.sent == [] and bridge._reload_task is None
+
+
+# --- официальный сайт по названию (29.09.2026: «открой госуслуги») ---------------
+
+
+def test_a_site_is_the_one_whose_domain_is_its_name_or_that_calls_itself_a_site() -> None:
+    assert browser.main_domain("https://drom.grandbourg.fr") == "grandbourg"
+    assert browser.fits_site("госуслуги", "https://www.gosuslugi.ru/", "справочный портал")
+    assert browser.fits_site("вайлдберриз", "https://www.wildberries.ru", "российский маркетплейс")
+    # «Дром» — ещё и коммуна во Франции; поддомен не в счёт, описание не про сайт.
+    assert not browser.fits_site("дром", "https://drom.grandbourg.fr", "коммуна во Франции")
+    # «Озон» — ещё и поп-группа O-Zone.
+    assert not browser.fits_site("озон", "http://artists.universal-music.de/ozone/", "молдавская поп-группа")
+
+
+def test_the_first_entity_that_fits_wins() -> None:
+    found = [
+        {"id": "Q1", "label": "O-Zone", "description": "молдавская поп-группа"},
+        {"id": "Q2", "label": "Ozon", "description": "российский маркетплейс"},
+    ]
+    site = lambda url: {"claims": {"P856": [{"mainsnak": {"datavalue": {"value": url}}}]}}  # noqa: E731
+    entities = {"Q1": site("http://artists.universal-music.de/ozone/"), "Q2": site("https://www.ozon.ru")}
+    assert browser.pick_site("озон", found, entities) == ("https://www.ozon.ru", "Ozon")
+    assert browser.pick_site("озон", found[:1], entities) is None
+
+
+class _Opener:
+    """Скилл браузера без контекста: только то, что трогает `open_site`."""
+
+    log = logging.getLogger("test-browser-open")
+    open_site = browser.BrowserSkill.open_site
+    _opening = staticmethod(browser.BrowserSkill._opening)
+
+    def __init__(self, found: tuple[str, str] | None) -> None:
+        self._home, self._sites, self._reuse, self._extension = "https://ya.ru", {}, False, None
+        self._found, self.opened, self.searched = found, [], []
+
+    async def _open_special(self, spoken: str, name: str) -> None:
+        return None
+
+    async def _find_site(self, name: str) -> tuple[str, str] | None:
+        return self._found
+
+    async def search(self, query: str, engine: str = "") -> Any:
+        self.searched.append(query)
+        return browser.ToolResult.success({"query": query})
+
+    async def _open_tab(self, url: str, name: str, *, reuse: bool, found: Any = None) -> None:
+        return None
+
+    async def _open(self, url: str) -> bool:
+        self.opened.append(url)
+        return True
+
+
+async def test_an_unknown_name_opens_its_official_site_and_says_where() -> None:
+    skill = _Opener(("https://www.gosuslugi.ru/", "Портал госуслуг"))
+    result = await skill.open_site("госуслуги")
+    assert result.ok and skill.opened == ["https://www.gosuslugi.ru/"]
+    assert result.speech_for("ru") == "Открываю госуслуги: gosuslugi.ru."
+
+
+async def test_nothing_found_opens_a_search_unless_asked_not_to() -> None:
+    skill = _Opener(None)
+    assert (await skill.open_site("рутрекер")).ok and skill.searched == ["рутрекер"]
+    # Запуск программы пробует сайт запасным путём и поиска не хочет.
+    refused = await skill.open_site("службы", search=False)
+    assert not refused.ok and skill.searched == ["рутрекер"]
