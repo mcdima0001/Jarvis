@@ -974,3 +974,12 @@ async def test_nothing_found_opens_a_search_unless_asked_not_to() -> None:
     # Запуск программы пробует сайт запасным путём и поиска не хочет.
     refused = await skill.open_site("службы", search=False)
     assert not refused.ok and skill.searched == ["рутрекер"]
+
+
+def test_only_a_real_browser_window_is_worth_waiting_for() -> None:
+    """23:38 29.09.2026: процессы Яндекса в фоне и панель Jarvis (Edge) — окон
+    браузера нет, а расширение ждали пятнадцать секунд."""
+    panel = {"title": "J.A.R.V.I.S.", "image": "msedge.exe"}
+    other = {"title": "Telegram", "image": "AyuGram.exe"}
+    assert not browser.browser_window_open([panel, other])
+    assert browser.browser_window_open([panel, {"title": "Госуслуги — Яндекс Браузер", "image": "browser.exe"}])

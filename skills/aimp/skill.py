@@ -67,6 +67,17 @@ BUTTONS = {"next": "NEXT", "previous": "PREVIOUS", "pause": "PAUSE", "play": "PL
 #: Сколько похожих треков предлагать на выбор, если точного совпадения нет.
 CHOICES = 5
 
+#: Чем запустить AIMP, если он закрыт, а просят музыку.
+LAUNCH_TOOL = "windows.launch_program"
+#: Сколько ждать, пока запущенный AIMP откроет своё окно для команд, секунд.
+LAUNCH_WAIT_S = 10.0
+
+#: «Включи музыку в AIMP» — это не название трека, а просьба просто играть.
+ANY_MUSIC = frozenset({
+    "", "музыку", "музыка", "музычку", "что-нибудь", "что нибудь", "чё-нибудь",
+    "музыку какую-нибудь", "какую-нибудь музыку", "music", "some music", "anything",
+})
+
 #: Насколько услышанное должно совпасть с названием, чтобы включать без вопроса.
 #: Порог высокий: включить не тот трек — мелочь, но раздражающая, а переспросить
 #: стоит одной реплики.
@@ -79,7 +90,7 @@ class AimpSkill(Skill):
     meta = SkillMeta(
         name="aimp",
         description="Своя музыка в AIMP: что играет, поиск по фонотеке, переключение треков.",
-        version="0.1.2",
+        version="0.2.0",
         spoken=("аимп", "aimp", "музыка", "music"),
     )
 
@@ -152,18 +163,60 @@ class AimpSkill(Skill):
 
         Окно у плеера невидимое, поэтому команда доходит и когда он свёрнут в
         трей — в отличие от мультимедийной кнопки, которая шлётся видимым окнам.
+        Закрыт, а просят играть, — запускается сам (живой случай 29.09.2026,
+        23:38: браузер закрыт, AIMP закрыт, и «включи музыку» кончалось
+        «расширение не подключено»). Пауза и переключение закрытый плеер не
+        запускают: остановить или листать там нечего.
 
         :param action: «next», «previous», «pause» или «play».
         """
         button = BUTTONS.get(action)
         if button is None:
             return ToolResult.failure(f"не знаю действие {action!r}")
+        launched = False
         if not remote().running():
-            return ToolResult.failure("AIMP не запущен")
+            if action != "play" or not await self._launch():
+                return ToolResult.failure("AIMP не запущен")
+            launched = True
+            now = await asyncio.to_thread(remote().playing)
+            if now is not None and now.playing:
+                # Сам продолжил играть, как закрыли: «играй» его поставило бы на паузу.
+                return self._started(now.said)
         if not await asyncio.to_thread(remote().press, getattr(remote(), button)):
             return ToolResult.failure("AIMP не ответил")
         self.log.info("AIMP: %s", action)
+        if launched:
+            now = await asyncio.to_thread(remote().playing)
+            return self._started(now.said if now is not None else "")
         return ToolResult.success({"action": action, "player": "AIMP"})
+
+    async def _launch(self) -> bool:
+        """Запустить AIMP и дождаться его окна для команд."""
+        if not self.tools.has(LAUNCH_TOOL):
+            return False
+        started = await self.tools.invoke(LAUNCH_TOOL, {"program": "AIMP"})
+        if not started.ok:
+            self.log.info("AIMP не запустился: %s", started.error)
+            return False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + LAUNCH_WAIT_S
+        while loop.time() < deadline:
+            if remote().running():
+                # Окно появилось — дать плееру открыть список, иначе «играй» некуда.
+                await asyncio.sleep(1.0)
+                self.log.info("AIMP запущен сам: просили музыку")
+                return True
+            await asyncio.sleep(0.3)
+        self.log.info("AIMP запустился, но окно для команд за %.0f с не появилось", LAUNCH_WAIT_S)
+        return False
+
+    @staticmethod
+    def _started(track: str) -> ToolResult:
+        said = f"Запускаю AIMP, играет {track}." if track else "Запускаю AIMP, включаю музыку."
+        return ToolResult.success(
+            {"action": "play", "player": "AIMP", "launched": True, "track": track},
+            speech={"ru": said, "en": "Starting AIMP."},
+        )
 
     @tool(routable=False, reversible=True,
           phrases=["включи в аимпе {track}", "включи в aimp {track}",
@@ -173,7 +226,9 @@ class AimpSkill(Skill):
 
         :param track: название или исполнитель, как их произносят.
         """
-        if not remote().running():
+        if track.strip().lower() in ANY_MUSIC:
+            return await self.control("play")
+        if not remote().running() and not await self._launch():
             return ToolResult.failure(
                 "AIMP не запущен",
                 speech={"ru": "AIMP не запущен.", "en": "AIMP isn't running."},

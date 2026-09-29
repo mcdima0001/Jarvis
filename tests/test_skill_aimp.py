@@ -111,3 +111,75 @@ def test_the_window_title_is_stripped_to_the_track() -> None:
     )
     assert remote.said_from_title("Winamp") == ""
     assert remote.said_from_title("") == ""
+
+
+# --- закрыт, а просят музыку (живой лог 29.09.2026, 23:38) ----------------------------
+
+
+def _skill_with(fake_remote: object, launched: list[str]) -> object:
+    import logging
+    from types import SimpleNamespace
+
+    from jarvis.core.contracts import ToolResult
+
+    module = _load("skill")
+    module._REMOTE = fake_remote  # type: ignore[attr-defined]
+
+    class Tools:
+        def has(self, name: str) -> bool:
+            return name == "windows.launch_program"
+
+        async def invoke(self, name: str, arguments: dict) -> ToolResult:
+            launched.append(arguments["program"])
+            fake_remote.alive = True  # type: ignore[attr-defined]
+            return ToolResult.success(None)
+
+    class Aimp(module.AimpSkill):  # type: ignore[attr-defined,name-defined]
+        log = logging.getLogger("test-aimp")
+        tools = Tools()  # type: ignore[assignment]
+
+    skill = object.__new__(Aimp)
+    skill._context = SimpleNamespace(logger=logging.getLogger("test-aimp"))
+    return skill
+
+
+class _Remote:
+    PLAY, PAUSE, NEXT, PREVIOUS = 1, 2, 3, 4
+
+    def __init__(self) -> None:
+        self.alive = False
+        self.pressed: list[int] = []
+
+    def running(self) -> bool:
+        return self.alive
+
+    def press(self, command: int) -> bool:
+        self.pressed.append(command)
+        return True
+
+    def playing(self) -> object:
+        return remote.Playing(said="Xtreem - Covet", number=0, total=1,  # type: ignore[attr-defined]
+                              state=1 if self.pressed else 2, position_s=0, length_s=1)
+
+
+async def test_play_starts_a_closed_aimp_and_says_so() -> None:
+    fake, launched = _Remote(), []
+    skill = _skill_with(fake, launched)
+    result = await skill.control("play")  # type: ignore[attr-defined]
+    assert result.ok and launched == ["AIMP"] and fake.pressed == [fake.PLAY]
+    assert result.speech_for("ru") == "Запускаю AIMP, играет Xtreem - Covet."
+
+
+async def test_pause_does_not_start_a_closed_aimp() -> None:
+    fake, launched = _Remote(), []
+    skill = _skill_with(fake, launched)
+    assert not (await skill.control("pause")).ok  # type: ignore[attr-defined]
+    assert launched == []
+
+
+async def test_music_in_aimp_is_not_a_track_name() -> None:
+    """«Включи музыку в AAMP» искало в фонотеке трек «музыку»."""
+    fake, launched = _Remote(), []
+    skill = _skill_with(fake, launched)
+    assert (await skill.play_track("музыку")).ok  # type: ignore[attr-defined]
+    assert fake.pressed == [fake.PLAY]

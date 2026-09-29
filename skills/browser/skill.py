@@ -29,6 +29,7 @@ import re
 import secrets
 import time
 import webbrowser
+from collections.abc import Awaitable, Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -614,6 +615,25 @@ def running_browser(processes: list[str]) -> str | None:
     return None
 
 
+#: Заголовок окна панели Jarvis: она тоже Edge, но расширения в ней нет.
+PANEL_TITLE = "J.A.R.V.I.S."
+
+
+def browser_window_open(windows: list[dict]) -> bool:
+    """Открыто ли хоть одно окно браузера — не считая панели Jarvis.
+
+    Процесса мало: Яндекс Браузер живёт в фоне без единого окна, а панель —
+    это Edge. Живой случай 29.09.2026, 23:38: окон не было, процессы были, и
+    «включи музыку» пятнадцать секунд ждало расширение, которому неоткуда было
+    поздороваться. Чистая функция.
+    """
+    return any(
+        str(window.get("image", "")).lower() in BROWSERS
+        and str(window.get("title", "")).strip() != PANEL_TITLE
+        for window in windows
+    )
+
+
 def browser_window(windows: list[dict], title: str = "") -> str | None:
     """Заголовок окна браузера, которое надо вывести на передний план.
 
@@ -694,9 +714,12 @@ class _Extension:
         logger,
         timeout: float = 5.0,
         expect_version: str = "",
+        browser_open: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._server = server
         self._log = logger
+        #: Есть ли окно браузера — ждать расширение, только если есть откуда.
+        self._browser_open = browser_open
         self._timeout = timeout
         #: Версия из manifest.json на диске. Расширение сообщает свою при
         #: подключении, и расхождение означает ровно одно: браузер работает по
@@ -750,12 +773,13 @@ class _Extension:
             return True
         if timeout <= 0 or self._waited or self._ready.is_set():
             return False
-        if not browser_running():
+        alive = await self._browser_open() if self._browser_open is not None else browser_running()
+        if not alive:
             # Ждать некого: браузер закрыт, и здороваться расширению неоткуда.
             # Живой случай 24.09.2026, 18:07 — владелец закрыл браузер нарочно,
             # сказал «переключи трек» и получил пятнадцать секунд тишины перед
-            # отказом. Проверка списка процессов стоит миллисекунды.
-            self._log.info("Браузер не запущен — расширения не жду")
+            # отказом. Проверка списка окон стоит миллисекунды.
+            self._log.info("Окна браузера нет — расширения не жду")
             self._waited = True
             return False
         self._waited = True
@@ -985,6 +1009,7 @@ class BrowserSkill(Skill):
             logger=self.log,
             timeout=float(settings.get("timeout", 5.0)),
             expect_version=read_version(directory / MANIFEST_FILE),
+            browser_open=self._browser_open,
         )
         # Сколько ждать самого первого подключения. Служебный поток браузера
         # просыпается по будильнику, и сразу после запуска Jarvis его ещё нет.
@@ -1563,6 +1588,15 @@ class BrowserSkill(Skill):
                 },
             )
         return ToolResult.success(result)
+
+    async def _browser_open(self) -> bool:
+        """Есть ли окно браузера. Без скилла окон — по процессам, как раньше."""
+        if not self.tools.has("windows.list_windows"):
+            return browser_running()
+        listed = await self.tools.invoke("windows.list_windows", {})
+        if not listed.ok or not isinstance(listed.value, list):
+            return browser_running()
+        return browser_window_open(listed.value)
 
     async def _raise_browser(self, title: str = "") -> bool:
         """Вывести окно браузера на передний план.

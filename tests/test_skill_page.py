@@ -1568,7 +1568,8 @@ async def test_a_like_is_not_handed_to_the_player(loaded, monkeypatch) -> None:
     [
         ("Sunflower локально", "Sunflower", True),
         ("Sunflower локально.", "Sunflower", True),
-        ("Linkin Park Faint с компьютера", "Linkin Park Faint", True),
+        ("What Is Love в аимпе", "What Is Love", True),
+        ("музыку в AAMP.", "музыку", True),
         ("What Is Love в аимпе", "What Is Love", True),
         ("Sunflower", "Sunflower", False),
         ("Локально", "Локально", False),
