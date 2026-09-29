@@ -30,7 +30,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Container, Mapping, Sequence
+from typing import Any, Container, Iterable, Mapping, Sequence
 
 from jarvis.core.contracts import (
     AssistantReplied,
@@ -243,6 +243,19 @@ def looks_like_path(value: str) -> bool:
     return any(mark in text for mark in _PATH_MARKS) or text.lower().endswith(
         (".exe", ".lnk", ".bat", ".cmd", ".url")
     )
+
+
+def without_hidden(catalog: Mapping[str, str], hidden: Iterable[str]) -> dict[str, str]:
+    """Каталог без программ, которых владелец просил не видеть.
+
+    Сверка по началу названия без учёта регистра: «Ample» прячет и Ample Bass,
+    и Ample Guitar — «запусти AMP» запускало Ample Bass вместо AIMP
+    (29.09.2026), и владелец попросил убрать их совсем. Чистая функция.
+    """
+    prefixes = tuple(item.strip().lower() for item in hidden if item.strip())
+    if not prefixes:
+        return dict(catalog)
+    return {name: target for name, target in catalog.items() if not name.lower().startswith(prefixes)}
 
 
 def resolve_alias(value: str, catalog: Mapping[str, str]) -> str | None:
@@ -1440,7 +1453,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.15.0",
+        version="0.15.1",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1451,6 +1464,8 @@ class WindowsSkill(Skill):
             str(key): str(value)
             for key, value in dict(self.context.setting("programs", {})).items()
         }
+        #: Кого из найденного не показывать вовсе — по началу названия.
+        self._hidden = tuple(str(item) for item in self.context.setting("hidden_programs", ()) or ())
         #: Как называют программу, чей процесс зовётся иначе: Minecraft — это
         #: `javaw.exe`, и «убей майнкрафт» (27.09.2026, «Maintraft») не находил ничего.
         self._process_names: dict[str, str] = {
@@ -2153,6 +2168,8 @@ class WindowsSkill(Skill):
         # Пакеты раньше ярлыков: одноимённый ярлык, если есть, точнее.
         catalog.update(self._packaged)
         catalog.update(scan_start_menu(start_menu_dirs()))
+        # Скрытое — до своего из конфига: назвал руками — значит, видеть хочет.
+        catalog = without_hidden(catalog, getattr(self, "_hidden", ()))
 
         # Своё из конфига идёт последним и перекрывает найденное. Значение тут
         # бывает двух видов: путь — берём как есть, имя другой программы —

@@ -1569,3 +1569,19 @@ async def test_video_in_a_browser_tab_is_paused_and_only_it_is_resumed(
     await skill._release_video()
     assert calls[-1] == (windows.RESUME_TABS_TOOL, {"tabs": [41]})
     assert skill._tabs_paused == []
+
+
+def test_hidden_programs_are_not_seen_at_all() -> None:
+    """«Запусти AMP» запускало Ample Bass вместо AIMP — владелец попросил убрать Ample совсем."""
+    catalog = {"AIMP": "aimp.lnk", "Ample Bass": "bass.url", "Ample Guitar": "guitar.url", "Steam": "steam.lnk"}
+    left = windows.without_hidden(catalog, ["ample"])
+    assert left == {"AIMP": "aimp.lnk", "Steam": "steam.lnk"}
+    assert windows.match_program("AMP", left)[0] != "Ample Bass"
+    assert windows.without_hidden(catalog, []) == catalog
+
+
+def test_ample_is_hidden_in_the_owners_config() -> None:
+    import yaml
+
+    config = Path(__file__).resolve().parent.parent / "skills" / "windows" / "config.yaml"
+    assert "Ample" in yaml.safe_load(config.read_text("utf-8"))["hidden_programs"]
