@@ -279,7 +279,7 @@ class PeaceSkill(Skill):
     meta = SkillMeta(
         name="peace",
         description="Эквалайзер Peace Nexus: пресеты, басы, середина, верха, баланс",
-        version="0.3.0",
+        version="0.3.1",
         platforms=("windows",),
         spoken=("пис", "peace", "эквалайзер"),
     )
@@ -619,7 +619,7 @@ class PeaceSkill(Skill):
         return await self.shift("bass", abs(db) or self._step)
 
     @tool(routable=False, recognizes="_is_amount", reversible=True,
-          phrases=["меньше басов", "убавь басы", "убери басы", "сделай басы тише",
+          phrases=["меньше басов", "убавь басы", "убери басы", "убери басов", "убавь басов", "сделай басы тише",
                    *amount_phrases(("убавь", "убери", "опусти"), ("басов", "баса", "басы"))])
     async def less_bass(self, db: float = 0.0) -> ToolResult:
         """Меньше басов.
@@ -640,7 +640,7 @@ class PeaceSkill(Skill):
         return await self.shift("mid", abs(db) or self._step)
 
     @tool(routable=False, recognizes="_is_amount", reversible=True,
-          phrases=["меньше середины", "убавь середину", "убери середину",
+          phrases=["меньше середины", "убавь середину", "убери середину", "убери середины", "убавь середины",
                    "убавь средние", "сделай середину тише",
                    *amount_phrases(("убавь", "убери", "опусти"), ("середины", "середину", "средние"))])
     async def less_mid(self, db: float = 0.0) -> ToolResult:
@@ -661,7 +661,7 @@ class PeaceSkill(Skill):
         return await self.shift("treble", abs(db) or self._step)
 
     @tool(routable=False, recognizes="_is_amount", reversible=True,
-          phrases=["меньше верхов", "убавь верха", "убери верха", "убавь высокие",
+          phrases=["меньше верхов", "убавь верха", "убери верха", "убери верхов", "убавь верхов", "убавь высокие",
                    *amount_phrases(("убавь", "убери", "опусти"), ("верхов", "верха", "высокие"))])
     async def less_treble(self, db: float = 0.0) -> ToolResult:
         """Меньше верхов.
