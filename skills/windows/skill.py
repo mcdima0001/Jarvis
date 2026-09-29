@@ -1262,6 +1262,28 @@ def cut_for(system: float, *, quiet_db: float = QUIET_CUT_DB, loud_db: float = L
     return quiet_db + (loud_db - quiet_db) * share
 
 
+#: Когда после возврата громкости проверять, вернулась ли она на самом деле, —
+#: паузы между проверками, секунды (итого 2, 10, 30 с, 2 и 5 минут).
+RECHECK_AFTER_S = (2.0, 8.0, 20.0, 90.0, 180.0)
+#: Насколько громкость сессии может отличаться от нашего приглушённого уровня,
+#: чтобы считать её так и оставшейся приглушённой.
+LOWERED_TOLERANCE = 0.015
+
+
+def left_lowered(sessions: Sequence[SoundSession], lowered: Mapping[int, float]) -> set[int]:
+    """Кто так и остался на уровне, до которого мы его приглушили.
+
+    Сверка идёт с **нашим** уровнем, а не с «тише, чем было»: владелец мог
+    убавить приложение сам, и возвращать громкость, которую он сменил, нельзя.
+    Чистая функция — её проверяют тесты.
+    """
+    return {
+        session.pid
+        for session in sessions
+        if session.pid in lowered and abs(session.volume - lowered[session.pid]) <= LOWERED_TOLERANCE
+    }
+
+
 def quieter_by(volume: float, cut_db: float) -> float:
     """Громкость после реза на столько-то децибел.
 
@@ -1300,17 +1322,49 @@ def fade_steps(start: float, end: float, seconds: float) -> list[float]:
     return [max(0.0, min(1.0, level)) for level in levels] + [end]
 
 
-def sound_sessions() -> list[tuple[Any, SoundSession]]:
+def _sessions_everywhere() -> list[Any]:
+    """Сессии со всех включённых устройств вывода, а не только с устройства по умолчанию.
+
+    `AudioUtilities.GetAllSessions` у pycaw смотрит лишь выход по умолчанию.
+    Сменил владелец выход (гарнитура, динамики) между приглушением и возвратом —
+    и приглушённые сессии на прежнем устройстве не находились: возвращать было
+    нечего, а в лог уходило «Громкость вернул» (жалоба 29.09.2026: «иногда не
+    возвращает звук, надо перепроверять»).
+    """
+    from pycaw.constants import DEVICE_STATE, EDataFlow
+    from pycaw.pycaw import IAudioSessionControl2
+    from pycaw.utils import AudioSession, AudioUtilities
+
+    found: list[Any] = []
+    for device in AudioUtilities.GetAllDevices(EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value):
+        try:
+            manager = device.AudioSessionManager
+            if manager is None:
+                continue
+            listed = manager.GetSessionEnumerator()
+            for number in range(listed.GetCount()):
+                control = listed.GetSession(number)
+                if control is not None:
+                    found.append(AudioSession(control.QueryInterface(IAudioSessionControl2)))
+        except Exception:  # noqa: BLE001 — одно капризное устройство не отменяет остальные
+            continue
+    return found
+
+
+def sound_sessions(*, every_device: bool = False) -> list[tuple[Any, SoundSession]]:
     """Звуковые сессии Windows: COM-объект и его описание.
 
     Возвращаются парами, потому что менять громкость всё равно придётся через
     COM-объект, а решение принимается по описанию — и его можно проверить
     тестами на любой машине.
+
+    :param every_device: со всех устройств вывода; по умолчанию — только с
+        выхода по умолчанию, где и звучит то, что приглушаем.
     """
     from pycaw.utils import AudioUtilities
 
     found: list[tuple[Any, SoundSession]] = []
-    for session in AudioUtilities.GetAllSessions():
+    for session in (_sessions_everywhere() if every_device else AudioUtilities.GetAllSessions()):
         volume = getattr(session, "SimpleAudioVolume", None)
         if volume is None:
             # Системные звуки идут сессией без своего регулятора.
@@ -1381,7 +1435,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.11.4",
+        version="0.12.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1453,6 +1507,12 @@ class WindowsSkill(Skill):
         self._move = 0
         #: Что приглушили: номер процесса -> прежняя громкость.
         self._ducked: dict[int, float] = {}
+        #: До какого уровня приглушили: номер процесса -> громкость после реза.
+        #: По нему после возврата видно, кто так и остался тихим.
+        self._lowered: dict[int, float] = {}
+        #: Последний возврат — что и откуда возвращали, для контрольных проверок.
+        self._returned: tuple[dict[int, float], dict[int, float]] = ({}, {})
+        self._recheck: asyncio.Task[None] | None = None
         #: Ждём команду после имени — значит «Слушаю» громкость не возвращает.
         self._awaiting_command = False
         self._duck_timer: asyncio.Task[None] | None = None
@@ -1507,6 +1567,8 @@ class WindowsSkill(Skill):
         некому.
         """
         await self._restore(fade=False)
+        # И сразу по всем устройствам: ждать контрольных проверок некому.
+        self._sweep(*self._returned)
 
     # --- приглушение -------------------------------------------------------
 
@@ -1708,6 +1770,7 @@ class WindowsSkill(Skill):
         already = bool(self._ducked)
         if not self._ducked:
             self._ducked = plan
+        self._lowered = {pid: quieter_by(level, cut_db) for pid, level in self._ducked.items()}
 
         await self._slide(
             [
@@ -1846,13 +1909,65 @@ class WindowsSkill(Skill):
         # Сохранённые громкости живут до конца перехода: позвали посреди
         # возврата — приглушим снова, и вернуть надо будет туда же, откуда
         # уходили в самый первый раз, а не в середину кривой.
+        lowered = dict(self._lowered)
         if await self._slide(
             [(session, described) for session, described in sessions if described.pid in saved],
             target=lambda described: saved[described.pid],
             seconds=self._fade_in if fade else 0.0,
         ):
-            self._ducked = {}
+            self._ducked, self._lowered = {}, {}
+            self._returned = (saved, lowered)
             self.log.debug("Громкость вернул: %d приложений", len(saved))
+            if fade:
+                self._schedule_recheck()
+
+    def _schedule_recheck(self) -> None:
+        """После возврата перепроверить, вернулась ли громкость на самом деле."""
+        if self._recheck is not None and not self._recheck.done():
+            self._recheck.cancel()
+        self._recheck = self.context.scope.spawn(self._recheck_returned(), name="windows-recheck")
+
+    async def _recheck_returned(self) -> None:
+        """Несколько контрольных проверок: не остался ли кто на приглушённом уровне.
+
+        Возврат трогает только выход по умолчанию и только сессии, которые
+        видит в эту секунду. Тихим остаётся то, что за это время ушло на другое
+        устройство, пропало и появилось заново или было занято своим переходом.
+        Проверки идут по всем устройствам, пока не началось новое приглушение —
+        его возврат проверит себя сам.
+        """
+        for pause in RECHECK_AFTER_S:
+            await asyncio.sleep(pause)
+            if self._ducked:
+                return
+            self._sweep(*self._returned)
+
+    def _sweep(self, saved: Mapping[int, float], lowered: Mapping[int, float]) -> int:
+        """Вернуть громкость тем, кто так и остался на нашем приглушённом уровне.
+
+        :return: скольким сессиям вернул.
+        """
+        if not lowered:
+            return 0
+        try:
+            sessions = sound_sessions(every_device=True)
+        except Exception as exc:  # noqa: BLE001 — проверка не важнее работы
+            self.log.debug("Перепроверить громкость не вышло: %s", exc)
+            return 0
+        # По каждой сессии отдельно: у той же программы на другом устройстве
+        # громкость могла вернуться, и трогать её незачем.
+        stuck = [(session, described) for session, described in sessions if left_lowered([described], lowered)]
+        fixed = 0
+        for session, described in stuck:
+            try:
+                session.SimpleAudioVolume.SetMasterVolume(saved[described.pid], None)
+                fixed += 1
+            except Exception as exc:  # noqa: BLE001 — сессия могла закрыться
+                self.log.debug("Сессия %s не отозвалась: %s", described.name, exc)
+        if fixed:
+            names = ", ".join(sorted({described.name or str(described.pid) for _, described in stuck}))
+            self.log.info("Громкость так и осталась приглушённой у %s — вернул ещё раз", names)
+        return fixed
 
     @tool(routable=False, reversible=True)
     async def duck_others(self, cut_db: float = 0.0) -> ToolResult:

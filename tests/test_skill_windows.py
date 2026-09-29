@@ -1468,3 +1468,59 @@ def test_minecraft_is_closed_by_its_game_process() -> None:
     for said in ("майнкрафт", "майн", "minecraft"):
         assert said not in data["programs"], "запуск — у скилла prism, не лаунчер"
         assert data["process_names"][said] == "javaw.exe"
+
+
+# --- возврат громкости перепроверяется (29.09.2026) ---------------------------
+
+
+def test_only_what_stayed_at_our_level_counts_as_stuck() -> None:
+    """Сверка с **нашим** приглушённым уровнем: убавленное владельцем не трогаем."""
+    sessions = [
+        _session(7, "browser.exe", 0.075),  # так и осталось, как мы приглушили
+        _session(7, "browser.exe", 1.0),  # тот же браузер на другом устройстве — вернулся
+        _session(8, "AIMP.exe", 0.30),  # владелец сам поставил тише — не наше дело
+        _session(9, "chrome.exe", 0.2),  # не приглушали вовсе
+    ]
+    assert windows.left_lowered(sessions, {7: 0.075, 8: 0.1}) == {7}
+
+
+def test_the_sweep_returns_what_the_default_device_restore_missed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Живой случай 29.09.2026: браузер приглушили на динамиках ноутбука, потом
+    выходом по умолчанию стала Bluetooth-гарнитура — и возврат, смотревший только
+    на неё, оставил браузер на динамиках на 7,5%, а в лог написал «вернул»."""
+    import logging
+    from types import SimpleNamespace
+
+    class Volume:
+        def __init__(self) -> None:
+            self.set: list[float] = []
+
+        def SetMasterVolume(self, level: float, context: Any) -> None:  # noqa: N802 — имя из COM
+            self.set.append(level)
+
+    speakers, headset, other = Volume(), Volume(), Volume()
+    everywhere = [
+        (SimpleNamespace(SimpleAudioVolume=speakers), _session(7, "browser.exe", 0.075)),
+        (SimpleNamespace(SimpleAudioVolume=headset), _session(7, "browser.exe", 1.0)),
+        (SimpleNamespace(SimpleAudioVolume=other), _session(8, "AIMP.exe", 0.3)),
+    ]
+    asked: list[bool] = []
+
+    def sessions(*, every_device: bool = False) -> list[Any]:
+        asked.append(every_device)
+        return everywhere
+
+    monkeypatch.setattr(windows, "sound_sessions", sessions)
+
+    class Sweeper(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-sweep")
+
+    skill = object.__new__(Sweeper)
+    fixed = skill._sweep({7: 1.0, 8: 0.9}, {7: 0.075, 8: 0.1})
+
+    assert fixed == 1
+    assert asked == [True], "проверка смотрит все устройства, а не только выход по умолчанию"
+    assert speakers.set == [1.0]
+    assert headset.set == [] and other.set == []
