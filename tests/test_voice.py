@@ -774,6 +774,8 @@ async def test_out_of_memory_explains_itself() -> None:
         """Пул задач, в котором загрузка падает от нехватки памяти."""
 
         async def run(self, call, *args):
+            if getattr(call, "__name__", "") == "_resolve_device":
+                return "cpu", "int8"
             raise RuntimeError("mkl_malloc: failed to allocate memory")
 
     stt = FasterWhisperSTT(STTConfig(model="small"), Boom())  # type: ignore[arg-type]
@@ -792,6 +794,8 @@ async def test_foreign_error_keeps_its_stack() -> None:
 
     class Broken:
         async def run(self, call, *args):
+            if getattr(call, "__name__", "") == "_resolve_device":
+                return "cpu", "int8"
             raise RuntimeError("model not found")
 
     stt = FasterWhisperSTT(STTConfig(), Broken())  # type: ignore[arg-type]

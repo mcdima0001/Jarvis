@@ -104,7 +104,12 @@ class FasterWhisperSTT:
         """Загрузить модель Whisper в отдельном потоке."""
         if self._model is not None:
             return
-        device, compute = self._resolve_device()
+        # И это в потоке, а не здесь: `import ctranslate2` — это крупные
+        # библиотеки, 6 с на прогретой машине и 30 с после сна. 30.09.2026, 14:43,
+        # облако замешкалось, запасной Whisper поднимался прямо в цикле событий,
+        # и на полминуты замер весь ассистент: микрофон, панель, облачный ответ,
+        # который уже пришёл.
+        device, compute = await self._worker.run(self._resolve_device)
         logger.info(
             "Загружаю Whisper: модель=%s устройство=%s тип=%s",
             self._config.model,

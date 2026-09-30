@@ -54,3 +54,27 @@ async def test_outage_is_reported_once_per_break() -> None:
     cloud.fail = True
     await stt.transcribe(b"")
     assert warned == [1, 1], "новый обрыв — снова"
+
+
+async def test_whisper_does_not_look_for_a_graphics_card_on_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """30.09.2026, 14:43: `import ctranslate2` в цикле событий заморозил ассистента
+    на полминуты — микрофон, панель и уже пришедший ответ облака."""
+    import threading
+
+    from jarvis.core.stt.faster_whisper import FasterWhisperSTT
+
+    where: list[str] = []
+    stt = FasterWhisperSTT(STTConfig(), BlockingWorker())
+
+    def resolve() -> tuple[str, str]:
+        where.append(threading.current_thread().name)
+        return "cpu", "int8"
+
+    monkeypatch.setattr(stt, "_resolve_device", resolve)
+    monkeypatch.setattr(stt, "_load", lambda device, compute: object())
+    await stt._worker.start()
+    try:
+        await stt.start()
+    finally:
+        await stt._worker.stop()
+    assert where and where[0] != threading.main_thread().name
