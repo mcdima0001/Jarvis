@@ -208,7 +208,9 @@ def _activate(window: Any) -> None:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     if user32.GetForegroundWindow() == handle:
         return
-    user32.ShowWindow(handle, 9)  # SW_RESTORE
+    if user32.IsIconic(handle):
+        # Только свёрнутое: развёрнутое SW_RESTORE сделало бы обычным (30.09.2026).
+        user32.ShowWindow(handle, 9)  # SW_RESTORE
     if user32.SetForegroundWindow(handle):
         return
     theirs = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)

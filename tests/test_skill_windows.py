@@ -1585,3 +1585,24 @@ def test_ample_is_hidden_in_the_owners_config() -> None:
 
     config = Path(__file__).resolve().parent.parent / "skills" / "windows" / "config.yaml"
     assert "Ample" in yaml.safe_load(config.read_text("utf-8"))["hidden_programs"]
+
+
+@pytest.mark.parametrize(("minimized", "shown"), [(True, [9]), (False, [])])
+def test_a_maximized_window_is_not_made_smaller(minimized: bool, shown: list[int]) -> None:
+    """30.09.2026: «открой вкладку» превращало развёрнутый браузер в обычное окно —
+    SW_RESTORE звучал и для развёрнутого. Теперь только для свёрнутого."""
+
+    class User32:
+        def __init__(self) -> None:
+            self.shown: list[int] = []
+
+        def IsIconic(self, handle: int) -> bool:  # noqa: N802 — имя из WinAPI
+            return minimized
+
+        def ShowWindow(self, handle: int, command: int) -> bool:  # noqa: N802 — имя из WinAPI
+            self.shown.append(command)
+            return True
+
+    user32 = User32()
+    windows.unfold(user32, 42)
+    assert user32.shown == shown

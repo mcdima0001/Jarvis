@@ -1011,6 +1011,18 @@ def raise_window(title: str) -> bool:
     return bring_to_front(target)
 
 
+def unfold(user32: Any, handle: int) -> None:
+    """Развернуть окно, только если оно свёрнуто.
+
+    `SW_RESTORE` для развёрнутого на весь экран окна значит «сделай обычным»:
+    каждое «открой вкладку» уменьшало браузер владельца, и его приходилось
+    разворачивать заново (30.09.2026). Из свёрнутого же `SW_RESTORE` возвращает
+    прежнее состояние — развёрнутое остаётся развёрнутым.
+    """
+    if user32.IsIconic(handle):
+        user32.ShowWindow(handle, _SW_RESTORE)
+
+
 def bring_to_front(handle: int) -> bool:
     """Поднять окно с этим номером на передний план.
 
@@ -1024,7 +1036,7 @@ def bring_to_front(handle: int) -> bool:
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-    user32.ShowWindow(handle, _SW_RESTORE)
+    unfold(user32, handle)
     if user32.SetForegroundWindow(handle):
         return True
 
@@ -1453,7 +1465,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.15.1",
+        version="0.15.2",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
