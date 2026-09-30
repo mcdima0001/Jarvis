@@ -26,7 +26,7 @@ import logging
 import math
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from jarvis.core.attention import Announcer
@@ -48,6 +48,7 @@ from jarvis.core.contracts import (
     AssistantSpeaking,
     CommandTyped,
     Event,
+    IntentResolved,
     ToolResult,
     Utterance,
     VoiceCommandRecognized,
@@ -146,6 +147,9 @@ ALMOST_NAME = 0.45
 DOUBLED_NAME = 0.55
 
 
+#: Сколько слов может стоять перед именем, чтобы обращение всё ещё считалось.
+MAX_LEAD_WORDS = 2
+
 def _bare(word: str) -> str:
     """Слово без знаков препинания и регистра — так его и сравнивают с именем."""
     return word.lower().strip(" .,!?;:—-")
@@ -175,7 +179,12 @@ class VoicePipeline:
         recorder: Any = None,
         faults: Faults | None = None,
         reply_language: str = "",
+        is_slow: Callable[[str], bool] | None = None,
     ) -> None:
+        #: Долгий ли инструмент (`@tool(slow=True)`): такому «секунду» сразу.
+        self._is_slow = is_slow
+        #: Выбран долгий инструмент — ждать `working_after_s` незачем.
+        self._slow_chosen = asyncio.Event()
         #: Журнал сбоев обращения к модели: неудача называет причину, а не
         #: прячется за «не справился» (21.09.2026).
         self._faults = faults if faults is not None else Faults()
@@ -273,6 +282,7 @@ class VoicePipeline:
         self._announcements: Any = None
         #: Подписка на команды со стороны (клавиатура, позже — Telegram).
         self._typed: Any = None
+        self._resolved: Any = None
 
     @property
     def service_name(self) -> str:
@@ -309,6 +319,8 @@ class VoicePipeline:
         # Команда со стороны идёт тем же путём, что и голос: тут диспетчер,
         # персона и приглушение микрофона, второй такой набор заводить незачем.
         self._typed = self._events.subscribe(CommandTyped.NAME, self._on_typed)
+        if self._is_slow is not None:
+            self._resolved = self._events.subscribe(IntentResolved.NAME, self._on_resolved)
         phrase = self._config.wake_word.phrase
         if self._acoustic:
             logger.info("Слушаю. Имя «%s» ловлю моделью, по звуку", phrase)
@@ -325,6 +337,9 @@ class VoicePipeline:
         if self._typed is not None:
             self._typed.unsubscribe()
             self._typed = None
+        if self._resolved is not None:
+            self._resolved.unsubscribe()
+            self._resolved = None
         if self._sound_task is not None:
             self._sound_task.cancel()
         for task in self._tasks:
@@ -488,14 +503,20 @@ class VoicePipeline:
         поздно и незачем.
         """
         delay = self._config.working_after_s
+        self._slow_chosen.clear()
         work = asyncio.ensure_future(self._dispatcher.handle(utterance))
         if delay <= 0 or self.silent:
             return await work
 
+        # Ждём конца работы, порога тишины или известия, что выбран долгий
+        # инструмент: тогда «секунду» звучит сразу, без паузы-сомнения.
+        slow = asyncio.ensure_future(self._slow_chosen.wait())
         try:
-            return await asyncio.wait_for(asyncio.shield(work), delay)
-        except TimeoutError:
-            pass
+            await asyncio.wait({work, slow}, timeout=delay, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            slow.cancel()
+        if work.done():
+            return work.result()
 
         if not work.done() and not self._muted:
             filler = self._persona.line(WORKING, utterance.language)
@@ -505,6 +526,11 @@ class VoicePipeline:
                         filler, language=utterance.language, remember=False
                     )
         return await work
+
+    async def _on_resolved(self, event: Event) -> None:
+        """Роутер выбрал инструмент: долгий — пора сказать «секунду»."""
+        if isinstance(event, IntentResolved) and self._is_slow is not None and self._is_slow(event.tool):
+            self._slow_chosen.set()
 
     def interrupt(self) -> bool:
         """Замолчать сейчас же: оборвать звук и бросить недоговорённое.
@@ -1150,6 +1176,18 @@ class VoicePipeline:
         if ratio >= settings.similarity:
             logger.debug("Имя распознано: %r (похожесть %.2f)", first, ratio)
             return True, self._drop_doubled_name(remainder)
+
+        # Имя вторым или третьим словом: «А, Джарвис, тише», «Когда мы Джарвис,
+        # проверь скорость интернета» (30.09.2026, 20:06 — фраза ушла в модель
+        # целиком, была признана «без имени» и осталась без ответа). За месяц
+        # логов так было дважды, и оба раза звали по-настоящему; мусор впереди —
+        # междометие или ослышка начала. Только точное имя: похожее слово посреди
+        # фразы — это уже чужая речь.
+        for lead in range(1, min(MAX_LEAD_WORDS, len(words) - 1) + 1):
+            word = _bare(words[lead])
+            if word in settings.aliases or word in settings.phrases:
+                logger.debug("Имя распознано после %d слов(а) впереди: %r", lead, " ".join(words[:lead]))
+                return True, self._drop_doubled_name(" ".join(words[lead + 1:]).strip(" ,"))
 
         # Почти совпало — скорее всего звали, но модель ослышалась.
         # Показываем на уровне INFO: иначе непонятно, почему ассистент молчит.

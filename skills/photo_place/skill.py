@@ -1314,7 +1314,7 @@ class PhotoPlaceSkill(Skill):
     meta = SkillMeta(
         name="photo_place",
         description="Где снята фотография: на экране или в файле.",
-        version="0.7.2",
+        version="0.7.3",
         spoken=("место по фото", "где снято", "photo place"),
     )
 
@@ -1360,6 +1360,8 @@ class PhotoPlaceSkill(Skill):
         return self._client
 
     @tool(
+        # Смотрит моделью секунды — «секунду» сразу, а не после тишины.
+        slow=True,
         # Предел свой, и он больше общего. Цепочка тут длинная и вся из чужих
         # служб: прочитать снимок, найти город, спросить у Overpass все надписи
         # разом, при нужде сверить со спутником. Замер 13.09.2026 на лондонском
@@ -1400,6 +1402,8 @@ class PhotoPlaceSkill(Skill):
         return await self._by_screen(code, hint)
 
     @tool(
+        # Смотрит моделью секунды — «секунду» сразу, а не после тишины.
+        slow=True,
         # Внутри та же цепочка плюс открытие карты, поэтому и предел тот же.
         timeout=60.0,
         phrases=[

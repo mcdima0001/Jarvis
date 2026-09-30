@@ -40,6 +40,7 @@ class _ToolMarker:
     shows: bool = False
     agent: bool = False
     risk_arg: str | None = None
+    slow: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -75,6 +76,9 @@ class ToolSpec:
     #: стенд 25.09.2026 показал 9 ложных успехов из 20. Прогнозу погоды флаг
     #: не нужен: его результат — сам ответ.
     shows: bool = False
+    #: Работает заведомо долго (замер скорости, поиск места по снимку): «секунду»
+    #: звучит сразу, как команда разобрана, а не после `working_after_s` тишины.
+    slow: bool = False
     #: Руки агентного цикла: план видит инструмент, даже если модель разбора
     #: команд его не видит (`routable=False`). Нажать кнопку по имени плану
     #: нужно, а в каталог каждой неузнанной фразы ей незачем — это токены.
@@ -148,6 +152,7 @@ def tool(
     shows: bool = False,
     agent: bool = False,
     risk_arg: str | None = None,
+    slow: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Пометить метод скилла как инструмент.
 
@@ -176,6 +181,9 @@ def tool(
     :param agent: показывать агентному циклу (`core.plan`), даже если в
         каталог разбора команд инструмент не идёт. Это руки плана: нажать по
         имени, вписать в поле, посмотреть, что можно нажать.
+    :param slow: работает заведомо дольше пары секунд — ассистент говорит
+        «секунду» сразу, а не после тишины (30.09.2026: «проверь скорость
+        интернета» — и молчание, неотличимое от «не услышал»).
     :param risk_arg: имя аргумента, называющего нажимаемое. План делает такой
         шаг сам, только если название не звучит необратимо («Удалить»,
         «Купить», «Отправить»); прямую команду это не касается.
@@ -196,6 +204,7 @@ def tool(
                 shows=shows,
                 agent=agent,
                 risk_arg=risk_arg,
+                slow=slow,
             ),
         )
         return func
@@ -240,6 +249,7 @@ def collect_tools(instance: Any, *, namespace: str) -> list[Tool]:
                     shows=marker.shows,
                     agent=marker.agent,
                     risk_arg=marker.risk_arg,
+                    slow=marker.slow,
                 ),
                 handler=bound,
                 timeout=marker.timeout,

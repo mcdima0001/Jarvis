@@ -339,7 +339,7 @@ class ScreenSkill(Skill):
     meta = SkillMeta(
         name="screen",
         description="Зрение: смотрит на экран и отвечает на вопросы о том, что видно",
-        version="0.1.1",
+        version="0.1.2",
         platforms=("windows",),
         spoken=("экран", "зрение", "screen", "vision"),
     )
@@ -366,6 +366,8 @@ class ScreenSkill(Skill):
         return HealthStatus.healthy()
 
     @tool(
+        # Смотрит моделью секунды — «секунду» сразу, а не после тишины.
+        slow=True,
         phrases=[
             "что на экране",
             "что сейчас на экране",

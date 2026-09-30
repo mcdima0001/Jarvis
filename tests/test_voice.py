@@ -125,6 +125,24 @@ def test_unrelated_phrase_is_not_a_call(pipeline: VoicePipeline) -> None:
     assert command == "передай отвёртку"
 
 
+@pytest.mark.parametrize(
+    ("heard", "command"),
+    [
+        ("Когда мы Джарвис, проверь скорость интернета.", "проверь скорость интернета"),
+        ("А, Джарвис Тише.", "Тише"),
+    ],
+)
+def test_a_word_or_two_before_the_name_still_is_a_call(pipeline: VoicePipeline, heard: str, command: str) -> None:
+    """30.09.2026, 20:06: мусор перед именем — и фраза ушла без ответа."""
+    assert pipeline._strip_wake(heard) == (True, command)
+
+
+def test_the_name_deep_inside_a_phrase_is_not_a_call(pipeline: VoicePipeline) -> None:
+    """Дальше двух слов имя — уже разговор о нём, а не обращение."""
+    called, _ = pipeline._strip_wake("я вчера рассказывал про Джарвис друзьям")
+    assert not called
+
+
 def test_doubled_name_is_stripped_twice(pipeline: VoicePipeline) -> None:
     """Расшифровка выдала имя дважды — снимаются оба написания."""
     called, command = pipeline._strip_wake("Джарвис Джарвис включи свет")
@@ -1393,6 +1411,29 @@ async def test_slow_command_says_it_is_working_and_then_answers(
     assert len(tts.said) == 2
     assert tts.said[0] in expected
     assert tts.said[1] == "Готово, всё сделал."
+
+
+async def test_a_known_slow_tool_says_it_is_working_at_once(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """30.09.2026: «проверь скорость интернета» — и тишина, неотличимая от «не
+    услышал». Долгий инструмент (`@tool(slow=True)`) отзывается сразу, как
+    выбран, а не после `working_after_s` тишины."""
+    from jarvis.core.contracts import IntentResolved
+
+    tts = RecordingTTS()
+    pipeline, slow = _slow_pipeline(registry, events, tts, after=5.0)
+    pipeline._is_slow = lambda name: name == "slow.work"
+    events.subscribe(IntentResolved.NAME, pipeline._on_resolved)
+
+    task = asyncio.ensure_future(pipeline.handle(Utterance(text="сделай долго", source="text")))
+    await asyncio.sleep(0.02)
+    await events.publish(IntentResolved(source="router", tool="slow.work", resolver="phrase", confidence=1.0))
+    await asyncio.sleep(0.1)
+    assert len(tts.said) == 1, "«секунду» должно прозвучать, не дожидаясь пяти секунд"
+    slow.release.set()
+    assert (await task).ok
+    assert tts.said[-1] == "Готово, всё сделал."
 
 
 async def test_filler_is_not_mistaken_for_the_answer(
