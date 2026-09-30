@@ -44,6 +44,11 @@ _MAX_CHAIN = 3
 #: свободный разговор. С ним любая половина считалась бы командой, и фраза
 #: «включи трек Я сошла с ума и не помню» разрезалась бы посередине названия.
 _HYPOTHESIS_SKIPS = frozenset({"llm", "fallback"})
+#: Фраза без имени, на которой детектор сработал посреди, — модель не спрашиваем:
+#: её догадку ниже всё равно отбросили бы. 30.09.2026, 21:52: «Всё же лучше, чем
+#: ничего» из аниме ушло в модель, три секунды ожидания дали «Минуту», а потом
+#: ответа не было вовсе. Плюс четыре тысячи токенов впустую.
+_UNNAMED_SKIPS = frozenset({"llm"})
 
 _NOT_UNDERSTOOD = {
     "ru": "Не понял команду. Повтори, пожалуйста, другими словами.",
@@ -320,7 +325,11 @@ class Dispatcher:
         if chain is not None:
             return await self._run_chain(utterance, chain)
 
-        intent = await self._router.route(utterance)
+        intent = await self._router.route(utterance, without=frozenset() if utterance.named else _UNNAMED_SKIPS)
+        if intent is None and not utterance.named:
+            # Без имени и не узнано шаблоном — чужая речь: промолчать, а не «не понял».
+            logger.info("Без имени, и шаблоны не узнали — не отвечаю: %r", utterance.text)
+            return ToolResult.success({"ignored": "без имени, не узнано"}, tool="")
         if intent is None:
             self._remember(utterance, "", False)
             return ToolResult.failure(

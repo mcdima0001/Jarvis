@@ -419,7 +419,10 @@ async def test_unnamed_phrase_is_not_trusted_to_model_guess(lights_registry: Too
     router = Router([PhraseResolver(lights_registry), _Guessing()], threshold=0.6)
     dispatcher = Dispatcher(router=router, registry=lights_registry)
     ignored = await dispatcher.handle(Utterance(text="тут реально есть другой десктоп", named=False))
-    assert ignored.ok and ignored.value == {"ignored": "без имени, разобрано моделью"}
+    # Модель теперь и не спрашивают (30.09.2026): её догадку всё равно отбросили бы,
+    # а три секунды ожидания давали «Минуту» перед молчанием. Отказ — молча.
+    assert ignored.ok and ignored.value == {"ignored": "без имени, не узнано"}
+    assert not ignored.speech_for("ru")
     # Шаблон без имени по-прежнему выполняется, а с именем модели доверяют.
     assert (await dispatcher.handle(Utterance(text="зажги свет", named=False))).speech == "Свет включён."
     assert (await dispatcher.handle(Utterance(text="сделай светло"))).speech == "Свет включён."
