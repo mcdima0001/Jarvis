@@ -915,7 +915,7 @@ class BrowserSkill(Skill):
     meta = SkillMeta(
         name="browser",
         description="Работа с браузером: сайты, поиск, окна",
-        version="0.5.1",
+        version="0.5.2",
         spoken=("браузер", "browser"),
     )
 
@@ -1021,7 +1021,15 @@ class BrowserSkill(Skill):
     async def on_start(self) -> None:
         """Начать слушать расширение."""
         if self._extension is not None and self._server is not None:
-            await self._server.start()
+            try:
+                await self._server.start()
+            except OSError as exc:
+                # Порт занят — почти всегда это живой Jarvis рядом, а мы запущены
+                # `--check` или `--say`. Сайты и поиск работают и без расширения;
+                # трейсбек уровня ERROR в общем логе только путал разбор (28–29.09).
+                self.log.warning("Порт расширения занят (%s) — работаю без него", exc.strerror or exc)
+                self._server = None
+                self._extension = None
 
     async def on_stop(self) -> None:
         """Закрыть порт."""
