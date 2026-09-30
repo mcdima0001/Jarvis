@@ -184,6 +184,26 @@ class BatteryWatch:
 
 
 @dataclass
+class DiskWatch:
+    """Мало места — только если мало несколько проходов подряд.
+
+    Один замер врёт: 30.09.2026 в 12:28, в первую же секунду после выхода из сна,
+    свободного было 7.6 ГБ, а через полминуты снова 17.6 — Windows на миг
+    занимает место под свои файлы. Страж сказал «осталось 8 гигабайт», хотя
+    настоящих восьми не было. Чистый класс — его проверяют тесты.
+    """
+
+    low_gb: float
+    passes: int = 3
+    _lows: int = 0
+
+    def check(self, free_gb: float) -> bool:
+        """Пора ли говорить: мало места держится `passes` проходов подряд."""
+        self._lows = self._lows + 1 if free_gb < self.low_gb else 0
+        return self._lows >= self.passes
+
+
+@dataclass
 class CpuWatch:
     """Процессор занят подряд дольше заданного — сказать один раз, пока не отпустит."""
 
@@ -305,7 +325,7 @@ class SentinelSkill(Skill):
     meta = SkillMeta(
         name="sentinel",
         description="Страж: сам говорит о заряде, диске, нагрузке и загрузках",
-        version="0.1.7",
+        version="0.1.8",
         platforms=("windows",),
         spoken=("страж", "слежение", "sentinel"),
     )
@@ -315,7 +335,9 @@ class SentinelSkill(Skill):
         setting = self.context.setting
         self._every = max(5.0, float(setting("every_s", 30)))
         self._battery = BatteryWatch(low=int(setting("battery_low", 20)), critical=int(setting("battery_critical", 10)))
-        self._disk_free_gb = float(setting("disk_free_gb", 10))
+        self._disk = DiskWatch(
+            low_gb=float(setting("disk_free_gb", 10)), passes=max(1, int(setting("disk_low_passes", 3)))
+        )
         self._cpu = CpuWatch(busy=float(setting("cpu_busy", 90)) / 100, minutes=float(setting("cpu_busy_minutes", 10)))
         self._downloads = DownloadWatch() if bool(setting("downloads", True)) else None
         #: Загрузки смотрятся чаще прочего: о готовом файле хотят слышать сразу, а
@@ -439,7 +461,7 @@ class SentinelSkill(Skill):
             said = self._battery.check(*power)
             if said:
                 self._say("battery", said[0], said[1], repeat=False)
-        if free is not None and free < self._disk_free_gb:
+        if free is not None and self._disk.check(free):
             gigabytes = max(0, round(free))
             self._say("disk", f"Сэр, на системном диске осталось {gigabytes} {plural_form(gigabytes, GIGABYTE)}.", NORMAL)
         if share is not None:

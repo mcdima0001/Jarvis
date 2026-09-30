@@ -161,3 +161,12 @@ def test_a_stalled_unconfirmed_download_is_not_finished() -> None:
     for name in ("Не подтверждено 729535.~", "Unconfirmed 12.crdownload", "setup.exe~", "Unconfirmed 5.tmp"):
         assert sentinel.is_partial(name), name
     assert not sentinel.is_partial("Подтверждение оплаты.pdf")
+
+
+def test_one_low_reading_is_not_a_full_disk() -> None:
+    """30.09.2026, 12:28: после выхода из сна один замер дал 7.6 ГБ, через
+    полминуты снова 17.6 — и страж сказал «осталось 8 гигабайт»."""
+    watch = sentinel.DiskWatch(low_gb=10, passes=3)
+    assert [watch.check(free) for free in (7.6, 17.6, 17.6)] == [False, False, False]
+    assert [watch.check(free) for free in (8.0, 8.0, 8.0, 8.0)] == [False, False, True, True]
+    assert watch.check(12.0) is False
