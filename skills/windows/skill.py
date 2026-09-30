@@ -1295,6 +1295,10 @@ PAUSE_TABS_TOOL = "browser.pause_videos"
 RESUME_TABS_TOOL = "browser.resume_videos"
 #: Сколько ждать расширение с паузой и возвратом, секунд.
 TABS_TIMEOUT_S = 2.0
+#: Видео встало на паузу по имени — через столько секунд без распознанной
+#: команды считаем имя ложным и пускаем видео дальше. Окно ответа — 6 с, плюс
+#: запас на расшифровку.
+VIDEO_CONFIRM_S = 8.0
 #: Насколько громкость сессии может отличаться от нашего приглушённого уровня,
 #: чтобы считать её так и оставшейся приглушённой.
 LOWERED_TOLERANCE = 0.015
@@ -1465,7 +1469,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.15.2",
+        version="0.16.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1555,6 +1559,12 @@ class WindowsSkill(Skill):
         #: владельца 23.09.2026): из музыки приглушение не крадёт ничего, а из
         #: фильма крадёт кусок, и его потом отматывают руками.
         self._pause_video = bool(ducking.get("pause_video", True))
+        #: Когда ставить на паузу: `name` — как только позвали (просьба владельца
+        #: 30.09.2026: «при приглушении всё равно пропускаю часть диалогов»),
+        #: `reply` — только на ответ, как было.
+        self._pause_on_name = str(ducking.get("pause_video_on", "name")).lower() != "reply"
+        #: Проверка «имя было, а команды нет» — чтобы ложное имя не держало видео.
+        self._video_confirm: asyncio.Task[None] | None = None
         self._players = tuple(
             str(name).lower() for name in ducking.get("video_players", ()) if str(name).strip()
         ) or media().VIDEO_PLAYERS
@@ -1623,13 +1633,44 @@ class WindowsSkill(Skill):
         await asyncio.gather(self._hold_video(), self._duck())
 
     async def _on_wake_word(self, event: Event) -> None:
-        """Позвали по имени — убавить всё чужое и ждать команду."""
+        """Позвали по имени — убавить всё чужое, видео остановить и ждать команду.
+
+        Видео встаёт на паузу сразу, а не на ответе: пока владелец говорит
+        команду, приглушённый фильм идёт дальше, и кусок диалога пропадает
+        (30.09.2026). Ложное имя (замер по логам 20–30.09: до 55 из 261
+        срабатываний) видео не портит: пауза ничего не отнимает — фильм
+        продолжится с того же места, как только станет ясно, что команды нет.
+        """
         self._awaiting_command = True
-        await self._duck()
+        if self._pause_video and self._pause_on_name:
+            self._arm_video_confirm()
+            await asyncio.gather(self._duck(), self._hold_video())
+        else:
+            await self._duck()
+
+    def _arm_video_confirm(self) -> None:
+        if self._video_confirm is not None:
+            self._video_confirm.cancel()
+        self._video_confirm = self.context.scope.spawn(self._confirm_video(), name="windows-video-confirm")
+
+    async def _confirm_video(self) -> None:
+        """Команды за `VIDEO_CONFIRM_S` так и не прозвучало — имя было ложным, видео дальше."""
+        await asyncio.sleep(VIDEO_CONFIRM_S)
+        self._video_confirm = None
+        if self._awaiting_command and self._video_held():
+            self.log.info("Имя было, а команды нет — видео продолжаю")
+            await self._release_video()
+
+    def _video_held(self) -> bool:
+        return bool(self._paused or self._vlc_paused or self._tabs_paused)
 
     async def _on_command(self, event: Event) -> None:
         """Команда распознана: следующая реплика вернёт громкость."""
         self._awaiting_command = False
+        if self._video_confirm is not None:
+            # Команда есть — видео держим до конца ответа.
+            self._video_confirm.cancel()
+            self._video_confirm = None
         # И заодно продлеваем страховку: работа идёт, бросать её посреди
         # выполнения незачем.
         self._arm_restore_timer()
@@ -1640,9 +1681,9 @@ class WindowsSkill(Skill):
         Раньше возвращал только страховочный таймер: услышав «имя» в песне,
         ассистент молча убавлял музыку на двадцать секунд (15.09.2026, 09:12).
         """
-        if not self._ducked:
+        if not self._ducked and not self._video_held():
             return
-        self.log.debug("Не ко мне — возвращаю громкость")
+        self.log.debug("Не ко мне — возвращаю громкость и видео")
         await self._restore()
 
     async def _on_replied(self, event: Event) -> None:

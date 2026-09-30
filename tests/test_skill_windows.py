@@ -1217,6 +1217,7 @@ async def test_volume_comes_back_at_once_when_the_phrase_was_not_for_us() -> Non
     skill = object.__new__(Ducker)
     skill._restore = restore
     skill._ducked = {}
+    skill._paused, skill._vlc_paused, skill._tabs_paused = (), False, []
     await skill._on_dismissed(WakeDismissed(source="voice", text="песня"))
     assert restored == [], "не приглушали — возвращать нечего"
 
@@ -1606,3 +1607,77 @@ def test_a_maximized_window_is_not_made_smaller(minimized: bool, shown: list[int
     user32 = User32()
     windows.unfold(user32, 42)
     assert user32.shown == shown
+
+
+def _pauser(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[str]]:
+    """Скилл windows без контекста: видео во вкладке ставится на паузу и снимается."""
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+
+    from jarvis.core.contracts import ToolResult
+
+    calls: list[str] = []
+
+    class Tools:
+        def has(self, name: str) -> bool:
+            return name.startswith("browser.")
+
+        async def invoke(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+            calls.append(name)
+            return ToolResult.success({"tabs": [7], "titles": ["Атака титанов"]})
+
+    class Scope:
+        def spawn(self, work: Any, name: str = "") -> Any:
+            return asyncio.get_running_loop().create_task(work)
+
+    monkeypatch.setattr(windows, "sound_sessions", lambda **_: [])
+
+    class Pauser(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-name-pause")
+        tools = Tools()  # type: ignore[assignment]
+
+    skill = object.__new__(Pauser)
+    skill._context = SimpleNamespace(scope=Scope())
+    skill._pause_video, skill._pause_on_name = True, True
+    skill._paused, skill._vlc_paused, skill._tabs_paused = (), False, []
+    skill._vlc = SimpleNamespace(ready=False)
+    skill._players, skill._video_turn, skill._video_confirm = (), asyncio.Lock(), None
+    skill._ducked, skill._duck_timer, skill._awaiting_command = {}, None, False
+    skill._duck_timeout = 20.0
+
+    async def no_duck() -> None:
+        return None
+
+    skill._duck = no_duck
+    return skill, calls
+
+
+async def test_video_stops_on_the_name_and_goes_on_when_it_was_not_for_me(monkeypatch: pytest.MonkeyPatch) -> None:
+    """30.09.2026: пауза по имени, а не на ответе. «Не ко мне» — видео сразу дальше."""
+    skill, calls = _pauser(monkeypatch)
+    await skill._on_wake_word(None)
+    assert calls == [windows.PAUSE_TABS_TOOL]
+    await skill._on_dismissed(None)
+    assert calls[-1] == windows.RESUME_TABS_TOOL
+
+
+async def test_a_name_with_no_command_lets_the_video_go_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(windows, "VIDEO_CONFIRM_S", 0.01)
+    skill, calls = _pauser(monkeypatch)
+    await skill._on_wake_word(None)
+    await asyncio.sleep(0.05)
+    assert calls == [windows.PAUSE_TABS_TOOL, windows.RESUME_TABS_TOOL]
+
+
+async def test_a_real_command_keeps_the_video_paused_until_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(windows, "VIDEO_CONFIRM_S", 0.01)
+    skill, calls = _pauser(monkeypatch)
+    await skill._on_wake_word(None)
+    await skill._on_command(None)
+    await asyncio.sleep(0.05)
+    assert calls == [windows.PAUSE_TABS_TOOL]
