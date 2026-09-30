@@ -106,7 +106,15 @@ def describe(values: Mapping[str, Any]) -> str:
         else:
             text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         parts.append(f"{source}: {text}")
-    return "; ".join(parts)[:SNAPSHOT_LIMIT]
+    if not parts:
+        return ""
+    # Предел — каждому источнику поровну, а не всем подряд. Список окон длинный
+    # и шёл первым: 30.09.2026 он съел все 700 знаков, адрес вкладки
+    # (`chatgpt.com/…`) отрезался, и открытый ChatGPT с чатом «Музыкальный
+    # профиль пользователя» судья признал неудачей — план открыл его ещё раз и
+    # упал на повторе.
+    share = SNAPSHOT_LIMIT // len(parts)
+    return "; ".join(part[:share] for part in parts)
 
 
 class Checker:

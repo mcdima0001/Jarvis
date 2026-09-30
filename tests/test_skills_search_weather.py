@@ -46,12 +46,11 @@ def test_duckduckgo_markup_parsed() -> None:
         "Тверь — <b>Википедия</b></a></td></tr>"
         '<tr><td class="result-snippet">Город в России, центр области.</td></tr>'
     )
-    results = search._DDG_LINK.findall(page)
-    snippets = search._DDG_SNIPPET.findall(page)
+    found = search.parse_lite(page, 3)[0]
 
-    assert search._plain(results[0][1]) == "Тверь — Википедия"
-    assert results[0][0] == "https://ru.wikipedia.org/wiki/Тверь"
-    assert search._plain(snippets[0]) == "Город в России, центр области."
+    assert found["title"] == "Тверь — Википедия"
+    assert found["url"] == "https://ru.wikipedia.org/wiki/Тверь"
+    assert found["snippet"] == "Город в России, центр области."
 
 
 def test_html_entities_restored() -> None:
@@ -222,3 +221,20 @@ async def test_all_sources_silent_is_said_honestly() -> None:
 
     assert result.value == ""
     assert "Не нашёл ответа" in result.speech_for("ru")
+
+
+def test_duckduckgo_results_are_read_whatever_the_attribute_order() -> None:
+    """30.09.2026 DuckDuckGo поставил `href` перед `class` и перешёл на одинарные
+    кавычки — прежний разбор находил ноль ссылок на любой запрос."""
+    new = (
+        "<a rel=\"nofollow\" href=\"https://www.gosuslugi.ru/\" class='result-link'>Госуслуги</a>"
+        "<td class='result-snippet'>Портал государственных услуг</td>"
+    )
+    old = (
+        '<a class="result-link" href="https://habr.com/">Хабр</a>'
+        '<td class="result-snippet">Сообщество IT-специалистов</td>'
+    )
+    assert search.parse_lite(new, 3) == [
+        {"title": "Госуслуги", "snippet": "Портал государственных услуг", "url": "https://www.gosuslugi.ru/"}
+    ]
+    assert search.parse_lite(old, 3)[0]["url"] == "https://habr.com/"

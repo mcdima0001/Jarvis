@@ -34,8 +34,12 @@ from jarvis.core.tools import tool
 #: Википедия требует User-Agent с контактами, иначе отвечает 403.
 _USER_AGENT = "Jarvis/0.1 (https://github.com/mcdima0001/Jarvis)"
 
-_DDG_LINK = re.compile(r'<a[^>]+class="result-link"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S)
-_DDG_SNIPPET = re.compile(r'class="result-snippet"[^>]*>(.*?)</td>', re.S)
+# Порядок атрибутов и кавычки не закладываем: 30.09.2026 DuckDuckGo поставил
+# `href` перед `class` и перешёл на одинарные кавычки, и прежняя регулярка
+# молча находила ноль ссылок — веб-поиск на любой запрос отвечал «ничего не нашёл».
+_DDG_LINK = re.compile(r"""<a\b([^>]*\bclass=['"]result-link['"][^>]*)>(.*?)</a>""", re.S)
+_HREF = re.compile(r"""\bhref=['"]([^'"]+)['"]""")
+_DDG_SNIPPET = re.compile(r"""class=['"]result-snippet['"][^>]*>(.*?)</td>""", re.S)
 _TAGS = re.compile(r"<[^>]+>")
 
 #: Сколько символов выдержки отдавать модели на пересказ. Первого абзаца
@@ -162,18 +166,26 @@ class DuckDuckGoProvider:
             },
         )
         response.raise_for_status()
-        page = response.text
 
-        links = _DDG_LINK.findall(page)
-        snippets = _DDG_SNIPPET.findall(page)
-        return [
-            {
-                "title": _plain(title),
-                "snippet": _plain(snippets[index]) if index < len(snippets) else "",
-                "url": html.unescape(url),
-            }
-            for index, (url, title) in enumerate(links[:limit])
-        ]
+        return parse_lite(response.text, limit)
+
+
+def parse_lite(page: str, limit: int) -> list[dict[str, str]]:
+    """Результаты из лёгкой выдачи DuckDuckGo. Чистая функция — её проверяют тесты."""
+    links: list[tuple[str, str]] = []
+    for attributes, title in _DDG_LINK.findall(page):
+        found = _HREF.search(attributes)
+        if found:
+            links.append((found.group(1), title))
+    snippets = _DDG_SNIPPET.findall(page)
+    return [
+        {
+            "title": _plain(title),
+            "snippet": _plain(snippets[index]) if index < len(snippets) else "",
+            "url": html.unescape(url),
+        }
+        for index, (url, title) in enumerate(links[:limit])
+    ]
 
 
 #: Готовые источники. Новый — это класс с одним методом плюс строка здесь.
@@ -189,7 +201,7 @@ class SearchSkill(Skill):
     meta = SkillMeta(
         name="search",
         description="Поиск информации в интернете",
-        version="0.2.0",
+        version="0.2.1",
         spoken=("поиск", "search"),
     )
 
@@ -261,8 +273,10 @@ class SearchSkill(Skill):
         language = detect_language(query, default="ru")
         results = await self._collect(query, min(limit, self._max_results), language)
         if not results:
-            return ToolResult.success(
-                [],
+            # Отказ, а не успех: пустой поиск — не удачный разбор, и выучиваться
+            # как «сработало» ему незачем (29.09.2026 так и выучилось).
+            return ToolResult.failure(
+                f"ничего не нашлось по запросу {query!r}",
                 speech={
                     "ru": f"Ничего не нашёл по запросу {query}.",
                     "en": f"Found nothing for {query}.",

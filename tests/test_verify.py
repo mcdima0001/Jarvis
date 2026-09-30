@@ -271,3 +271,14 @@ async def test_a_confirmed_guess_is_learned(monkeypatch) -> None:
 
     assert result.ok and plan.goals == []
     assert learner.learned == ["открой калькулятор"]
+
+
+def test_a_long_window_list_does_not_eat_the_tab_address() -> None:
+    """30.09.2026: окна съели весь предел, адрес `chatgpt.com` отрезался, и открытый
+    ChatGPT с чатом «Музыкальный профиль пользователя» признан неудачей."""
+    windows = {"active": "Музыкальный профиль пользователя — Яндекс Браузер",
+               "windows": [f"Окно номер {n} с очень длинным заголовком" for n in range(40)]}
+    tab = {"title": "Музыкальный профиль пользователя", "url": "https://chatgpt.com/c/6abcd9d0"}
+    seen = describe({"windows.observe": windows, "browser.page_target": tab})
+    assert "chatgpt.com" in seen
+    assert "Музыкальный профиль" in seen
