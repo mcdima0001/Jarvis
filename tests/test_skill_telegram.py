@@ -321,3 +321,50 @@ def test_short_name_in_another_case_finds_its_owner_not_a_longer_name() -> None:
     assert match_chat("роме", names) == "Ромка Малютка ❤️❤️"
     assert match_chat("маме", names) == "Мама"
     assert spoken_name("Ромка Малютка ❤️❤️") == "Ромка Малютка"
+
+
+class _Client:
+    def __init__(self, *, connected: bool, fails: int = 0) -> None:
+        self.connected, self.fails, self.connects = connected, fails, 0
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> None:
+        self.connects += 1
+        if self.fails:
+            self.fails -= 1
+            raise ConnectionError("HTTP code 429")
+        self.connected = True
+
+
+def _watcher(client: _Client) -> Any:
+    import logging
+
+    skill = object.__new__(telegram.TelegramSkill)
+    skill._client = client
+    skill._context = type("Ctx", (), {"logger": logging.getLogger("test-telegram")})()
+    return skill
+
+
+async def test_a_client_that_dropped_for_good_is_connected_again() -> None:
+    """30.09.2026, 15:02: после 429 Telethon умер и отключился сам — скилл этого не видел."""
+    client = _Client(connected=False)
+    skill = _watcher(client)
+    assert await skill._check_link(60.0) == telegram.WATCH_EVERY_S
+    assert client.connects == 1 and client.connected
+
+
+async def test_a_refused_reconnect_waits_longer_each_time() -> None:
+    client = _Client(connected=False, fails=5)
+    skill = _watcher(client)
+    delays = [60.0]
+    for _ in range(5):
+        delays.append(await skill._check_link(delays[-1]))
+    assert delays[1:] == [120.0, 240.0, 480.0, 600.0, 600.0]
+
+
+async def test_a_live_client_is_left_alone() -> None:
+    client = _Client(connected=True)
+    assert await _watcher(client)._check_link(600.0) == telegram.WATCH_EVERY_S
+    assert client.connects == 0

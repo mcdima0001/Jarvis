@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import logging
 import re
@@ -259,6 +260,9 @@ def describe_dialogs(dialogs: Sequence[dict[str, Any]]) -> str:
 
 #: Пауза между попытками переподключения после обрыва, секунд.
 RETRY_DELAY_S = 10
+#: Как часто проверять, жива ли связь, и до скольких растягивать паузу после отказа.
+WATCH_EVERY_S = 60.0
+WATCH_BACKOFF_MAX_S = 600.0
 
 
 class TelegramSkill(Skill):
@@ -267,7 +271,7 @@ class TelegramSkill(Skill):
     meta = SkillMeta(
         name="telegram",
         description="Сообщения и чаты Telegram",
-        version="0.2.2",
+        version="0.2.3",
         spoken=("телеграм", "telegram"),
     )
 
@@ -299,6 +303,7 @@ class TelegramSkill(Skill):
         if not self._api_id or not self._api_hash:
             return
         self.context.scope.spawn(self._connect(), name="telegram-connect")
+        self.context.scope.spawn(self._watch(), name="telegram-watch")
 
     async def on_stop(self) -> None:
         """Отключиться. Фоновые задачи гасит scope."""
@@ -310,6 +315,36 @@ class TelegramSkill(Skill):
             self._client = None
 
     # --- подключение -------------------------------------------------------
+
+    async def _watch(self) -> None:
+        """Держать связь: клиент, отключившийся насовсем, подключить заново.
+
+        Самовосстановления библиотеки мало. 30.09.2026 около 14:48 пропала сеть,
+        в 15:02 Telegram ответил 429, и у Telethon умер цикл приёма («Fatal error
+        handling updates») — после чего он сам зовёт `disconnect()` и больше не
+        поднимается. Скилл же считал клиента живым: входящие не приходили,
+        отправка отказывала бы. Повторный `connect()` запускает приём заново.
+        """
+        delay = WATCH_EVERY_S
+        while True:
+            await asyncio.sleep(delay)
+            delay = await self._check_link(delay)
+
+    async def _check_link(self, delay: float) -> float:
+        """Один взгляд на связь. Возвращает, через сколько смотреть снова."""
+        client = self._client
+        if client is None or client.is_connected():
+            return WATCH_EVERY_S
+        self.log.warning("Связь с Telegram оборвалась — переподключаюсь")
+        try:
+            await client.connect()
+        except Exception as exc:  # noqa: BLE001 — сеть падает, ассистент нет
+            # После 429 долбить сервер — только затягивать запрет.
+            later = min(delay * 2, WATCH_BACKOFF_MAX_S)
+            self.log.warning("Telegram не переподключился (%s) — следующая попытка через %.0f с", exc, later)
+            return later
+        self.log.info("Telegram снова на связи")
+        return WATCH_EVERY_S
 
     async def _connect(self) -> None:
         """Поднять клиента и, если вход сделан, слушать новые сообщения."""
@@ -689,4 +724,6 @@ class TelegramSkill(Skill):
             return HealthStatus.degraded("нет api_id и api_hash")
         if self._client is None:
             return HealthStatus.degraded("не подключён: нужен вход в аккаунт")
+        if not self._client.is_connected():
+            return HealthStatus.degraded("связь оборвалась — переподключаюсь")
         return HealthStatus.healthy(f"чатов в списке {len(self._names)}")
