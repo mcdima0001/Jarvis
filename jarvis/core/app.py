@@ -355,6 +355,9 @@ class JarvisApp:
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)
+        # Снятый без согласия вопрос забирает у плана разрешённый шаг: иначе
+        # «нет» отменяло бы только реплику (аудит 01.10.2026).
+        dispatcher.on_drop(core_tools.withdraw)
 
         pipeline = VoicePipeline(
             source=audio.source,

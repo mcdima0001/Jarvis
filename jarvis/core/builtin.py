@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
@@ -37,6 +38,7 @@ from jarvis.core.tts.normalize import plural_form
 from jarvis.core.version import current
 
 if TYPE_CHECKING:
+    from jarvis.core.pending import Pending
     from jarvis.core.router import LearnedResolver
     from jarvis.core.skills import SkillManager
     from jarvis.core.verify import Checker
@@ -208,6 +210,11 @@ class _Waiting:
     steps: tuple[Step, ...]
     approved: Intent
     at: float
+    #: Одноразовая метка согласия. Её несёт только сам вопрос плана (`confirm`),
+    #: и только с ней разрешённый шаг выполняется. Совпадения цели мало: модель
+    #: пишет цель дословно, и та же просьба после «нет» исполняла отвергнутый
+    #: шаг без вопроса (аудит 01.10.2026).
+    consent: str
 
     def stale(self, now: float | None = None) -> bool:
         """Протух ли: согласие через час — это уже про другое."""
@@ -482,7 +489,38 @@ class CoreTools:
         :param goal: просьба целиком, своими словами владельца.
         :param language: язык, на котором отвечать.
         """
-        code = _language(language)
+        return await self._plan(goal, _language(language))
+
+    @tool(name="resume", routable=False, reversible=False)
+    async def resume(self, goal: str, consent: str, language: str = "ru") -> ToolResult:
+        """Продолжить прерванный план с шага, который владелец разрешил.
+
+        Зовёт его только сам вопрос плана: «да» на «Дальше нужно … Делать?»
+        исполняет `confirm`, а в нём метка согласия. В каталог модели и плана
+        инструмент не идёт, фраз у него нет — иначе разрешение можно было бы
+        получить, не спросив. Метка не та (вопрос снят, перезапуск) — план
+        начинается заново и спросит снова.
+
+        :param goal: цель прерванного плана.
+        :param consent: метка согласия из вопроса.
+        :param language: язык, на котором отвечать.
+        """
+        return await self._plan(goal, _language(language), consent=consent)
+
+    def withdraw(self, question: "Pending") -> None:
+        """Вопрос снят без согласия — забыть разрешённый было шаг.
+
+        Зовёт диспетчер (`Dispatcher.on_drop`) на любое снятие: «нет», «стоп»,
+        протухание, реплика не по делу с любого входа. Свой вопрос узнаётся по
+        метке согласия, чужие прерванный план не трогают.
+        """
+        waiting = self._waiting
+        if waiting is not None and question.intent.arguments.get("consent") == waiting.consent:
+            logger.info("Вопрос плана снят без согласия — шаг %s забыт", waiting.approved.tool)
+            self._waiting = None
+
+    async def _plan(self, goal: str, code: str, *, consent: str = "") -> ToolResult:
+        """Общее у нового плана и продолжения: выполнить, а упёрся — спросить."""
         if not self._llm.available:
             return ToolResult.failure(
                 "Языковая модель не настроена: задай JARVIS_OPENROUTER_KEY в .env",
@@ -497,7 +535,7 @@ class CoreTools:
         # этом всё кончалось — цель терялась. В живом запуске 12.09.2026 план
         # посмотрел на экран, описал фотографию и замолчал, хотя просили найти
         # место и открыть его в картах.
-        already = await self._resumed(goal)
+        already = await self._resumed(goal, consent)
         outcome = await self._planner().run(goal, language=code, done=already)
 
         # Упёрлись в необратимое — спрашиваем. Разрешение приходит голосом
@@ -508,12 +546,16 @@ class CoreTools:
             # Вопрос задаётся о шаге, а согласие возвращает нас **в план**:
             # иначе разрешённый шаг выполнился бы в одиночку, а остальная
             # работа осталась бы несделанной.
+            token = secrets.token_hex(8)
             self._waiting = _Waiting(
                 goal=goal, steps=outcome.steps, approved=outcome.blocked,
-                at=time.monotonic(),
+                at=time.monotonic(), consent=token,
             )
             return ToolResult.asking(
-                Intent(tool=f"{NAMESPACE}.plan", arguments={"goal": goal}),
+                Intent(
+                    tool=f"{NAMESPACE}.resume",
+                    arguments={"goal": goal, "consent": token, "language": code},
+                ),
                 value={
                     "steps": [step.tool for step in outcome.steps],
                     "blocked": outcome.blocked.tool,
@@ -542,16 +584,19 @@ class CoreTools:
             speech=answer,
         )
 
-    async def _resumed(self, goal: str) -> tuple[Step, ...]:
+    async def _resumed(self, goal: str, consent: str) -> tuple[Step, ...]:
         """Выполнить разрешённый шаг и вернуть всё, что уже сделано.
 
-        Пусто — это не продолжение, а новая просьба. Сверяется и цель, и срок:
-        «да», сказанное через час по другому поводу, ничего исполнять не должно,
-        а сама формулировка цели — единственное, чем два плана различимы.
+        Пусто — это не продолжение, а новая просьба. Сверяются метка согласия,
+        цель и срок: продолжает только «да» на свой вопрос, а не та же просьба,
+        сказанная ещё раз, и не «да» через час по другому поводу.
         """
         waiting = self._waiting
         self._waiting = None
-        if waiting is None or waiting.goal != goal or waiting.stale():
+        if waiting is None or not consent:
+            return ()
+        if consent != waiting.consent or waiting.goal != goal or waiting.stale():
+            logger.info("Согласие не к этому вопросу или устарело — план заново: %r", goal)
             return ()
         step = waiting.approved
         result = await self._registry.invoke(step.tool, dict(step.arguments))

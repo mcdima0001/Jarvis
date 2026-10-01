@@ -260,6 +260,67 @@ async def test_a_guess_that_missed_goes_to_the_plan_and_is_not_learned(monkeypat
     assert learner.learned == [], "неподтверждённое не выучивается"
 
 
+class _AskingPlan:
+    """План, который упёрся в необратимое и спрашивает; помнит, что ему разрешили."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    @tool(name="plan", reversible=False)
+    async def plan(self, goal: str, language: str = "ru") -> ToolResult:
+        """Спросить разрешения на отправку."""
+        from jarvis.core.contracts import Intent
+
+        return ToolResult.asking(
+            Intent(tool="core.send", arguments={"text": "привет"}),
+            question="Дальше нужно отправить сообщение: привет. Делать?",
+        )
+
+    @tool(name="send", reversible=False)
+    async def send(self, text: str = "") -> ToolResult:
+        """Отправить."""
+        self.sent.append(text)
+        return ToolResult.success(text, speech="Отправил.")
+
+
+async def test_a_question_from_the_plan_after_a_miss_waits_for_the_answer(monkeypatch) -> None:
+    """Проверка не сошлась, план спросил «Делать?» — «да» продолжает, а не теряется.
+
+    Вопрос плана запоминался только на обычном пути, и «да» уходило в роутер
+    новой командой: «Не понял команду» в ответ на собственный вопрос (аудит
+    01.10.2026).
+    """
+    import jarvis.core.verify as verify
+    from jarvis.core.contracts import Utterance
+    from jarvis.core.router import Dispatcher, Router
+
+    monkeypatch.setattr(verify, "SETTLE_S", 0.0)
+    registry = ToolRegistry(default_timeout=1.0)
+    plan = _AskingPlan()
+    for skill, namespace in ((Screen("Диспетчер задач"), "windows"), (Desk(), "desk"), (plan, "core")):
+        for item in collect_tools(skill, namespace=namespace):
+            registry.register(item)
+    llm = LLMService(
+        providers={"scripted": Scripted(["НЕТ — открыт диспетчер задач"])},  # type: ignore[dict-item]
+        profiles=ProfileRegistry(
+            {"plan": TaskProfile(task="plan", provider="scripted", model="stub")},
+            default_task="plan",
+        ),
+    )
+    dispatcher = Dispatcher(
+        router=Router([_Guess("desk.launch")]),
+        registry=registry,
+        checker=Checker(llm=llm, registry=registry, observe={"windows.observe": {}}),
+    )
+
+    asked = await dispatcher.handle(Utterance(text="открой диспетчер устройств"))
+    assert asked.confirm is not None
+    assert dispatcher.awaiting is not None, "вопрос плана не запомнился"
+
+    await dispatcher.handle(Utterance(text="да"))
+    assert plan.sent == ["привет"]
+
+
 async def test_a_confirmed_guess_is_learned(monkeypatch) -> None:
     import jarvis.core.verify as verify
 
