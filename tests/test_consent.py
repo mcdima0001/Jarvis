@@ -194,6 +194,29 @@ async def test_asking_back_is_not_consent() -> None:
         assert phone.sent == [], asked_back
 
 
+async def test_asking_back_by_voice_is_not_consent() -> None:
+    """То же голосом: «Джарвис, точно?» проходит через распознавание и имя.
+
+    Командой реплику делает `_process`, и к `handle` она приходила уже без
+    имени и без хвостового «?»: «точно» голосом оставалось согласием.
+    """
+    from jarvis.core.stt import Transcript
+
+    class Heard:
+        async def transcribe(self, audio: bytes, *, sample_rate: int) -> Transcript:
+            return Transcript(text="Джарвис, точно?", language="ru")
+
+    phone, dispatcher, pipeline, _ = _system()
+    await _ask(pipeline)
+    pipeline._stt = Heard()  # type: ignore[assignment]
+
+    await pipeline._process(b"\x00" * 3200, spoken_at=time.time())
+    assert dispatcher.awaiting is None, "переспрос не снял вопрос"
+    await pipeline.handle(_text("да"))
+
+    assert phone.sent == []
+
+
 # --- окно ответа живёт, пока жив вопрос ----------------------------------------
 
 

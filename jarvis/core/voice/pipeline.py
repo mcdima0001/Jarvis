@@ -1211,8 +1211,16 @@ class VoicePipeline:
                 language=language,
             )
         )
+        # Знак вопроса возвращается здесь, а не в `handle`: к нему команда
+        # приходит уже без имени и без хвостовой пунктуации, и голосовое
+        # «Точно?» в ответ на «Отправить маме?» считалось согласием.
         await self.handle(
-            Utterance(text=command, language=language, source="voice", named=not self._unnamed)
+            Utterance(
+                text=keep_question(transcript.text, command),
+                language=language,
+                source="voice",
+                named=not self._unnamed,
+            )
         )
 
     def _strip_wake(self, text: str) -> tuple[bool, str]:

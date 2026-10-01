@@ -275,7 +275,7 @@ class DownloadsCleanupSkill(Skill):
     meta = SkillMeta(
         name="downloads_cleanup",
         description="Находит старые файлы в каталоге загрузок и отправляет их в корзину.",
-        version="0.1.0",
+        version="0.2.0",
         spoken=("уборка загрузок", "downloads cleanup"),
     )
 
