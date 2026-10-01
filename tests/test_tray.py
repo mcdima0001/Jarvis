@@ -16,6 +16,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from jarvis.__main__ import _parse_args
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.contracts import SystemStarted
@@ -272,9 +274,30 @@ def test_panel_window_takes_most_of_the_screen() -> None:
     assert panel_geometry((0, 0, 2880, 1710), 144) == (x, y, width, height)
 
 
+class _Panels:
+    """Окна панели без Windows: какие открыты и какое впереди."""
+
+    def __init__(self, handles: list[int] | None = None, front: int = 0) -> None:
+        self._handles, self._front = handles or [], front
+        self.done: list[tuple[str, int]] = []
+
+    def handles(self) -> list[int]:
+        return self._handles
+
+    def foreground(self) -> int:
+        return self._front
+
+    def focus(self, hwnd: int) -> None:
+        self.done.append(("focus", hwnd))
+
+    def minimize(self, hwnd: int) -> None:
+        self.done.append(("hide", hwnd))
+
+
 async def test_panel_opens_with_token_from_the_app(tmp_path: Path) -> None:
     opened: list[tuple[str, Any]] = []
-    session = TraySession(FakeIcon, opener=lambda path: None, panel=lambda url, saved: opened.append((url, saved)))
+    session = TraySession(FakeIcon, opener=lambda path: None, panel=lambda url, saved: opened.append((url, saved)),
+                          panel_windows=_Panels)
     session.attach(_app(tmp_path))
     session.on_action("panel")
     assert opened == [("http://127.0.0.1:8766/?token=t", (100, 50, 1400, 900))]
@@ -469,3 +492,31 @@ def test_native_menu_keeps_the_same_gap() -> None:
 
 def test_quit_is_the_only_danger_item() -> None:
     assert [item.action for item in menu.MENU if item is not None and item.danger] == ["quit"]
+
+
+@pytest.mark.parametrize(
+    ("handles", "front", "toggle", "expected"),
+    [
+        ([], 0, True, ("open", 0)),
+        ([7], 3, True, ("focus", 7)),
+        ([7], 7, True, ("hide", 7)),
+        # Пункт меню не прячет: «открыть» значит открыть.
+        ([7], 7, False, ("focus", 7)),
+    ],
+)
+def test_the_panel_key_opens_brings_forward_or_hides(
+    handles: list[int], front: int, toggle: bool, expected: tuple[str, int]
+) -> None:
+    """01.10.2026: горячая клавиша панели — как у выпадающей консоли."""
+    assert menu.panel_step(handles, front, toggle=toggle) == expected
+
+
+async def test_an_open_panel_is_not_opened_twice(tmp_path: Path) -> None:
+    """Раньше пункт трея запускал новое окно на каждую просьбу."""
+    opened: list[str] = []
+    panels = _Panels([7], front=3)
+    session = TraySession(FakeIcon, opener=lambda path: None, panel=lambda url, saved: opened.append(url),
+                          panel_windows=lambda: panels)
+    session.attach(_app(tmp_path))
+    session.on_action(menu.PANEL_TOGGLE)
+    assert opened == [] and panels.done == [("focus", 7)]

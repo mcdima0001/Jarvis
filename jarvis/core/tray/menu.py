@@ -49,6 +49,28 @@ class MenuItem:
 #: Действие «замолчать»: оборвать звучащий ответ. То же — горячей клавишей.
 HUSH = "hush"
 
+#: Панель горячей клавишей: нет — открыть, за другими окнами — вперёд, впереди — свернуть.
+PANEL_TOGGLE = "panel_toggle"
+#: Как эта клавиша называется — для меню и лога.
+PANEL_HOTKEY = "Ctrl+Alt+J"
+
+
+def panel_step(windows: list[int], foreground: int, *, toggle: bool) -> tuple[str, int]:
+    """Что сделать с панелью: открыть, вывести вперёд или свернуть.
+
+    Раньше пункт трея всегда запускал новое окно, и вторая просьба давала вторую
+    панель. Горячая клавиша (просьба владельца 01.10.2026) работает как у
+    выпадающей консоли: второе нажатие прячет. Чистая функция.
+
+    :return: ``("open", 0)``, ``("focus", окно)`` или ``("hide", окно)``.
+    """
+    if not windows:
+        return "open", 0
+    if toggle and foreground in windows:
+        return "hide", foreground
+    return "focus", windows[0]
+
+
 #: Действие переключателя «запускать с Windows».
 AUTOSTART = "autostart"
 
@@ -56,7 +78,7 @@ AUTOSTART = "autostart"
 #: перезапуск отделён от безобидных пунктов: промахнуться по нему дороже всего.
 MENU: tuple[MenuItem | None, ...] = (
     MenuItem("Замолчать", HUSH),
-    MenuItem("Открыть панель", "panel"),
+    MenuItem(f"Открыть панель  {PANEL_HOTKEY}", "panel"),
     MenuItem("Показать лог", "log"),
     MenuItem("Открыть папку Jarvis", "folder"),
     None,

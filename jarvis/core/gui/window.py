@@ -49,6 +49,7 @@ def _user32() -> Any:
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.ShowWindow.argtypes = [handle, ctypes.c_int]
     user32.SetForegroundWindow.argtypes = [handle]
+    user32.GetForegroundWindow.restype = handle
     user32.PostMessageW.argtypes = [handle, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     return user32
 
@@ -92,7 +93,21 @@ def panel_windows() -> list[int]:
 
 
 _SW_RESTORE = 9
+_SW_MINIMIZE = 6
 _WM_CLOSE = 0x0010
+
+
+def foreground_window() -> int:
+    """Окно, которое сейчас впереди; ноль — не узнать."""
+    user32 = _user32()
+    return int(user32.GetForegroundWindow() or 0) if user32 is not None else 0
+
+
+def minimize_window(hwnd: int) -> None:
+    """Свернуть окно."""
+    user32 = _user32()
+    if user32 is not None:
+        user32.ShowWindow(hwnd, _SW_MINIMIZE)
 
 
 def focus_window(hwnd: int) -> None:

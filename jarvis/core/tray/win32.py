@@ -24,7 +24,18 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-from .menu import DEFAULT_ACTION, HUSH, MENU, POPUP_GAP, READY, STARTING, MenuItem, menu_commands
+from .menu import (
+    DEFAULT_ACTION,
+    HUSH,
+    MENU,
+    PANEL_HOTKEY,
+    PANEL_TOGGLE,
+    POPUP_GAP,
+    READY,
+    STARTING,
+    MenuItem,
+    menu_commands,
+)
 from .popup import StyledMenu
 
 logger = logging.getLogger(__name__)
@@ -34,8 +45,10 @@ _WM_DESTROY = 0x0002
 _WM_CLOSE = 0x0010
 _WM_HOTKEY = 0x0312
 _HOTKEY_HUSH = 1
-_MOD_CONTROL, _MOD_SHIFT, _MOD_NOREPEAT = 0x0002, 0x0004, 0x4000
+_HOTKEY_PANEL = 2
+_MOD_ALT, _MOD_CONTROL, _MOD_SHIFT, _MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x4000
 _VK_SPACE = 0x20
+_VK_J = 0x4A
 _WM_CONTEXTMENU = 0x007B
 _WM_LBUTTONDBLCLK = 0x0203
 _WM_RBUTTONUP = 0x0205
@@ -344,6 +357,10 @@ class TrayIcon:
         # остаются меню и слово «стоп», запуск из-за этого не срывается.
         if not user32.RegisterHotKey(hwnd, _HOTKEY_HUSH, _MOD_CONTROL | _MOD_SHIFT | _MOD_NOREPEAT, _VK_SPACE):
             logger.warning("Ctrl+Shift+Пробел занят другой программой — «замолчать» только из меню трея")
+        # Панель одной клавишей (01.10.2026). Ctrl+Shift+J не взят намеренно:
+        # в браузерах это консоль разработчика, отбирать её глобально нельзя.
+        if not user32.RegisterHotKey(hwnd, _HOTKEY_PANEL, _MOD_CONTROL | _MOD_ALT | _MOD_NOREPEAT, _VK_J):
+            logger.warning("%s занят другой программой — панель только из меню трея", PANEL_HOTKEY)
         self._ready.set()
 
         message = wintypes.MSG()
@@ -404,6 +421,9 @@ class TrayIcon:
             if message == _WM_HOTKEY and wparam == _HOTKEY_HUSH:
                 self._fire(HUSH)
                 return 0
+            if message == _WM_HOTKEY and wparam == _HOTKEY_PANEL:
+                self._fire(PANEL_TOGGLE)
+                return 0
             if message == _WM_STATE:
                 self._notify(_NIM_MODIFY)
                 return 0
@@ -412,6 +432,7 @@ class TrayIcon:
                 return 0
             if message == _WM_CLOSE:
                 self._user32.UnregisterHotKey(hwnd, _HOTKEY_HUSH)
+                self._user32.UnregisterHotKey(hwnd, _HOTKEY_PANEL)
                 self._notify(_NIM_DELETE)
                 self._user32.DestroyWindow(hwnd)
                 return 0

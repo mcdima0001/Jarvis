@@ -33,7 +33,7 @@ from jarvis.core.contracts import Event, SystemStarted, SystemStopping
 from jarvis.core.logging.visible import visible_levels
 
 from .autostart import Autostart, AutostartError
-from .menu import AUTOSTART, HUSH, READY, STARTING, STOPPING, tip
+from .menu import AUTOSTART, HUSH, PANEL_TOGGLE, READY, STARTING, STOPPING, panel_step, tip
 
 if TYPE_CHECKING:
     from jarvis.core.app import JarvisApp
@@ -317,6 +317,32 @@ def open_live_log(path: Path, level: str = "INFO") -> None:
         logger.info("Лог в реальном времени: tail -f %s", path)
 
 
+class PanelWindows:
+    """Окна панели глазами Windows. Отдельным классом — чтобы тесты подменяли его целиком."""
+
+    def handles(self) -> list[int]:
+        if sys.platform != "win32":
+            return []
+        from jarvis.core.gui import window
+
+        return window.panel_windows()
+
+    def foreground(self) -> int:
+        from jarvis.core.gui import window
+
+        return window.foreground_window()
+
+    def focus(self, hwnd: int) -> None:
+        from jarvis.core.gui import window
+
+        window.focus_window(hwnd)
+
+    def minimize(self, hwnd: int) -> None:
+        from jarvis.core.gui import window
+
+        window.minimize_window(hwnd)
+
+
 class TraySession:
     """Связка значка с живым приложением.
 
@@ -337,7 +363,10 @@ class TraySession:
         panel: Callable[[str, tuple[int, int, int, int] | None], None] = open_panel,
         autostart: Autostart | None = None,
         notify: Callable[..., None] | None = None,
+        panel_windows: Callable[[], "PanelWindows"] | None = None,
     ) -> None:
+        #: Окна панели: какие открыты, какое впереди, вывести, свернуть.
+        self._panel_windows = panel_windows or PanelWindows
         self._log_file = log_file
         self._autostart = autostart
         self._notify = notify
@@ -411,9 +440,9 @@ class TraySession:
 
     def on_action(self, action: str) -> None:
         """Пункт меню выбран. Зовётся из потока значка."""
-        if action == "panel":
+        if action in ("panel", PANEL_TOGGLE):
             if self.panel_url:
-                self._open_panel(self.panel_url, self._saved_window())
+                self._show_panel(toggle=action == PANEL_TOGGLE)
             else:
                 # Панели нет (выключена или ещё не поднялась) — хотя бы лог.
                 self.on_action("log")
@@ -439,6 +468,18 @@ class TraySession:
                 self._request_stop()
         else:
             logger.warning("Значок в трее: неизвестное действие %s", action)
+
+    def _show_panel(self, *, toggle: bool) -> None:
+        """Открыть панель, вывести открытую вперёд или (клавишей) свернуть."""
+        windows = self._panel_windows()
+        step, hwnd = panel_step(windows.handles(), windows.foreground(), toggle=toggle)
+        if step == "open":
+            assert self.panel_url is not None
+            self._open_panel(self.panel_url, self._saved_window())
+        elif step == "focus":
+            windows.focus(hwnd)
+        else:
+            windows.minimize(hwnd)
 
     def _toggle_autostart(self) -> None:
         """Переключить автозапуск и сказать, что вышло: галочку в меню видно не сразу."""
