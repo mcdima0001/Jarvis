@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Callable
 
 from jarvis.core.bus import EventBus
 from jarvis.core.contracts import AssistantReplied, Intent, ToolResult, Utterance
@@ -48,7 +50,14 @@ _HYPOTHESIS_SKIPS = frozenset({"llm", "fallback"})
 #: её догадку ниже всё равно отбросили бы. 30.09.2026, 21:52: «Всё же лучше, чем
 #: ничего» из аниме ушло в модель, три секунды ожидания дали «Минуту», а потом
 #: ответа не было вовсе. Плюс четыре тысячи токенов впустую.
-_UNNAMED_SKIPS = frozenset({"llm"})
+#:
+#: И не только модель: без имени выполняется лишь узнанное шаблоном или
+#: выученным (аудит 01.10.2026). `plan` отдаёт фразу в ту же модель с правом
+#: действовать, `verbatim` печатает её в активное окно, а `alias`, `loose` и
+#: `similar` угадывают по похожести — строчка песни «Набери мой номер»
+#: впечатывалась в открытую игру. Окна ответа это не касается: сказанное в нём
+#: после «Джарвис» или после вопроса приходит с именем (`Utterance.named`).
+_UNNAMED_SKIPS = frozenset({"llm", "plan", "verbatim", "alias", "loose", "similar"})
 
 _NOT_UNDERSTOOD = {
     "ru": "Не понял команду. Повтори, пожалуйста, другими словами.",
@@ -57,8 +66,13 @@ _NOT_UNDERSTOOD = {
 
 #: «Попробуй ещё раз»: повторяет прошлую реплику диспетчер, а не сам инструмент.
 REPEAT_TOOL = "core.repeat"
+#: Сколько секунд прошлая команда считается той, которую просят повторить.
+#: «Ещё раз» через полчаса — это уже не про неё: повторится забытое.
+REPEAT_WINDOW_S = 120.0
 #: Свободный разговор. Реплике без имени он не положен (см. `Utterance.named`).
 CHAT_TOOL = "core.chat"
+#: Фоновое поручение: агентный цикл на минуты и за деньги — без имени не берём.
+LATER_TOOL = "core.later"
 #: Резолвер модели: его догадке реплика без имени не доверяется.
 LLM_RESOLVER = "llm"
 #: Агентный цикл: туда уходит угаданное, не сошедшееся с просьбой.
@@ -70,6 +84,22 @@ _DROPPED = {
     "ru": ("Хорошо, отменил.", "Понял, не делаю.", "Как скажешь."),
     "en": ("All right, cancelled.", "Understood, skipping it."),
 }
+
+_NOTHING_TO_REPEAT = {"ru": "Повторять пока нечего.", "en": "There's nothing to repeat yet."}
+
+
+@dataclass(frozen=True, slots=True)
+class _Said:
+    """Команда, которую можно повторить: как сказана, откуда и когда.
+
+    Отдельно от обстановки (`Situation.last`), потому что задачи разные: модели
+    хватает начала просьбы и одной на всех, а повтору нужен текст целиком и
+    своя команда у каждого входа.
+    """
+
+    text: str
+    named: bool
+    at: float
 
 
 class Dispatcher:
@@ -101,6 +131,13 @@ class Dispatcher:
         #: диспетчер — единственный, через кого проходит **каждая** реплика,
         #: откуда бы она ни пришла.
         self._pending: Pending | None = None
+        #: Кому сказать, что вопрос снят без согласия. План держит под вопрос
+        #: прерванную работу и разрешённый шаг; не узнай он об отказе, «нет»
+        #: отменяло бы только реплику, а шаг ждал бы следующего вызова плана.
+        self._drop_listeners: list[Callable[[Pending], None]] = []
+        #: Что повторит «попробуй ещё раз» — своё у каждого входа: набранный в
+        #: чате триггер не должен подменять собой сорвавшуюся голосовую команду.
+        self._again: dict[str, _Said] = {}
 
     async def forget_unknown(self) -> tuple[str, ...]:
         """Вычистить выученное, ведущее на исчезнувшие инструменты.
@@ -112,10 +149,22 @@ class Dispatcher:
             return ()
         return await self._learner.forget_unknown()
 
-    def _remember(self, utterance: Utterance, tool: str, ok: bool) -> None:
-        """Отметить команду в обстановке для следующего разбора."""
-        if self._situation is not None:
-            self._situation.command(utterance.text, tool=tool, ok=ok)
+    def _remember(self, utterance: Utterance, tool: str, ok: bool, *, answer: bool = False) -> None:
+        """Отметить команду в обстановке для следующего разбора.
+
+        :param answer: реплика — ответ на вопрос («да», «второй»). Командой она
+            не была: в обстановке остаётся текст просьбы, а исход — того, что
+            по ней сделали, и повторять «попробуй ещё раз» будет просьбу.
+            Иначе повтор сорвавшейся отправки прогонял слово «да» в разговор.
+        """
+        if not answer:
+            self._again[utterance.source] = _Said(
+                text=utterance.text, named=utterance.named, at=time.monotonic()
+            )
+        if self._situation is None:
+            return
+        asked = self._situation.last if answer else None
+        self._situation.command(asked.text if asked else utterance.text, tool=tool, ok=ok)
 
     def _split(self, utterance: Utterance) -> list[Utterance]:
         """Разрезать реплику по союзу на отдельные команды.
@@ -228,7 +277,52 @@ class Dispatcher:
         Срок годности у вопроса по стенным часам, поэтому протухший вернётся
         протухшим и ответ на него ничего не выполнит.
         """
-        self._pending = question
+        self._replace(question)
+
+    def on_drop(self, listener: Callable[[Pending], None]) -> None:
+        """Подписаться на снятие вопроса без согласия.
+
+        Снятием считается всё, кроме «да» и выбора варианта: отказ, «стоп»,
+        протухание, реплика, которая не ответ, — с любого входа. Слушатель
+        получает снятый вопрос и сам решает, его ли это вопрос.
+        """
+        self._drop_listeners.append(listener)
+
+    def _drop(self, question: Pending) -> None:
+        """Сообщить подписчикам, что на этот вопрос «да» уже не придёт."""
+        for listener in self._drop_listeners:
+            try:
+                listener(question)
+            except Exception:
+                logger.exception("Подписчик на снятие вопроса упал")
+
+    def _replace(self, question: Pending | None) -> None:
+        """Поставить новый вопрос на место прежнего; прежний снимается."""
+        previous, self._pending = self._pending, question
+        if previous is not None and previous is not question:
+            self._drop(previous)
+
+    def decline(self, utterance: Utterance) -> ToolResult | None:
+        """Снять заданный вопрос отказом, не разбирая реплику.
+
+        Для «стоп» и «хватит», сказанных в ответ на «Отправить маме?»: конвейер
+        перехватывает их как просьбу замолчать, но на вопрос это ещё и «нет».
+        Без этого вопрос висел полторы минуты с открытым окном ответа, и любое
+        «да» в комнате выполняло то, от чего владелец только что отказался
+        (аудит 01.10.2026).
+
+        :return: отказ, если было что отклонять; ``None`` — вопроса нет.
+        """
+        question = self._pending
+        if question is None:
+            return None
+        self._replace(None)
+        if not question.alive():
+            logger.info("Вопрос про %s протух, отклонять нечего", question.intent.tool)
+            return None
+        logger.info("Владелец отказался от %s словом %r", question.intent.tool, utterance.text)
+        value = {"chosen": None} if question.choices else {"confirmed": False, "tool": question.intent.tool}
+        return self._voiced(utterance, ToolResult.success(value, speech=_DROPPED))
 
     async def _settle(self, utterance: Utterance) -> ToolResult | None:
         """Прочитать реплику как ответ на заданный вопрос.
@@ -238,7 +332,9 @@ class Dispatcher:
 
         **Вопрос снимается в любом случае**, даже если ответом реплика не
         оказалась. Висящий вопрос опаснее забытого: сказанное через минуту «да»
-        по другому поводу выполнило бы то, о чём никто уже не помнит.
+        по другому поводу выполнило бы то, о чём никто уже не помнит. Снятие
+        без согласия сообщается подписчикам (`on_drop`), согласие — нет: его
+        исполняет сам вопрос.
         """
         question = self._pending
         if question is None:
@@ -247,27 +343,32 @@ class Dispatcher:
 
         if not question.alive():
             logger.info("Вопрос про %s протух, ответа не жду", question.intent.tool)
+            self._drop(question)
             return None
 
         if question.choices:
             chosen = pick(utterance.text, len(question.choices))
             if chosen is None:
                 logger.info("Реплика %r не выбор — снимаю вопрос", utterance.text)
+                self._drop(question)
                 return None
             if chosen is False:
                 logger.info("Владелец не выбрал ничего")
+                self._drop(question)
                 return ToolResult.success({"chosen": None}, speech=_DROPPED)
             intent = question.choices[chosen]
             logger.info("Владелец выбрал %d: %s", chosen + 1, intent.tool)
-            return await self._call(utterance, intent)
+            return await self._call(utterance, intent, answer=True)
 
         said = answer(utterance.text)
         if said is None:
             logger.info("Реплика %r не ответ — снимаю вопрос", utterance.text)
+            self._drop(question)
             return None
 
         if not said:
             logger.info("Владелец отказался от %s", question.intent.tool)
+            self._drop(question)
             return ToolResult.success(
                 {"confirmed": False, "tool": question.intent.tool}, speech=_DROPPED
             )
@@ -275,43 +376,45 @@ class Dispatcher:
         # Согласие и есть разрешение: дальше всё идёт ровно так же, как если бы
         # эту команду сказали вслух с самого начала.
         logger.info("Владелец подтвердил %s", question.intent.tool)
-        return await self._call(utterance, question.intent)
+        return await self._call(utterance, question.intent, answer=True)
 
     def _note_question(self, utterance: Utterance, result: ToolResult) -> None:
         """Запомнить вопрос, если инструмент его задал."""
         if result.choices:
-            self._pending = Pending.about(
+            self._replace(Pending.about(
                 result.choices[0].intent,
                 question=result.speech_for(utterance.language) or "",
                 language=utterance.language or "ru",
                 choices=tuple(choice.intent for choice in result.choices),
-            )
+            ))
             logger.info("Жду выбора из %d вариантов", len(result.choices))
             return
         if result.confirm is None:
             return
-        self._pending = Pending.about(
+        self._replace(Pending.about(
             result.confirm,
             question=result.speech_for(utterance.language) or "",
             language=utterance.language or "ru",
-        )
+        ))
         logger.info("Жду подтверждения на %s", result.confirm.tool)
 
-    async def _call(self, utterance: Utterance, intent: Intent) -> ToolResult:
+    async def _call(self, utterance: Utterance, intent: Intent, *, answer: bool = False) -> ToolResult:
         """Выполнить намерение и разобраться с последствиями.
 
         Общее место для обычного разбора и для подтверждённого шага: иначе
         «запомнить вопрос» и «отметить команду в обстановке» пришлось бы писать
         дважды, и однажды они разъехались бы.
+
+        :param answer: намерение пришло ответом на вопрос, а не командой.
         """
         try:
             result = await self._registry.invoke(intent.tool, intent.arguments)
         except ToolNotFound as exc:
             logger.error("Роутер выбрал несуществующий инструмент: %s", exc)
-            self._remember(utterance, intent.tool, False)
+            self._remember(utterance, intent.tool, False, answer=answer)
             return ToolResult.failure(str(exc), tool=intent.tool, speech=_NOT_UNDERSTOOD)
 
-        self._remember(utterance, intent.tool, result.ok)
+        self._remember(utterance, intent.tool, result.ok, answer=answer)
         self._note_question(utterance, result)
         return result
 
@@ -321,7 +424,9 @@ class Dispatcher:
         if settled is not None:
             return self._voiced(utterance, settled)
 
-        chain = await self._chain(utterance)
+        # Цепочку без имени не режем: каждая половина узнаётся и нечёткими
+        # резолверами, а их догадке реплика без имени не доверяется.
+        chain = await self._chain(utterance) if utterance.named else None
         if chain is not None:
             return await self._run_chain(utterance, chain)
 
@@ -338,24 +443,32 @@ class Dispatcher:
                 speech=_NOT_UNDERSTOOD,
             )
 
-        if intent.tool == REPEAT_TOOL:
-            return await self._repeat(utterance)
-
         # Имени в тексте нет, детектор услышал его посреди фразы, и командой она
         # не оказалась. Разметка 14.09.2026: так прошли «Алесса, люблю тебя» и
         # «Перестин, скорей, перчим»; из настоящих — одно исковерканное «как дела».
-        # Команды без имени по-прежнему выполняются: «Реза откройфанель» — это
-        # «Джарвис, открой панель».
+        # Команды без имени по-прежнему выполняются, если их узнал шаблон или
+        # выученное.
         if not utterance.named and intent.tool == CHAT_TOOL:
             logger.info("Без имени, и это не команда — не отвечаю: %r", utterance.text)
             return ToolResult.success({"ignored": "без имени в свободный разговор"}, tool="")
         # То же, но разобранное моделью: к любой болтовне она подберёт инструмент.
         # Разметка 15.09.2026: «Тут реально есть другой десктоп, покинь» и
-        # «Channel» ушли в план и справку. Без имени выполняется только то, что
-        # узнано шаблоном или выученным, — исковерканное «добавь басов» проходит.
+        # «Channel» ушли в план и справку. Модель для такой реплики теперь и не
+        # спрашивают (`_UNNAMED_SKIPS`); проверка осталась на случай, если
+        # резолвер модели назовут иначе в конфиге.
         if not utterance.named and intent.resolver == LLM_RESOLVER:
             logger.info("Без имени, и команду угадывала модель — не отвечаю: %r", utterance.text)
             return ToolResult.success({"ignored": "без имени, разобрано моделью"}, tool="")
+        # «Давай ещё раз» из песни повторило бы прошлую команду, «займись …» из
+        # сериала запустило бы агентный цикл на минуты (аудит 01.10.2026): оба
+        # узнаются шаблоном, но сами по себе ничего не значат — только как
+        # обращение к ассистенту.
+        if not utterance.named and intent.tool in (REPEAT_TOOL, LATER_TOOL):
+            logger.info("Без имени, а это повтор или поручение — не выполняю: %r", utterance.text)
+            return ToolResult.success({"ignored": "без имени, повтор или поручение"}, tool="")
+
+        if intent.tool == REPEAT_TOOL:
+            return await self._repeat(utterance)
 
         watched = self._watched(intent)
         before = await self._checker.snapshot() if watched and self._checker else ""
@@ -415,6 +528,10 @@ class Dispatcher:
             planned = await self._registry.invoke(
                 PLAN_TOOL, {"goal": goal, "language": utterance.language}
             )
+            # План мог упереться в необратимое и спросить «Делать?»: вопрос
+            # запоминается так же, как на обычном пути, иначе «да» ушло бы в
+            # роутер новой командой и цель брошена (аудит 01.10.2026).
+            self._note_question(utterance, planned)
             return planned, False
         return ToolResult.failure(
             f"проверка не подтвердила: {verdict.reason}",
@@ -431,16 +548,28 @@ class Dispatcher:
         Сам повтор в обстановку не пишется: иначе второе «попробуй ещё раз»
         повторяло бы само себя. Повторяется текст, а не намерение: если прошлый
         разбор был неверным, у второго есть шанс оказаться правильным.
+
+        Повторяется **своя** команда этого входа, целиком и только недавняя
+        (аудит 01.10.2026): раньше бралась последняя реплика с любого входа,
+        обрезанная до 80 знаков для подсказки модели, — и голосовое «ещё раз»
+        повторяло набранный в чате курс рубля, а длинное сообщение уходило без
+        хвоста. Ответы на вопросы сюда не попадают вовсе (`_remember`).
         """
-        last = self._situation.last if self._situation is not None else None
+        last = self._again.get(utterance.source)
         if last is None or not last.text:
+            return ToolResult.failure("повторять нечего", tool=REPEAT_TOOL, speech=_NOTHING_TO_REPEAT)
+        if time.monotonic() - last.at > REPEAT_WINDOW_S:
+            logger.info("Прошлая команда %r давняя — не повторяю", last.text)
             return ToolResult.failure(
-                "повторять нечего", tool=REPEAT_TOOL,
-                speech={"ru": "Повторять пока нечего.", "en": "There's nothing to repeat yet."},
+                "прошлая команда давняя", tool=REPEAT_TOOL,
+                speech={
+                    "ru": "Прошлая команда была давно. Скажи её ещё раз, пожалуйста.",
+                    "en": "That was a while ago. Please say the command again.",
+                },
             )
         logger.info("Повторяю прошлую команду: %r", last.text)
         return await self.handle(
-            Utterance(text=last.text, language=utterance.language, source=utterance.source)
+            Utterance(text=last.text, language=utterance.language, source=utterance.source, named=last.named)
         )
 
     def _voiced(self, utterance: Utterance, result: ToolResult) -> ToolResult:

@@ -421,14 +421,75 @@ async def test_confirmed_step_continues_the_plan(
     asked = await registry.invoke("core.plan", {"goal": goal})
 
     assert asked.confirm is not None
-    assert asked.confirm.tool == "core.plan", "согласие обязано вернуть в план"
-    assert asked.confirm.arguments == {"goal": goal}
+    assert asked.confirm.tool == "core.resume", "согласие обязано вернуть в план"
+    assert asked.confirm.arguments["goal"] == goal
     assert skill.calls == [], "необратимый шаг сделали, не спросив"
 
-    done = await registry.invoke("core.plan", {"goal": goal})
+    done = await registry.invoke(asked.confirm.tool, dict(asked.confirm.arguments))
 
     assert skill.calls == ["send_message", "louder"], "план не продолжился"
     assert done.ok
+
+
+def _core(registry: ToolRegistry, script: Sequence[Any]) -> Any:
+    """Инструменты ядра поверх сценария: настоящие `core.plan` и `core.resume`."""
+    from jarvis.core.builtin import CoreTools
+
+    core = CoreTools(
+        llm=_service(ScriptedProvider(script)),
+        memory=None,  # type: ignore[arg-type]
+        registry=registry,
+        skills=None,  # type: ignore[arg-type]
+    )
+    for item in collect_tools(core, namespace="core"):
+        registry.register(item)
+    return core
+
+
+async def test_the_same_request_again_is_asked_again_not_done(
+    studio: tuple[Studio, ToolRegistry]
+) -> None:
+    """«Нет», и та же просьба ещё раз — снова вопрос, а не отправка (аудит 01.10.2026).
+
+    Прерванный план продолжался по совпадению цели: модель пишет её дословно,
+    и повтор просьбы после отказа исполнял отвергнутый шаг без вопроса.
+    Продолжает только метка согласия, которую несёт сам вопрос.
+    """
+    skill, registry = studio
+    _core(registry, [("studio.send_message", {"text": "неверный текст"}),
+                     ("studio.send_message", {"text": "неверный текст"})])
+    goal = "напиши маме"
+
+    first = await registry.invoke("core.plan", {"goal": goal})
+    again = await registry.invoke("core.plan", {"goal": goal})
+
+    assert skill.calls == [], "отвергнутый шаг выполнился без вопроса"
+    assert first.confirm is not None and again.confirm is not None, "та же просьба — тот же вопрос"
+
+
+async def test_a_forged_or_old_consent_continues_nothing(
+    studio: tuple[Studio, ToolRegistry]
+) -> None:
+    """Метка чужая или от снятого вопроса — разрешённого шага нет, план начинается заново."""
+    skill, registry = studio
+    core = _core(registry, [("studio.send_message", {"text": "привет"}),
+                            ("studio.send_message", {"text": "привет"}),
+                            ("studio.send_message", {"text": "привет"})])
+    goal = "напиши маме"
+
+    asked = await registry.invoke("core.plan", {"goal": goal})
+    assert asked.confirm is not None
+    forged = {**asked.confirm.arguments, "consent": "подделка"}
+    await registry.invoke("core.resume", forged)
+    assert skill.calls == [], "по чужой метке выполнился шаг"
+
+    asked = await registry.invoke("core.plan", {"goal": goal})
+    assert asked.confirm is not None
+    from jarvis.core.pending import Pending
+
+    core.withdraw(Pending.about(asked.confirm))
+    await registry.invoke(asked.confirm.tool, dict(asked.confirm.arguments))
+    assert skill.calls == [], "снятый вопрос всё ещё разрешал шаг"
 
 
 async def test_plan_does_not_resume_someone_elses_goal(

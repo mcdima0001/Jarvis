@@ -428,6 +428,169 @@ async def test_unnamed_phrase_is_not_trusted_to_model_guess(lights_registry: Too
     assert (await dispatcher.handle(Utterance(text="сделай светло"))).speech == "Свет включён."
 
 
+class Errands:
+    """Запоминающие инструменты: что вызвали и с чем."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    @tool(phrases=["напиши маме"], reversible=True)
+    async def compose(self) -> ToolResult:
+        """Собрать сообщение и спросить."""
+        self.calls.append("compose")
+        return ToolResult.asking(Intent(tool="errands.send"), question="Отправить маме?")
+
+    @tool(reversible=False)
+    async def send(self) -> ToolResult:
+        """Отправить — и сорваться: сеть пропала."""
+        self.calls.append("send")
+        return ToolResult.failure("сеть пропала")
+
+    @tool(phrases=["отметь {text}"], reversible=True)
+    async def mark(self, text: str) -> ToolResult:
+        """Отметить.
+
+        :param text: что отметить.
+        """
+        self.calls.append(f"mark:{text}")
+        return ToolResult.success(text, speech="Отметил.")
+
+
+class Later:
+    """Фоновое поручение ядра — `core.later` под своим настоящим именем."""
+
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    @tool(name="later", phrases=["займись {goal}"], reversible=False)
+    async def later(self, goal: str) -> ToolResult:
+        """Взяться за дело в фоне.
+
+        :param goal: что сделать.
+        """
+        self.calls.append(f"later:{goal}")
+        return ToolResult.success(goal, speech="Займусь и доложу.")
+
+
+def _errands(registry: ToolRegistry) -> tuple[Dispatcher, Errands]:
+    errands = Errands()
+    for item in collect_tools(errands, namespace="errands"):
+        registry.register(item)
+    for item in collect_tools(Later(errands.calls), namespace="core"):
+        registry.register(item)
+    dispatcher, _ = _dispatcher(registry)
+    return dispatcher, errands
+
+
+async def test_try_again_does_not_repeat_an_answer(lights_registry: ToolRegistry) -> None:
+    """Сорвалась подтверждённая отправка — «попробуй ещё раз» повторяет просьбу, а не «да».
+
+    Повтор «да» без вопроса уходил в платный разговор о слове «да» (аудит
+    01.10.2026). Повтор просьбы снова спрашивает: отправка не уходит молча.
+    """
+    dispatcher, errands = _errands(lights_registry)
+    await dispatcher.handle_text("напиши маме")
+    await dispatcher.handle_text("да")
+    assert errands.calls == ["compose", "send"]
+
+    again = await dispatcher.handle_text("попробуй ещё раз")
+
+    assert errands.calls == ["compose", "send", "compose"]
+    assert again.confirm is not None, "повтор снова спрашивает"
+
+
+async def test_try_again_repeats_its_own_input(lights_registry: ToolRegistry) -> None:
+    """Между командой и «ещё раз» сработал набранный в чате триггер — повторяется голос."""
+    dispatcher, errands = _errands(lights_registry)
+    await dispatcher.handle(Utterance(text="зажги свет", source="voice"))
+    await dispatcher.handle(Utterance(text="отметь курс рубля", source="keyboard"))
+
+    again = await dispatcher.handle(Utterance(text="попробуй ещё раз", source="voice"))
+
+    assert again.speech == "Свет включён."
+    assert errands.calls == ["mark:курс рубля"]
+
+
+async def test_try_again_repeats_the_whole_text(lights_registry: ToolRegistry) -> None:
+    """Длинная просьба повторяется целиком: хвост «и купи хлеба» терялся на 80 знаках."""
+    dispatcher, errands = _errands(lights_registry)
+    text = "отметь что я задержусь на полчаса потому что пробка на Ленинском проспекте и купи хлеба"
+    await dispatcher.handle_text(text)
+
+    await dispatcher.handle_text("попробуй ещё раз")
+
+    assert errands.calls == [f"mark:{text[len('отметь '):]}"] * 2
+
+
+async def test_try_again_repeats_only_a_recent_command(
+    lights_registry: ToolRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Ещё раз» через полчаса — это уже не про ту команду."""
+    import jarvis.core.router.dispatcher as module
+
+    dispatcher, errands = _errands(lights_registry)
+    await dispatcher.handle_text("отметь хлеб")
+    monkeypatch.setattr(module, "REPEAT_WINDOW_S", 0.0)
+
+    again = await dispatcher.handle_text("попробуй ещё раз")
+
+    assert errands.calls == ["mark:хлеб"]
+    assert not again.ok and again.speech_for("ru")
+
+
+async def test_unnamed_phrase_neither_repeats_nor_starts_errands(lights_registry: ToolRegistry) -> None:
+    """«Давай ещё раз» из песни и «займись …» из сериала — без имени не выполняются."""
+    dispatcher, errands = _errands(lights_registry)
+    await dispatcher.handle_text("отметь хлеб")
+
+    repeat = await dispatcher.handle(Utterance(text="попробуй ещё раз", named=False))
+    later = await dispatcher.handle(Utterance(text="займись своими делами", named=False))
+
+    assert errands.calls == ["mark:хлеб"]
+    assert repeat.value and later.value and "ignored" in repeat.value and "ignored" in later.value
+
+
+class _Lenient:
+    """Резолвер с чужим именем, который любую фразу считает включением света."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.asked = 0
+
+    async def resolve(self, utterance: Utterance) -> Intent | None:
+        self.asked += 1
+        return Intent(tool="lights.on", confidence=0.9)
+
+
+async def test_unnamed_phrase_is_recognised_only_by_templates(lights_registry: ToolRegistry) -> None:
+    """Без имени выполняется только узнанное шаблоном или выученным (аудит 01.10.2026).
+
+    План, диктовка и нечёткие резолверы угадывают — и строчка песни «Набери мой
+    номер» впечатывалась в открытое окно, а «где это» отправляло снимок экрана.
+    """
+    guessers = [_Lenient(name) for name in ("plan", "alias", "verbatim", "loose", "similar")]
+    router = Router([*guessers, PhraseResolver(lights_registry)], threshold=0.6)
+    dispatcher = Dispatcher(router=router, registry=lights_registry)
+
+    ignored = await dispatcher.handle(Utterance(text="набери мой номер", named=False))
+    command = await dispatcher.handle(Utterance(text="зажги свет", named=False))
+
+    assert ignored.value == {"ignored": "без имени, не узнано"}
+    assert command.speech == "Свет включён."
+    assert all(guesser.asked == 0 for guesser in guessers)
+    assert (await dispatcher.handle(Utterance(text="набери мой номер"))).speech == "Свет включён."
+
+
+async def test_unnamed_phrase_is_not_split_into_a_chain(lights_registry: ToolRegistry) -> None:
+    """«Зажги свет и отметь хлеб» без имени — не две команды, а чужая речь."""
+    dispatcher, errands = _errands(lights_registry)
+
+    ignored = await dispatcher.handle(Utterance(text="зажги свет и отметь хлеб", named=False))
+
+    assert errands.calls == []
+    assert ignored.value and "ignored" in ignored.value
+
+
 class _Retelling(_Refusing):
     """Модель выбирает разговор, но вписывает в него свой пересказ."""
 

@@ -106,6 +106,19 @@ def is_hush(text: str) -> bool:
     }
 
 
+def keep_question(heard: str, command: str) -> str:
+    """Вернуть команде вопросительный знак, срезанный вместе с именем.
+
+    «Точно?» в ответ на «Отправить маме?» — переспрос, а не согласие, и
+    различить их можно только по знаку (`pending.answer`). Распознавание и
+    поле ввода его сохраняют, а отделение имени чистит хвостовую пунктуацию
+    целиком — и переспрос отправлял сообщение (аудит 01.10.2026).
+    """
+    if command and heard.rstrip().endswith("?") and not command.endswith("?"):
+        return f"{command}?"
+    return command
+
+
 def level_db(data: bytes) -> float:
     """Громкость куска PCM в дБ от полной шкалы; тишина — -120."""
     count = len(data) // 2
@@ -243,6 +256,10 @@ class VoicePipeline:
         #: поднимал модель — просто позже и молча, уже после ответа.
         self.silent = False
         self._follow_up_until = 0.0
+        #: До какого момента окно открыто **под вопрос** (`_await_answer`); ноль —
+        #: не под вопрос. Снят вопрос — закрывается и окно: иначе после ответа в
+        #: панели полторы минуты любая речь в комнате шла бы командой без имени.
+        self._question_until = 0.0
         #: Когда детектор услышал имя, открывшее окно. Нужно, чтобы отличить
         #: имя в начале фразы от «имени», пойманного посреди песни (`LATE_NAME_S`).
         self._name_heard_at = 0.0
@@ -408,11 +425,14 @@ class VoicePipeline:
         роутер как «включи свет».
         """
         _, command = self._strip_wake(utterance.text)
+        command = keep_question(utterance.text, command)
         if is_hush(command):
             # Мимо роутера и мимо очереди голоса: пока ответ звучит, голос
             # занят, и просьба замолчать дождалась бы конца того, что обрывает.
             self.interrupt()
-            return ToolResult.success({"hushed": True}, tool="")
+            return await self._hushed(
+                Utterance(text=command, language=utterance.language, source=utterance.source)
+            )
         if command != utterance.text:
             utterance = Utterance(
                 text=command,
@@ -433,6 +453,11 @@ class VoicePipeline:
             result = await self._run(utterance)
         finally:
             LIVE_SPEECH.reset(live)
+        if self._dispatcher.awaiting is None:
+            # Вопроса больше нет — ответили на него или сбили другим входом
+            # (набранный в чате «курс рубля» тоже реплика), — и окно без имени,
+            # открытое под него, закрывается вместе с ним.
+            self._close_question_window()
         # Диспетчер решил, что это было не к нам (слова из песни, чужой разговор):
         # молчим совсем — «Готово» в ответ на «люблю тебя» хуже тишины.
         if isinstance(result.value, dict) and result.value.get("ignored"):
@@ -482,7 +507,43 @@ class VoicePipeline:
         self._follow_up_until = max(
             self._follow_up_until, self._mute_until + PENDING_TTL
         )
+        self._question_until = self._follow_up_until
         logger.info("Задал вопрос, жду ответа без имени %.0f с", PENDING_TTL)
+
+    def _close_question_window(self) -> None:
+        """Закрыть окно, открытое под вопрос, если оно ещё то самое.
+
+        Сверяется момент, а не флаг: окно могли уже закрыть или открыть заново
+        другим путём — голым «Джарвис» с его десятью секундами, — и такое
+        чужое окно здесь не трогается.
+        """
+        if self._question_until and self._follow_up_until == self._question_until:
+            self._follow_up_until = 0.0
+        self._question_until = 0.0
+
+    async def _hushed(self, utterance: Utterance) -> ToolResult:
+        """«Стоп»: замолчать, закрыть окно ответа, а на заданный вопрос — «нет».
+
+        «Стоп» и «хватит» — ещё и слова отказа, а перехват мимо диспетчера
+        оставлял вопрос висеть полторы минуты с открытым окном без имени: любое
+        «да» в комнате выполняло то, от чего владелец только что отказался
+        (аудит 01.10.2026). Поэтому есть вопрос — диспетчер снимает его отказом,
+        и отказ звучит: короткое «отменил» — единственное, что подтверждает, что
+        отправки не будет. Нет вопроса — просто тишина.
+        """
+        self._follow_up_until = 0.0
+        self._question_until = 0.0
+        declined = self._dispatcher.decline(utterance)
+        if declined is None:
+            return ToolResult.success({"hushed": True}, tool="")
+        self._conversation.said(utterance.text)
+        reply = self._persona.choose(
+            declined.tool or "tool", declined.speech_options(utterance.language), utterance.language
+        )
+        if reply:
+            await self._say(reply, language=utterance.language)
+            self._conversation.replied(reply)
+        return declined
 
     async def _run(self, utterance: Utterance) -> ToolResult:
         """Выполнить команду, а если она затянулась — сказать, что работаем.

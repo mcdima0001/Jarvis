@@ -11,7 +11,7 @@ import time
 
 from jarvis.core.bus import LocalEventBus
 from jarvis.core.contracts import Intent, ToolResult, Utterance
-from jarvis.core.pending import TTL, Pending, answer
+from jarvis.core.pending import TTL, Pending, answer, pick
 from jarvis.core.router import Dispatcher, PhraseResolver, Router
 from jarvis.core.tools import ToolRegistry, collect_tools, tool
 
@@ -108,6 +108,51 @@ def test_a_command_is_never_mistaken_for_an_answer() -> None:
 def test_long_reply_is_not_an_answer() -> None:
     """На «да или нет» пятью словами не отвечают, а командуют — запросто."""
     assert answer("да да да да да да да") is None
+
+
+def test_asking_back_is_not_agreement() -> None:
+    """«Точно?» — это переспрос, а не «да» (аудит 01.10.2026).
+
+    Распознавание вопросительный знак сохраняет (`smart_format`), а разбор по
+    словам его терял: «Точно?», «Да?», «Верно?» отправляли сообщение.
+    """
+    for word in ("Точно?", "Да?", "Верно?", "Правда?", "Хорошо?", "Сделай?", "Right?", "ok?"):
+        assert answer(word) is not True, word
+    # Отрицание в вопросе остаётся отказом: перекос в сторону «нет» прежний.
+    assert answer("не надо?") is False
+
+
+def test_doubt_and_understanding_are_not_agreement() -> None:
+    """«Ясно» — понял, «да ладно» — не верю, «ну да» — сомнение; ни одно не «делай»."""
+    for word in ("ясно", "понятно", "да ладно", "Да ладно?!", "ну да", "ну да, конечно"):
+        assert answer(word) is not True, word
+
+
+def test_natural_agreement_is_understood() -> None:
+    """Самое естественное «да, пожалуйста» срывало отправку (аудит 01.10.2026)."""
+    for word in (
+        "да, пожалуйста", "да, отправь", "да, делай", "ну давай", "давай, отправляй",
+        "конечно", "конечно да", "так точно", "yes please", "do it", "go ahead",
+    ):
+        assert answer(word) is True, word
+
+
+def test_filler_alone_is_not_agreement() -> None:
+    """Вежливое или служебное слово без самого «да» согласием не становится."""
+    for word in ("ну", "пожалуйста", "please", "it", "ну пожалуйста", "так"):
+        assert answer(word) is None, word
+
+
+def test_hush_words_refuse() -> None:
+    """«Хватит» и «enough» в ответ на «Делать?» — это «нет», а не посторонняя реплика."""
+    assert answer("хватит") is False
+    assert answer("enough") is False
+
+
+def test_polite_pick_is_still_a_pick() -> None:
+    """«Второй, пожалуйста» — выбор второго, а не «не ответ»."""
+    assert pick("второй, пожалуйста", 2) == 1
+    assert pick("номер три please", 3) == 2
 
 
 def test_question_has_a_shelf_life() -> None:
@@ -213,3 +258,66 @@ async def test_question_breaks_a_chain(events: LocalEventBus) -> None:
     assert result.confirm is not None
     assert dispatcher.awaiting is not None
     assert not skill.sent
+
+
+# --- отказ отменяет необратимое (аудит 01.10.2026) ---------------------------
+
+
+async def test_asking_back_sends_nothing(events: LocalEventBus) -> None:
+    """«Отправить маме?» — «Точно?» — сообщение не уходит ни сейчас, ни на «да» потом.
+
+    Переспрос снимает вопрос, как любая реплика, которая не ответ: следующее
+    «да» уже не к чему относить.
+    """
+    skill, dispatcher = _dispatcher(events)
+
+    await dispatcher.handle(_said("напиши маме"))
+    await dispatcher.handle(_said("Точно?"))
+    assert dispatcher.awaiting is None
+    await dispatcher.handle(_said("да"))
+
+    assert skill.sent == []
+
+
+async def test_decline_drops_the_question_as_a_refusal(events: LocalEventBus) -> None:
+    """«Стоп» конвейер отдаёт диспетчеру как отказ: вопрос снят, «да» потом — не ответ."""
+    skill, dispatcher = _dispatcher(events)
+
+    await dispatcher.handle(_said("напиши маме"))
+    declined = dispatcher.decline(_said("стоп"))
+
+    assert declined is not None and declined.value == {"confirmed": False, "tool": "studio.send"}
+    assert declined.speech_for("ru"), "отказ подтверждается вслух"
+    assert dispatcher.awaiting is None
+    await dispatcher.handle(_said("да"))
+    assert skill.sent == []
+    assert dispatcher.decline(_said("стоп")) is None, "без вопроса отклонять нечего"
+
+
+async def test_whoever_asked_hears_that_the_question_is_gone(events: LocalEventBus) -> None:
+    """Снятый без согласия вопрос — повод забыть то, что под него держали.
+
+    План держит прерванную работу до ответа. Узнай он об отказе только по
+    следующему своему вызову, «нет» не отменяло бы разрешённый было шаг.
+    """
+    skill, dispatcher = _dispatcher(events)
+    dropped: list[str] = []
+    dispatcher.on_drop(lambda question: dropped.append(question.intent.tool))
+
+    await dispatcher.handle(_said("напиши маме"))
+    await dispatcher.handle(_said("нет"))
+    await dispatcher.handle(_said("напиши маме"))
+    await dispatcher.handle(_said("включи свет"))
+    await dispatcher.handle(_said("напиши маме"))
+    dispatcher.decline(_said("стоп"))
+    await dispatcher.handle(_said("напиши маме"))
+    stale = dispatcher.awaiting
+    assert stale is not None
+    dispatcher._pending = Pending(intent=stale.intent, until=time.time() - 1)
+    await dispatcher.handle(_said("да"))
+    assert dropped == ["studio.send"] * 4, "отказ, посторонняя реплика, «стоп» и протухание"
+
+    await dispatcher.handle(_said("напиши маме"))
+    await dispatcher.handle(_said("да"))
+    assert dropped == ["studio.send"] * 4, "согласие — не снятие"
+    assert skill.sent == ["буду через час"]
