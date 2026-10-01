@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,39 @@ class _Dispatcher:
 class _Jobs:
     def __init__(self, *titles: str) -> None:
         self.running = tuple(SimpleNamespace(title=title, language="ru") for title in titles)
+
+
+@pytest.fixture(autouse=True)
+def _still_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Перезапись файла не двигает время его изменения — худший случай, всегда.
+
+    Отпечаток (`fingerprint`) содержимое не читает, только время изменения и
+    размер. Время записи NTFS берёт с системных часов, а те идут шагами до
+    15.6 мс, и «a = 1» → «a = 2» той же длины сразу после первой записи отпечаток
+    через раз не видел: тесты наблюдателя падали в нескольких прогонах из ста
+    (аудит 01.10.2026). Живой правке это не грозит — между ней и прошлой записью
+    минуты. Здесь худший случай сделан постоянным: тест, который полагается на
+    ход часов, падает всегда, а не изредка. Правка в тестах — через `_edit`.
+    """
+    write_text = Path.write_text
+
+    def still(self: Path, data: str, *args: Any, **kwargs: Any) -> int:
+        try:
+            before = self.stat()
+        except OSError:
+            return write_text(self, data, *args, **kwargs)
+        written = write_text(self, data, *args, **kwargs)
+        os.utime(self, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return written
+
+    monkeypatch.setattr(Path, "write_text", still)
+
+
+def _edit(path: Path, text: str) -> None:
+    """Правка, как её видит наблюдатель: новое содержимое и время на секунду позже прежнего."""
+    later = path.stat().st_mtime_ns + 1_000_000_000
+    path.write_text(text, "utf-8")
+    os.utime(path, ns=(later, later))
 
 
 # --- отпечаток -------------------------------------------------------------------
@@ -191,7 +225,7 @@ def _watch(tmp_path: Path, *, auto: str = "idle", check: Any = _ok, playing: lis
 
 
 async def _changed_and_settled(watch: CoreWatch, tmp_path: Path, start: float) -> None:
-    (tmp_path / "core.py").write_text("a = 2", "utf-8")
+    _edit(tmp_path / "core.py", "a = 2")
     assert await watch.tick(now=start) == "changing"
     assert await watch.tick(now=start + 30) == "settling"
 
@@ -320,8 +354,8 @@ async def test_updated_skills_are_reloaded_and_said_in_one_line(tmp_path: Path, 
     watch, skills, announcer = await _skill_watch(tmp_path)
     assert await watch.skills_tick() == "same"
 
-    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = 2", "utf-8")
-    (tmp_path / "skills" / "browser" / "page" / "skill.py").write_text("x = 2", "utf-8")
+    _edit(tmp_path / "skills" / "peace" / "skill.py", "x = 2")
+    _edit(tmp_path / "skills" / "browser" / "page" / "skill.py", "x = 2")
     start = time.monotonic() + 100
     assert await watch.skills_tick(now=start) == "changing"
     assert await watch.skills_tick(now=start + 5) == "settling"
@@ -337,7 +371,7 @@ async def test_a_skill_that_does_not_import_is_left_as_it_was(tmp_path: Path, mo
 
     monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "SyntaxError: invalid syntax")
     watch, skills, announcer = await _skill_watch(tmp_path)
-    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = (", "utf-8")
+    _edit(tmp_path / "skills" / "peace" / "skill.py", "x = (")
     start = time.monotonic() + 100
     await watch.skills_tick(now=start)
     assert await watch.skills_tick(now=start + 30) == "failed"
@@ -352,7 +386,7 @@ async def test_a_manual_reload_moves_the_baseline(tmp_path: Path) -> None:
     from jarvis.core.contracts import SkillLoaded
 
     watch, skills, announcer = await _skill_watch(tmp_path)
-    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = 3", "utf-8")
+    _edit(tmp_path / "skills" / "peace" / "skill.py", "x = 3")
     await watch._on_skill_loaded(SkillLoaded(source="skills", skill="peace"))
     assert await watch.skills_tick() == "same"
 
@@ -362,7 +396,7 @@ async def test_quiet_mode_reloads_without_a_word(tmp_path: Path, monkeypatch: py
 
     monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "")
     watch, skills, announcer = await _skill_watch(tmp_path, mode="quiet")
-    (tmp_path / "skills" / "peace" / "skill.py").write_text("x = 4", "utf-8")
+    _edit(tmp_path / "skills" / "peace" / "skill.py", "x = 4")
     start = time.monotonic() + 100
     await watch.skills_tick(now=start)
     assert await watch.skills_tick(now=start + 30) == "updated"
@@ -381,6 +415,6 @@ async def test_a_manual_reload_of_a_skill_with_a_subskill_is_not_repeated(tmp_pa
     from jarvis.core.contracts import SkillLoaded
 
     watch, skills, announcer = await _skill_watch(tmp_path)
-    (tmp_path / "skills" / "browser" / "skill.py").write_text("x = 5", "utf-8")
+    _edit(tmp_path / "skills" / "browser" / "skill.py", "x = 5")
     await watch._on_skill_loaded(SkillLoaded(source="skills", skill="browser"))
     assert await watch.skills_tick() == "same"

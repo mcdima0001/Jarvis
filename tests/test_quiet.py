@@ -112,7 +112,8 @@ def test_the_memory_reading_is_a_number_not_a_zero() -> None:
     import sys
 
     if sys.platform != "win32":
-        return
+        # Не `return`: на Linux тест засчитывался пройденным, ничего не проверив.
+        pytest.skip("замер памяти через WinAPI — только Windows")
     import os
 
     import psutil
