@@ -91,6 +91,31 @@ class PeaceUnavailable(RuntimeError):
 # --- чистые функции ---------------------------------------------------------
 
 
+#: На сколько сдвигать баланс, если число не названо.
+PAN_STEP = 10
+
+
+def shifted_pan(current: int, side: str, *, quieter: bool, amount: int) -> int:
+    """Куда сдвинуть баланс, чтобы канал стал тише или громче.
+
+    Баланс один на оба канала: −100 — только левый, 100 — только правый. Тише
+    левый — значит баланс вправо. Чистая функция — её проверяют тесты.
+    """
+    toward_right = (side == "left") == quieter
+    moved = current + (amount if toward_right else -amount)
+    return max(-100, min(100, moved))
+
+
+def _side_phrases(side: str) -> list[str]:
+    """«Убери громкость левого канала», «левый канал тише на {amount}»…"""
+    adj = {"left": ("левого", "левый"), "right": ("правого", "правый")}[side]
+    quieter = [
+        f"убери громкость {adj[0]} канала", f"убавь громкость {adj[0]} канала",
+        f"убавь {adj[1]} канал", f"сделай {adj[1]} канал тише", f"{adj[1]} канал тише",
+    ]
+    return quieter + [f"{phrase} на {{amount}}" for phrase in quieter]
+
+
 def amount_phrases(verbs: tuple[str, ...], parts: tuple[str, ...]) -> list[str]:
     """Шаблоны с числом: «добавь {db} басов», «добавь басов на {db}»."""
     found: list[str] = []
@@ -279,7 +304,7 @@ class PeaceSkill(Skill):
     meta = SkillMeta(
         name="peace",
         description="Эквалайзер Peace Nexus: пресеты, басы, середина, верха, баланс",
-        version="0.3.1",
+        version="0.4.0",
         platforms=("windows",),
         spoken=("пис", "peace", "эквалайзер"),
     )
@@ -699,6 +724,49 @@ class PeaceSkill(Skill):
             return refusal
         spoken = "по центру" if result == 0 else f"{'влево' if result < 0 else 'вправо'} на {abs(result)}"
         return ToolResult.success({"pan": result}, speech={"ru": f"Баланс {spoken}.", "en": f"Pan {result}."})
+
+    @tool(reversible=True)
+    async def channel(self, side: str, quieter: bool = True, amount: int = 0) -> ToolResult:
+        """Сделать левый или правый канал тише или громче — сдвигом баланса эквалайзера.
+
+        Живой случай 01.10.2026, 15:45: «убери громкость левого канала» модель не
+        поняла — баланс был только точной фразой «баланс {число}», в каталоге его
+        не было, — а план шесть шагов искал регулятор в окнах Windows.
+
+        :param side: «left» — левый канал, «right» — правый.
+        :param quieter: тише (по умолчанию) или громче.
+        :param amount: на сколько сдвинуть баланс, из ста; не названо — 0, шаг 10.
+        """
+        chosen = "right" if str(side).lower().startswith(("r", "п")) else "left"
+        step = abs(int(amount)) or PAN_STEP
+
+        def work(api: Any) -> int:
+            return int(api.set_pan(shifted_pan(int(api.pan() or 0), chosen, quieter=quieter, amount=step)))
+
+        result, refusal = await self._safely(work)
+        if refusal:
+            return refusal
+        name = "Левый" if chosen == "left" else "Правый"
+        where = "по центру" if result == 0 else f"{'влево' if result < 0 else 'вправо'} на {abs(result)}"
+        return ToolResult.success(
+            {"pan": result, "side": chosen, "quieter": quieter},
+            speech={"ru": f"{name} канал {'тише' if quieter else 'громче'}, баланс {where}.",
+                    "en": f"{name} channel {'quieter' if quieter else 'louder'}."},
+        )
+
+    @tool(routable=False, recognizes="_is_number", reversible=True, phrases=_side_phrases("left"))
+    async def left_quieter(self, amount: int = 0) -> ToolResult:
+        """Левый канал тише."""
+        return await self.channel("left", True, amount)
+
+    @tool(routable=False, recognizes="_is_number", reversible=True, phrases=_side_phrases("right"))
+    async def right_quieter(self, amount: int = 0) -> ToolResult:
+        """Правый канал тише."""
+        return await self.channel("right", True, amount)
+
+    def _is_number(self, arguments: Mapping[str, Any]) -> bool:
+        spoken = arguments.get("amount")
+        return spoken is None or parse_number(str(spoken)) is not None
 
     @tool(routable=False, phrases=["баланс по центру", "баланс в центр", "верни баланс"], reversible=True)
     async def pan_center(self) -> ToolResult:

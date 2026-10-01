@@ -93,7 +93,13 @@ class FakeApi:
     def set_all_gains(self, db: float) -> None:
         self.calls.append(("all", db))
 
+    pan_now = 0
+
+    def pan(self) -> int:
+        return self.pan_now
+
     def set_pan(self, value: int) -> int:
+        self.pan_now = value
         return value
 
     def _window(self) -> int:
@@ -203,13 +209,14 @@ async def test_equalizer_switches_and_status_reads() -> None:
     assert (await skill.status()).speech_for("ru") == "Эквалайзер выключен."
 
 
-def test_only_six_tools_go_to_the_model_catalog() -> None:
+def test_only_these_tools_go_to_the_model_catalog() -> None:
     """Кривая и сохранение — видны: без них «сделай и сохрани пресет» ушло писать скилл (15.09.2026)."""
     from jarvis.core.tools import collect_tools
 
     routable = sorted(item.spec.name for item in collect_tools(peace.PeaceSkill(), namespace="peace") if item.spec.routable)
     assert routable == [
-        "peace.equalizer", "peace.load_preset", "peace.save_preset", "peace.set_curve", "peace.shift", "peace.status",
+        "peace.channel", "peace.equalizer", "peace.load_preset", "peace.save_preset", "peace.set_curve", "peace.shift",
+        "peace.status",
     ]
 
 
@@ -388,3 +395,25 @@ def test_only_a_number_fills_the_amount_slot(spoken: str, ok: bool) -> None:
     skill = peace.PeaceSkill()
     assert skill._is_amount({"db": spoken}) is ok
     assert skill._is_amount({}) is True
+
+
+
+@pytest.mark.parametrize(
+    ("current", "side", "quieter", "amount", "expected"),
+    [(0, "left", True, 10, 10), (0, "right", True, 10, -10), (0, "left", False, 20, -20), (95, "left", True, 10, 100)],
+)
+def test_a_quieter_channel_moves_the_balance_the_other_way(
+    current: int, side: str, quieter: bool, amount: int, expected: int
+) -> None:
+    """Тише левый — баланс вправо; упирается в край, а не уходит за него."""
+    assert peace.shifted_pan(current, side, quieter=quieter, amount=amount) == expected
+
+
+async def test_left_channel_quieter_from_the_current_balance() -> None:
+    """01.10.2026, 15:45: «убери громкость левого канала» — модель не поняла, план искал регулятор в окнах."""
+    skill, api = await _skill()
+    api.pan_now = 5
+    result = await skill.left_quieter()
+    assert result.ok and api.pan_now == 15
+    assert result.speech_for("ru") == "Левый канал тише, баланс вправо на 15."
+    assert (await skill.right_quieter(amount=30)).speech_for("ru") == "Правый канал тише, баланс влево на 15."
