@@ -52,7 +52,7 @@ HUSH = "hush"
 #: Панель горячей клавишей: нет — открыть, за другими окнами — вперёд, впереди — свернуть.
 PANEL_TOGGLE = "panel_toggle"
 #: Как эта клавиша называется — для меню и лога.
-PANEL_HOTKEY = "Ctrl+Alt+J"
+PANEL_HOTKEY = "Ctrl+Alt+D"
 
 
 def panel_step(windows: list[int], foreground: int, *, toggle: bool) -> tuple[str, int]:

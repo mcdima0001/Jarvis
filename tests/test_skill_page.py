@@ -1667,3 +1667,13 @@ async def test_the_reply_names_what_actually_plays(loaded, monkeypatch) -> None:
     assert "Billion Dollar Babies" in result.speech_for("ru")
     assert result.speech_for("ru").startswith("Точно такого не нашёл")
     await manager.stop()
+
+
+def test_play_music_is_not_resume_whatever_was_paused() -> None:
+    """02.10.2026, 13:45: «включи музыку» запустило стоявший на паузе ролик YouTube."""
+    from jarvis.core.tools import collect_tools
+
+    specs = {item.spec.name: item.spec.phrases for item in collect_tools(page.PageSkill(), namespace="page")}
+    assert "включи музыку" in specs["page.play_music"]
+    assert "включи музыку" not in specs["page.play"]
+    assert page.MUSIC_SITE == "яндекс музыка"

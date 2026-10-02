@@ -48,7 +48,7 @@ _HOTKEY_HUSH = 1
 _HOTKEY_PANEL = 2
 _MOD_ALT, _MOD_CONTROL, _MOD_SHIFT, _MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x4000
 _VK_SPACE = 0x20
-_VK_J = 0x4A
+_VK_D = 0x44
 _WM_CONTEXTMENU = 0x007B
 _WM_LBUTTONDBLCLK = 0x0203
 _WM_RBUTTONUP = 0x0205
@@ -359,7 +359,7 @@ class TrayIcon:
             logger.warning("Ctrl+Shift+Пробел занят другой программой — «замолчать» только из меню трея")
         # Панель одной клавишей (01.10.2026). Ctrl+Shift+J не взят намеренно:
         # в браузерах это консоль разработчика, отбирать её глобально нельзя.
-        if not user32.RegisterHotKey(hwnd, _HOTKEY_PANEL, _MOD_CONTROL | _MOD_ALT | _MOD_NOREPEAT, _VK_J):
+        if not user32.RegisterHotKey(hwnd, _HOTKEY_PANEL, _MOD_CONTROL | _MOD_ALT | _MOD_NOREPEAT, _VK_D):
             logger.warning("%s занят другой программой — панель только из меню трея", PANEL_HOTKEY)
         self._ready.set()
 

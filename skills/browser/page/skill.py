@@ -117,6 +117,9 @@ PROBE_LIMIT = 40
 #: и названия трека не знает.
 LOCAL_TOOLS = ("aimp.control", "windows.music_control")
 
+#: Где музыка, когда просят просто «включи музыку».
+MUSIC_SITE = "яндекс музыка"
+
 #: «Что играет» умеет только AIMP: кнопке такой вопрос не задать.
 PLAYING_TOOL = "aimp.now_playing"
 
@@ -1029,7 +1032,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.5.4",
+        version="0.6.0",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1165,10 +1168,8 @@ class PageSkill(Skill):
     # youtube остаётся рабочим.
     @tool(routable=False, phrases=["сними с паузы", "включи воспроизведение",
                                    "продолжи воспроизведение", "продолжай играть",
-                                   "сними музыку с паузы", "сними видео с паузы",
-                                   "продолжи музыку", "продолжи видео",
-                                   "включи видео", "включи музыку", "включи трек",
-                                   "включи песню", "сними {site} с паузы",
+                                   "сними видео с паузы", "продолжи видео", "включи видео",
+                                   "сними {site} с паузы",
                                    "resume", "continue playing"],
           reversible=True)
     async def play(self, site: str = "") -> ToolResult:
@@ -1177,6 +1178,28 @@ class PageSkill(Skill):
         :param site: где именно; пусто — там, где остановились.
         """
         return await self._act("play", site=site, soft=True)
+
+    @tool(routable=False, phrases=["включи музыку", "включи песню", "включи трек",
+                                   "продолжи музыку", "сними музыку с паузы", "поставь музыку",
+                                   "play music"],
+          reversible=True)
+    async def play_music(self) -> ToolResult:
+        """Включить музыку: во вкладке музыкального сайта, а нет её — в своём плеере.
+
+        Раньше это было «продолжи, что на паузе», и 02.10.2026 в 13:45 «включи
+        музыку» запустило стоявший на паузе ролик YouTube в активной вкладке:
+        не звучало ничего, а «на паузе» оказалось видео. Музыка — это вкладка
+        Яндекс Музыки, а без неё — AIMP (`aimp.control` сам его запустит).
+        """
+
+        async def local() -> ToolResult:
+            played = await self._local_music("play")
+            return played or ToolResult.failure(
+                "музыку включить негде: вкладки музыкального сайта нет, плеер не отозвался",
+                speech={"ru": "Музыку включить негде.", "en": "There's nothing to play music in."},
+            )
+
+        return await self._act("play", site=MUSIC_SITE, otherwise=local)
 
     # «Дальше» и «следующий» без существительного — то, как это говорят на
     # самом деле. Одинокое слово тут не опасно: до роутера доходит только то,
