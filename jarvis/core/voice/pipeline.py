@@ -463,6 +463,11 @@ class VoicePipeline:
         if isinstance(result.value, dict) and result.value.get("ignored"):
             self._events.emit(WakeDismissed(source="voice", text=utterance.text, reason=str(result.value["ignored"])))
             return result
+        if result.ok and result.silent:
+            # Сделано, и это слышно само: молчим, но реплику закрываем — по
+            # «ответил» возвращается приглушённая музыка.
+            self._events.emit(AssistantReplied(source="voice", text="", spoken=False))
+            return result
         if result.speech_stream is not None:
             reply = await self._say_stream(result.speech_stream, language=utterance.language)
         else:

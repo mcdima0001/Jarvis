@@ -79,6 +79,10 @@ class ToolResult:
     #: `speech` и только когда `LIVE_SPEECH` включён — резать на предложения и
     #: произносить будет тот, кто его включил.
     speech_stream: "AsyncIterator[str] | None" = None
+    #: Сделано — и говорить нечего: «громче» слышно и так (просьба владельца
+    #: 02.10.2026). Конвейер молчит, но закрывает реплику как отвеченную, чтобы
+    #: приглушённая музыка вернулась сразу. На неудаче не действует.
+    silent: bool = False
 
     @classmethod
     def success(
@@ -88,9 +92,10 @@ class ToolResult:
         tool: str = "",
         speech: Speakable = None,
         duration: float = 0.0,
+        silent: bool = False,
     ) -> "ToolResult":
         """Удачный результат."""
-        return cls(ok=True, value=value, tool=tool, speech=speech, duration=duration)
+        return cls(ok=True, value=value, tool=tool, speech=speech, duration=duration, silent=silent)
 
     @classmethod
     def failure(

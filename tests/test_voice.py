@@ -1983,3 +1983,37 @@ def test_reply_language_overrides_what_was_heard() -> None:
     assert pipeline._language_of("launch Minecraft now please", fallback="en") == "ru"
     pipeline._reply_language = ""
     assert pipeline._language_of("launch Minecraft now please", fallback="en") == "en"
+
+
+async def test_a_silent_result_is_done_without_a_word(
+    registry: ToolRegistry, events: LocalEventBus
+) -> None:
+    """«Громче» слышно и так (просьба владельца 02.10.2026): конвейер молчит.
+
+    Но реплику закрывает: по событию «ответил» скилл windows возвращает
+    приглушённую музыку, и без него она осталась бы тихой до страховки.
+    """
+    from jarvis.core.contracts import AssistantReplied
+
+    class Volume:
+        @tool(phrases=["сделай громче"], reversible=True)
+        async def louder(self) -> ToolResult:
+            """Громче."""
+            return ToolResult.success(50, speech="Громкость 50 процентов.", silent=True)
+
+    for item in collect_tools(Volume(), namespace="volume"):
+        registry.register(item)
+    tts = RecordingTTS()
+    pipeline = _pipeline(registry, events, tts=tts)
+    replied: list[AssistantReplied] = []
+
+    async def remember(event: AssistantReplied) -> None:
+        replied.append(event)
+
+    events.subscribe(AssistantReplied.NAME, remember)
+
+    result = await pipeline.handle(Utterance(text="сделай громче", source="text"))
+    await asyncio.sleep(0.05)  # событие публикуется в фоне
+
+    assert result.ok and tts.said == [], "громкость слышно и так — говорить нечего"
+    assert "voice" in [event.source for event in replied], "реплику надо закрыть: вернуть музыку"

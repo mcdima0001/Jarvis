@@ -1681,3 +1681,37 @@ async def test_a_real_command_keeps_the_video_paused_until_the_reply(monkeypatch
     await skill._on_command(None)
     await asyncio.sleep(0.05)
     assert calls == [windows.PAUSE_TABS_TOOL]
+
+
+async def test_volume_commands_answer_with_sound_not_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Просьба владельца 02.10.2026: «громче» и подобное слышно и так — молча.
+
+    Реплика у результата остаётся (её печатает `--say` и показывает панель),
+    но конвейер её не произносит.
+    """
+    import logging
+    from types import SimpleNamespace
+
+    class Volume:
+        def GetMasterVolumeLevelScalar(self) -> float:  # noqa: N802 — имя из COM
+            return 0.4
+
+        def SetMasterVolumeLevelScalar(self, level: float, context: object) -> None:  # noqa: N802
+            pass
+
+        def SetMute(self, on: bool, context: object) -> None:  # noqa: N802
+            pass
+
+    monkeypatch.setattr(windows, "endpoint_volume", Volume)
+
+    class Louder(windows.WindowsSkill):
+        log = logging.getLogger("test-windows-volume")
+
+    skill = object.__new__(Louder)
+    skill._context = SimpleNamespace(logger=logging.getLogger("test-windows-volume"))
+
+    louder = await skill.change_volume(10)
+    assert louder.ok and louder.silent and louder.value == 50
+    assert louder.speech_for("ru") == "Громкость 50 процентов."
+    assert (await skill.set_volume(30)).silent
+    assert (await skill.mute(True)).silent

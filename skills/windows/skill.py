@@ -1469,7 +1469,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.16.0",
+        version="0.16.1",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -3186,6 +3186,8 @@ class WindowsSkill(Skill):
             level,
             speech={"ru": f"Громкость {level} процентов.",
                     "en": f"Volume {level} percent."},
+            # Громкость слышно и так (02.10.2026): ответ только мешал бы.
+            silent=True,
         )
 
     @tool(phrases=["погромче", "сделай громче", "включи громче", "включи погромче",
@@ -3221,6 +3223,8 @@ class WindowsSkill(Skill):
             level,
             speech={"ru": f"Громкость {level} процентов.",
                     "en": f"Volume {level} percent."},
+            # Громкость слышно и так (02.10.2026): ответ только мешал бы.
+            silent=True,
         )
 
     @tool(phrases=["выключи звук", "включи звук", "mute", "unmute"], reversible=True)
@@ -3240,6 +3244,7 @@ class WindowsSkill(Skill):
                 "ru": "Звук выключен." if on else "Звук включён.",
                 "en": "Muted." if on else "Unmuted.",
             },
+            silent=True,
         )
 
     def _volume_failure(self, exc: Exception) -> ToolResult:
