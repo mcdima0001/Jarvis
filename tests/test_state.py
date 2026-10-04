@@ -640,3 +640,20 @@ async def test_dialog_streams_only_to_a_caller_that_speaks_as_it_goes(registry, 
         LIVE_SPEECH.reset(token)
     assert live.speech_stream is not None
     assert [piece async for piece in live.speech_stream] == ["По кускам."]
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        ("2026-10-04 19:29", 12 * 60 + 31),   # вечером — до утра следующего дня
+        ("2026-10-04 02:00", 6 * 60),         # ночью — до утра того же дня
+        ("2026-10-04 08:00", 24 * 60),        # ровно в восемь — сутки, а не ноль
+    ],
+)
+def test_until_morning_counts_from_the_current_hour(now: str, expected: int) -> None:
+    """«Не слушай до завтра» — это до утра, а не тридцать минут (04.10.2026)."""
+    from datetime import datetime
+
+    from jarvis.core.state import MORNING_HOUR, minutes_until
+
+    assert minutes_until(MORNING_HOUR, datetime.strptime(now, "%Y-%m-%d %H:%M")) == expected

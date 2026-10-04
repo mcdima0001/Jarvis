@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,23 @@ WAKE_PHRASES: tuple[str, ...] = (
     "as usual",
     "cancel the mode",
 )
+
+
+#: Когда начинается утро: до этого часа длится «не слушай до завтра».
+MORNING_HOUR = 8
+
+
+def minutes_until(hour: int, now: datetime) -> int:
+    """Сколько минут до ближайшего наступления этого часа.
+
+    «Не слушай до завтра», сказанное вечером, — это до утра, а сказанное ночью
+    в два часа — те же шесть часов, а не тридцать. Чистая функция: часы
+    приходят снаружи, иначе её нельзя проверить тестом.
+    """
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(1, round((target - now).total_seconds() / 60))
 
 
 def minutes_word(count: int) -> str:

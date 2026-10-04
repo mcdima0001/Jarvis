@@ -133,3 +133,45 @@ async def test_a_slot_the_tool_does_not_recognise_does_not_silence_us() -> None:
     assert found is not None and found.tool == "peace.more_bass" and found.arguments == {}
     # А число — работа точных фраз: тут `loose` молчит.
     assert await loose.resolve(Utterance(text="добавь 8 дб басов")) is None
+
+
+async def test_a_deadline_in_the_junk_is_not_junk(resolver: LooseResolver) -> None:
+    """04.10.2026, 19:29: «не слушай до завтра» совпало с «не слушай», «до завтра»
+    выбросилось, и ассистент замолчал на 30 минут вместо вечера."""
+
+    class Modes:
+        @tool(phrases=["не слушай"], reversible=True)
+        async def sleep(self) -> ToolResult:
+            """Не слушать."""
+            return ToolResult.success(None)
+
+    registry = ToolRegistry()
+    for item in collect_tools(Modes(), namespace="core"):
+        registry.register(item)
+    loose = LooseResolver(registry)
+
+    assert await loose.resolve(Utterance(text="не слушай до завтра")) is None
+    assert await loose.resolve(Utterance(text="не слушай до 9")) is None
+    # А служебные слова по-прежнему не мешают.
+    found = await loose.resolve(Utterance(text="ну не слушай меня пожалуйста"))
+    assert found is None, "команда обязана начинаться с первого слова"
+    assert (await loose.resolve(Utterance(text="не слушай ты меня"))).tool == "core.sleep"
+
+
+async def test_an_argument_in_the_junk_is_not_junk() -> None:
+    """Стенд 04.10.2026: «какая погода в Москве» совпадало с «какая погода», и
+    город терялся — прогноз пришёл бы по месту владельца, молча."""
+
+    class Weather:
+        @tool(phrases=["какая погода", "погода в {city}"], reversible=True)
+        async def forecast(self, city: str = "") -> ToolResult:
+            """Погода."""
+            return ToolResult.success(city)
+
+    registry = ToolRegistry()
+    for item in collect_tools(Weather(), namespace="weather"):
+        registry.register(item)
+    loose = LooseResolver(registry)
+
+    assert await loose.resolve(Utterance(text="какая погода в Москве")) is None
+    assert (await loose.resolve(Utterance(text="какая там погода"))).arguments == {}

@@ -15,6 +15,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from jarvis.core.agent import Outcome, Planner, Step
@@ -30,7 +31,16 @@ from jarvis.core.memory import Memory
 from jarvis.core.meter import Meter
 from jarvis.core.persona import BYE, HELLO, HERE, HOW_ARE_YOU, PRAISE, THANKS, Persona
 from jarvis.core.situation import Situation
-from jarvis.core.state import BRIEF, DEAF, QUIET, WAKE_PHRASES, Modes, minutes_word
+from jarvis.core.state import (
+    BRIEF,
+    DEAF,
+    MORNING_HOUR,
+    QUIET,
+    WAKE_PHRASES,
+    Modes,
+    minutes_until,
+    minutes_word,
+)
 from jarvis.core.text import best_match, rank
 from jarvis.core.thrift import own_memory, release_recognizer, set_priority
 from jarvis.core.tools import ToolRegistry, tool
@@ -98,6 +108,18 @@ _DIALOG_SYSTEM = {
 #: Сколько длится «не слушай», если срок не назвали. Полчаса — то, что обычно
 #: и имеют в виду; ошибиться в эту сторону безопаснее, чем оглохнуть навсегда.
 DEFAULT_SLEEP_MINUTES = 30
+
+
+def _hours_word(count: int) -> str:
+    """«1 час», «2 часа», «5 часов»: вслух сокращений не бывает."""
+    if 11 <= count % 100 <= 14:
+        return "часов"
+    tail = count % 10
+    if tail == 1:
+        return "час"
+    if 2 <= tail <= 4:
+        return "часа"
+    return "часов"
 
 #: Сколько секунд считать «тем же событием». Одна команда учит сразу нескольких
 #: (формулировку и кнопку), и записи ложатся в одну секунду; всё, что старше, —
@@ -1325,6 +1347,40 @@ class CoreTools:
                 "en": ("Not listening until you say “Jarvis, wake up”.",),
             }
         return ToolResult.success({"mode": DEAF, "minutes": span}, speech=speech)
+
+    @tool(
+        name="sleep_until_morning",
+        # Своя команда, а не слот у `sleep`: фраза подставляет только значения,
+        # а «до утра» — это вычисленный срок, он зависит от текущего часа.
+        phrases=[
+            "не слушай до утра", "не слушай до завтра",
+            "помолчи до утра", "помолчи до завтра", "поспи до утра", "поспи до завтра",
+            "спи до утра", "спи до завтра", "не слушай меня до завтра",
+            "don't listen until morning", "sleep until morning",
+        ],
+        routable=False,
+        reversible=True,
+    )
+    async def sleep_until_morning(self) -> ToolResult:
+        """Не слушать до утра.
+
+        Живой случай 04.10.2026, 19:29: «не слушай до завтра» молчало ровно
+        тридцать минут — срок выбрасывался по дороге, и ассистент возвращался
+        посреди вечера.
+        """
+        span = minutes_until(MORNING_HOUR, datetime.now())
+        self._modes.on(DEAF, minutes=span)
+        hours = round(span / 60)
+        return ToolResult.success(
+            {"mode": DEAF, "minutes": span, "until_hour": MORNING_HOUR},
+            speech={
+                "ru": (
+                    f"Молчу до {MORNING_HOUR} утра, это около {hours} {_hours_word(hours)}. "
+                    f"Позови «Джарвис, проснись», когда буду нужен.",
+                ),
+                "en": (f"Silent until {MORNING_HOUR} in the morning. Say “Jarvis, wake up” to bring me back.",),
+            },
+        )
 
     @tool(
         name="be_brief",
