@@ -1306,12 +1306,18 @@ class CoreTools:
             "не слушай {minutes} минуту",
             "поспи {minutes} минут", "поспи {minutes} минуты",
             "поспи {minutes} минуту",
+            # Часы — отдельные написания по той же причине, что и минуты:
+            # «не слушай 3 часа» иначе подбиралось к «не слушай полчаса»
+            # и молчало тридцать минут (живой случай 06.10.2026, 18:49).
+            "не слушай {hours} час", "не слушай {hours} часа", "не слушай {hours} часов",
+            "поспи {hours} час", "поспи {hours} часа", "поспи {hours} часов",
+            "помолчи {hours} час", "помолчи {hours} часа", "помолчи {hours} часов",
             "stop listening", "go to sleep", "don't listen",
             "stop listening for {minutes} minutes",
         ],
         reversible=True,
     )
-    async def sleep(self, minutes: int = DEFAULT_SLEEP_MINUTES) -> ToolResult:
+    async def sleep(self, minutes: int = DEFAULT_SLEEP_MINUTES, hours: int = 0) -> ToolResult:
         """Перестать принимать команды на заданное время.
 
         Ассистент продолжает работать, но всё услышанное пропускает мимо: до
@@ -1319,13 +1325,25 @@ class CoreTools:
         обратно можно в любой момент — фразой «Джарвис, проснись».
 
         :param minutes: сколько молчать; 0 — пока не скажут иначе.
+        :param hours: то же в часах; названы часы — минуты не в счёт.
         """
-        span = max(0, minutes)
+        span = max(0, hours * 60) if hours else max(0, minutes)
         self._modes.on(DEAF, minutes=span)
         # Способ вернуться называется вслух намеренно: режим этот выключает
         # ассистента целиком, и человек должен услышать, чем его включить
         # обратно, — иначе выглядит как поломка.
-        if span:
+        if span and span % 60 == 0 and span >= 60:
+            whole = span // 60
+            speech = {
+                "ru": (
+                    f"Не слушаю {whole} {_hours_word(whole)}. "
+                    f"Скажи «Джарвис, проснись», если понадоблюсь раньше.",
+                    f"Молчу {whole} {_hours_word(whole)}. "
+                    f"Позови «Джарвис, проснись», когда буду нужен.",
+                ),
+                "en": (f"Not listening for {whole} hours. Say “Jarvis, wake up” to bring me back.",),
+            }
+        elif span:
             speech = {
                 "ru": (
                     f"Не слушаю {span} {minutes_word(span)}. "

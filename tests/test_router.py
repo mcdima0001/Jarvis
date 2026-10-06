@@ -678,3 +678,26 @@ def test_rank_puts_the_likely_first_and_cuts_to_five() -> None:
     names["keys"] += ("кейс", "case")
     assert rank("Кейс", names)[0] == "keys"
     assert len(rank("что-то", names)) == 5
+
+
+@pytest.mark.parametrize(
+    ("said", "phrase", "same"),
+    [
+        # Опечатки распознавания — ради них резолвер и живёт.
+        ("сделай тиша", "сделай тише", True),
+        ("переключит рак", "переключи трек", True),
+        ("включи свет пожалуйста", "включи свет", True),
+        # 06.10.2026, 18:49: «не слушай 3 часа» подменилось «не слушай полчаса».
+        ("не слушай 3 часа", "не слушай полчаса", False),
+        ("не слушай до завтра", "не слушай", False),
+        # Отрицание — не служебное слово: «не ставь таймер» ставило таймер.
+        ("не ставь таймер", "поставь таймер", False),
+        # Число обязано совпасть ровно.
+        ("поставь таймер на 5 минут", "поставь таймер на 15 минут", False),
+    ],
+)
+def test_alias_fixes_spelling_but_never_changes_the_asking(said: str, phrase: str, same: bool) -> None:
+    """Нечёткое сравнение правит буквы, но не смысл: срок, число и отрицание неприкосновенны."""
+    from jarvis.core.router.resolvers.alias import same_meaning
+
+    assert same_meaning(said.split(), phrase.split()) is same

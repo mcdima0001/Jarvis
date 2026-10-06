@@ -657,3 +657,20 @@ def test_until_morning_counts_from_the_current_hour(now: str, expected: int) -> 
     from jarvis.core.state import MORNING_HOUR, minutes_until
 
     assert minutes_until(MORNING_HOUR, datetime.strptime(now, "%Y-%m-%d %H:%M")) == expected
+
+
+async def test_hours_are_spoken_as_hours_not_minutes() -> None:
+    """«Не слушай 3 часа» — три часа, и вслух тоже часы, а не 180 минут."""
+    from jarvis.core.builtin import CoreTools
+    from jarvis.core.state import DEAF, Modes
+
+    modes = Modes()
+    tools = CoreTools(llm=None, memory=None, registry=None, skills=None, modes=modes)  # type: ignore[arg-type]
+
+    result = await tools.sleep(hours=3)
+    assert result.value == {"mode": DEAF, "minutes": 180}
+    assert "3 часа" in result.speech_for("ru")
+    assert modes.active(DEAF)
+
+    # Минуты остались минутами.
+    assert "10 минут" in (await tools.sleep(minutes=10)).speech_for("ru")
