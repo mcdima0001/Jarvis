@@ -694,6 +694,9 @@ def test_rank_puts_the_likely_first_and_cuts_to_five() -> None:
         ("не ставь таймер", "поставь таймер", False),
         # Число обязано совпасть ровно.
         ("поставь таймер на 5 минут", "поставь таймер на 15 минут", False),
+        # 10.10.2026, 23:03: вопрос о человеке стал «что на экране».
+        ("что за мужик на экране", "что там на экране", False),
+        ("что мужик на экране", "что там на экране", False),
     ],
 )
 def test_alias_fixes_spelling_but_never_changes_the_asking(said: str, phrase: str, same: bool) -> None:

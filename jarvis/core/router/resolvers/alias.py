@@ -47,13 +47,40 @@ def same_meaning(said: list[str], phrase: list[str]) -> bool:
         word for word in phrase if _DIGITS.search(word)
     ):
         return False
+    unknown = [word for word in said if word not in phrase]
+    # Незнакомое слово со смыслом — либо опечатка в слове фразы, либо другая
+    # просьба. Живой случай 10.10.2026, 23:03: «что за **мужик** на экране»
+    # подобралось к «что там на экране» (0.82), и вопрос о человеке ушёл в
+    # зрение как «что на экране» — то есть потерялся целиком. «Мужик» на «там»
+    # не похож ничем, значит это не ослышка.
+    missing = [word for word in phrase if word not in said]
+    for word in unknown:
+        # Огрызок в одну-две буквы смысла не несёт — это ослышка предлога
+        # («не сохраняй фы память»). Кроме отрицания: оно несёт весь смысл.
+        if filler(word) or (len(word) <= 2 and word not in _NEGATIONS):
+            continue
+        typo = next((gone for gone in missing if _alike(word, gone)), None)
+        if typo is None:
+            return False
+        missing.remove(typo)
     extra = len(said) - len(phrase)
     if extra <= 0:
         return True
     # Слова фразы могут быть сказаны с опечаткой, поэтому лишними считаем те,
     # которых во фразе нет вовсе, — и каждое обязано быть служебным.
-    unknown = [word for word in said if word not in phrase]
     return len(unknown) >= extra and all(filler(word) for word in unknown[:extra])
+
+
+#: Короткие слова, которые огрызком не бывают никогда.
+_NEGATIONS = frozenset({"не", "ни", "no"})
+
+#: Насколько слово должно походить на слово фразы, чтобы считаться его ослышкой.
+_TYPO = 0.5
+
+
+def _alike(word: str, other: str) -> bool:
+    """Похоже ли одно слово на другое настолько, чтобы быть его ослышкой."""
+    return difflib.SequenceMatcher(None, word, other).ratio() >= _TYPO
 
 
 class AliasResolver:
