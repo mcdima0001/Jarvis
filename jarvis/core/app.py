@@ -17,6 +17,7 @@ from typing import Callable, Sequence
 
 from jarvis.core.attention import NORMAL, URGENT, Announcer
 from jarvis.core.audio import AudioStack, build_audio
+from jarvis.core.audio.false_wake import FalseWakeLog
 from jarvis.core.audio.recorder import UtteranceRecorder
 from jarvis.core.builtin import NAMESPACE as CORE_NAMESPACE
 from jarvis.core.builtin import CoreTools
@@ -104,6 +105,40 @@ def _quiet_broken_connections() -> None:
 #: основным голосом (`JarvisApp.run`): без сети облачный голос её не синтезирует,
 #: а из кеша она звучит и так.
 STT_OUTAGE = "Сэр, пропала связь с облаком. Слушаю местной моделью, первая команда займёт полминуты."
+
+
+def _false_wake(config: JarvisConfig, registry: ToolRegistry) -> FalseWakeLog | None:
+    """Журнал ложных срабатываний имени, если включён (`audio.wake_word.false_log`)."""
+    wake = config.audio.wake_word
+    if not wake.false_log or wake.mode != "acoustic":
+        return None
+
+    # Что звучит, знает скилл; имя инструмента — то же, по которому перезапуск
+    # проверяет «ничего не играет» (`runtime.restart.busy_tool`).
+    tool = config.runtime.restart.busy_tool
+
+    async def playing() -> list[str]:
+        if not tool or not registry.has(tool):
+            return []
+        result = await registry.invoke(tool, {})
+        data = result.value if result.ok and isinstance(result.value, dict) else {}
+        return [str(name) for name in data.get("playing", ())]
+
+    log = FalseWakeLog(
+        config.root / wake.false_log,
+        sample_rate=config.audio.sample_rate,
+        keep_days=wake.false_keep_days,
+        audio=wake.false_audio,
+        playing=playing,
+    )
+    removed = log.cleanup()
+    logger.info(
+        "Ложные срабатывания имени пишу в %s (%s%s)",
+        log.directory,
+        f"звук хранится {wake.false_keep_days} дн." if wake.false_audio else "без звука",
+        f", старых дней удалено: {removed}" if removed else "",
+    )
+    return log
 
 
 def _recorder(config: JarvisConfig) -> UtteranceRecorder | None:
@@ -366,6 +401,7 @@ class JarvisApp:
             wake_word=audio.wake_word,
             hotwords=audio.hotwords,
             recorder=_recorder(config),
+            false_wake=_false_wake(config, registry),
             stt=stt,
             tts=tts,
             dispatcher=dispatcher,

@@ -190,6 +190,7 @@ class VoicePipeline:
         conversation: "Conversation | None" = None,
         hotwords: Any = None,
         recorder: Any = None,
+        false_wake: Any = None,
         faults: Faults | None = None,
         reply_language: str = "",
         is_slow: Callable[[str], bool] | None = None,
@@ -208,6 +209,11 @@ class VoicePipeline:
         self._hotwords = hotwords
         #: Запись услышанных фраз на диск (`audio.record_dir`); ``None`` — не писать.
         self._recorder = recorder
+        #: Журнал ложных срабатываний имени (`audio.wake_word.false_log`).
+        self._false_wake = false_wake
+        #: Последние секунды микрофона — звук до срабатывания для журнала.
+        self._recent: deque[bytes] = deque()
+        self._recent_bytes = 0
         self._source = source
         self._sink = sink
         self._vad = vad
@@ -866,6 +872,8 @@ class VoicePipeline:
                     self._vad.reset()
                     continue
 
+                if self._false_wake is not None:
+                    self._keep_recent(frame.data)
                 if self._acoustic:
                     with self._meter.stage("имя"):
                         heard = self._wake_word.detect(frame)
@@ -918,6 +926,16 @@ class VoicePipeline:
             raise
         except Exception:
             logger.exception("Цикл прослушивания остановлен из-за ошибки")
+
+    def _keep_recent(self, data: bytes) -> None:
+        """Держать кольцо последних секунд и дописывать хвост ждущему срабатыванию."""
+        log = self._false_wake
+        log.feed(data)
+        log.tick(time.time())
+        self._recent.append(data)
+        self._recent_bytes += len(data)
+        while self._recent and self._recent_bytes - len(self._recent[0]) >= log.before_bytes:
+            self._recent_bytes -= len(self._recent.popleft())
 
     def _record(self, audio: bytes) -> None:
         """Сохранить фразу на диск, если просили, — в фоне, не задерживая слух."""
@@ -991,6 +1009,10 @@ class VoicePipeline:
         # начале фразы выглядело бы запоздалым.
         if now >= self._follow_up_until:
             self._name_heard_at = now
+        if self._false_wake is not None:
+            self._false_wake.heard(
+                now, heard or self._wake_word.phrase, b"".join(self._recent), floor_db=self._floor_db
+            )
         self._follow_up_until = now + self._config.wake_word.follow_up_s
         logger.info(
             "Услышал имя (детектор: %r) — жду команду %.0f с",
@@ -1166,6 +1188,17 @@ class VoicePipeline:
         )
 
         command = self._extract_command(transcript.text, spoken_at=spoken_at)
+        if self._false_wake is not None:
+            # Команда без имени в тексте, хотя детектор сработал посреди фразы, —
+            # это либо имя, которое облако записало «Sabes», либо чужая речь,
+            # ушедшая командой. Разобрать можно только по звуку, поэтому пишется.
+            self._false_wake.verdict(
+                start=spoken_at,
+                end=spoken_at + seconds,
+                text=transcript.text,
+                named=command is not None and not self._unnamed,
+                reason="команда без имени" if self._unnamed else "не ко мне",
+            )
         if command is None:
             logger.debug("Обращения по имени нет — пропускаю")
             # Музыку приглушили по имени — сказать, что ответа не будет, иначе

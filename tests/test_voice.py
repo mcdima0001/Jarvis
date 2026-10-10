@@ -2017,3 +2017,29 @@ async def test_a_silent_result_is_done_without_a_word(
 
     assert result.ok and tts.said == [], "громкость слышно и так — говорить нечего"
     assert "voice" in [event.source for event in replied], "реплику надо закрыть: вернуть музыку"
+
+
+async def test_false_wake_is_judged_by_the_transcript(
+    registry: ToolRegistry, events: LocalEventBus, tmp_path: Path
+) -> None:
+    """10.10.2026: ложные срабатывания пишутся для подбора слов-соперников."""
+    import json
+
+    from jarvis.core.audio.false_wake import FalseWakeLog
+    from jarvis.core.stt import Transcript
+
+    pipe = _pipeline(registry, events, wake_word=_AcousticWakeWord(), mode="acoustic")
+    pipe._false_wake = FalseWakeLog(tmp_path, sample_rate=16000)
+    pipe._keep_recent(b"\x01\x00" * 16000)
+
+    async def transcribe(audio: bytes, *, sample_rate: int = 16000) -> Transcript:
+        return Transcript(text="Избежать сражения с титанами", language="ru")
+
+    pipe._stt.transcribe = transcribe  # type: ignore[method-assign]
+    pipe._on_name_heard()
+    await pipe._process(b"\x00" * 64000, time.time() - 3)
+    await asyncio.sleep(0.05)
+
+    [entry] = [json.loads(line) for line in (tmp_path / "false.jsonl").read_text("utf-8").splitlines()]
+    assert entry["text"] == "Избежать сражения с титанами"
+    assert entry["fired_at_s"] == 1.0, "звук до срабатывания взят из кольца"
