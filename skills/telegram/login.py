@@ -50,7 +50,12 @@ def main() -> int:
     session.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Вход в Telegram. Сессия будет сохранена в {session}")
-    with TelegramClient(str(session.with_suffix("")), api_id, api_hash) as client:
+    from skills.telegram.skill import telethon_proxy
+
+    proxy = telethon_proxy(str(settings.get("proxy") or ""))
+    if proxy:
+        print(f"Через прокси {proxy['addr']}:{proxy['port']}")
+    with TelegramClient(str(session.with_suffix("")), api_id, api_hash, proxy=proxy) as client:
         me = client.get_me()
         name = getattr(me, "username", "") or getattr(me, "first_name", "")
         print(f"Готово: вошли как {name}. Больше эта команда не понадобится.")

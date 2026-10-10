@@ -38,6 +38,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Sequence
+from urllib.parse import urlsplit
 
 from jarvis.core.attention import LOW
 from jarvis.core.contracts import Event, ToolResult
@@ -70,6 +71,24 @@ def announcement(chat: str, text: str) -> str:
     if len(clean) > PREVIEW:
         clean = clean[: PREVIEW - 1].rstrip() + "…"
     return f"{chat} пишет: {clean}"
+
+
+def telethon_proxy(url: str) -> dict[str, Any] | None:
+    """Адрес прокси вида ``http://host:port`` — в словарь, который понимает Telethon.
+
+    Telethon ходит по своему протоколу и переменную ``HTTPS_PROXY`` не видит,
+    поэтому прокси ему передаётся явно. Пустой или непонятный адрес — ``None``,
+    то есть напрямую: молча подставить чужой порт хуже, чем не проксировать.
+    """
+    parts = urlsplit(url.strip())
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "socks5", "socks4") or not parts.hostname or not parts.port:
+        return None
+    proxy: dict[str, Any] = {"proxy_type": scheme, "addr": parts.hostname, "port": parts.port}
+    if parts.username:
+        proxy["username"] = parts.username
+        proxy["password"] = parts.password or ""
+    return proxy
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -271,7 +290,7 @@ class TelegramSkill(Skill):
     meta = SkillMeta(
         name="telegram",
         description="Сообщения и чаты Telegram",
-        version="0.2.3",
+        version="0.3.0",
         spoken=("телеграм", "telegram"),
     )
 
@@ -288,6 +307,8 @@ class TelegramSkill(Skill):
         #: шине никому не мешает, а речь без вопроса мешает очень.
         self._speak_incoming = bool(self.context.setting("announce", False))
         self._history = int(self.context.setting("history", 50))
+        #: Прокси для MTProto (`proxy` в настройках, по умолчанию `HTTPS_PROXY`).
+        self._proxy = telethon_proxy(str(self.context.setting("proxy", "") or ""))
 
         self._client: Any = None
         self._names: list[str] = []
@@ -372,6 +393,18 @@ class TelegramSkill(Skill):
         # попытками даёт серверу остыть, а её предупреждения в логе глушатся:
         # о состоянии связи скилл пишет сам.
         logging.getLogger("telethon").setLevel(logging.ERROR)
+        proxy = self._proxy
+        if proxy is not None:
+            try:
+                import python_socks  # noqa: F401 — Telethon берёт прокси из него
+            except ImportError:
+                self.log.warning(
+                    "Прокси для Telegram задан, но нет пакета python-socks — иду напрямую. "
+                    'Установи: pip install -e ".[telegram]"'
+                )
+                proxy = None
+            else:
+                self.log.info("Telegram через прокси %s:%s", proxy["addr"], proxy["port"])
         client = TelegramClient(
             str(self._session.with_suffix("")),
             self._api_id,
@@ -379,6 +412,7 @@ class TelegramSkill(Skill):
             connection_retries=-1,  # не сдаваться: сеть вернётся
             retry_delay=RETRY_DELAY_S,
             auto_reconnect=True,
+            proxy=proxy,
         )
         try:
             await client.connect()

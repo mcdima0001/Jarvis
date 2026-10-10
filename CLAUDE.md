@@ -1902,8 +1902,11 @@ Tailscale-адрес `100.98.141.99:8888`, пускает только `100.64.0
 `/etc/tinyproxy/tinyproxy.conf`, лог соединений — `/var/log/tinyproxy/`.
 **Кода это не потребовало**: `load_dotenv` кладёт `.env` в `os.environ`, а httpx
 сам берёт `HTTPS_PROXY` — строки в `.env` ноута (копия `.env.bak-proxy`).
-Так идут OpenAI, Deepgram, Fish и httpx-скиллы; Telethon и `websockets` прокси
-не видят. Упал Tailscale — упали и облака: убрать две строки из `.env`.
+Так идут OpenAI, Deepgram, Fish и httpx-скиллы. **Telegram тоже** (скилл 0.3.0):
+Telethon `HTTPS_PROXY` не видит, поэтому `proxy` в `skills/telegram/config.yaml`
+по умолчанию `${HTTPS_PROXY}` и передаётся клиенту явно; нужен `python-socks`,
+без него — предупреждение и напрямую. `websockets` прокси не видит. Упал
+Tailscale — упали и облака: убрать две строки из `.env`.
 
 **Вторая панель поднята и работает** (11.09.2026). Служба `cloudcli-jarvis` от
 пользователя `jarvis`, порт 3002, хост `jarvis.claude-work.duckdns.org` (DuckDNS

@@ -368,3 +368,20 @@ async def test_a_live_client_is_left_alone() -> None:
     client = _Client(connected=True)
     assert await _watcher(client)._check_link(600.0) == telegram.WATCH_EVERY_S
     assert client.connects == 0
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://100.98.141.99:8888", {"proxy_type": "http", "addr": "100.98.141.99", "port": 8888}),
+        (
+            "socks5://u:p@host:1080",
+            {"proxy_type": "socks5", "addr": "host", "port": 1080, "username": "u", "password": "p"},
+        ),
+        ("", None),
+        ("http://host", None),  # без порта — не угадываем
+        ("ftp://host:21", None),
+    ],
+)
+def test_proxy_address_becomes_telethon_dict(url: str, expected: Any) -> None:
+    assert _load().telethon_proxy(url) == expected
