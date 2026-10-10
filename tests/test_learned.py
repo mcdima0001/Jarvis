@@ -628,3 +628,30 @@ async def test_foreign_script_leftovers_are_swept_at_start(registry: ToolRegistr
     learner = LearnedResolver(store, registry=registry)
     assert await learner.forget_unknown() == ("दबाव басов",)
     assert list(await store.read("commands")) == ["нажми кнопку бас"]
+
+
+_COMPOSED = (
+    "Кто этот мужик на экране? Опиши, что видно: внешность, одежда, "
+    "контекст (телепередача/видео/кадр)."
+)
+
+
+async def test_an_argument_the_model_composed_is_not_learned(store) -> None:
+    """Живой случай 10.10.2026, 22:45: «кто это» стало «опиши внешность» навсегда."""
+    learner = LearnedResolver(store)
+    composed = Intent(tool="studio.press", arguments={"control": _COMPOSED})
+    assert await learner.remember("кто этот мужик на экране", composed) == ""
+    # Пересказ с парой своих слов — норма: падеж, лишний глагол.
+    retold = Intent(tool="studio.press", arguments={"control": "погода в Тверь"})
+    assert await learner.remember("скажи погоду в твери", retold) != ""
+
+
+async def test_composed_arguments_are_swept_at_start(registry: ToolRegistry, studio: Studio, store) -> None:
+    await store.write("commands", {
+        "кто этот мужик на экране": {
+            "tool": "studio.press", "arguments": {"control": _COMPOSED}, "at": time.time(),
+        },
+        "нажми кнопку бас": {"tool": "studio.press", "arguments": {"control": "бас"}, "at": time.time()},
+    })
+    learner = LearnedResolver(store, registry=registry)
+    assert await learner.forget_unknown() == ("кто этот мужик на экране",)

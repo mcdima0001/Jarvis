@@ -81,12 +81,21 @@ _SYSTEM = {
     "ru": (
         "Ты смотришь на снимок экрана и отвечаешь на вопрос о том, что на нём "
         "видно. Отвечай коротко, одним-двумя предложениями: ответ произносится "
-        "вслух. Если на экране текст ошибки или сообщение, приведи его дословно. "
+        "вслух. Отвечай на сам вопрос, а не описывай картинку: спросили, кто это "
+        "или что это за фильм, игра, вещь — назови, опираясь на свои знания и на "
+        "подсказки на экране (заголовок окна, название серии, подписи), и скажи, "
+        "кто это по сюжету. Не уверен — назови лучшую догадку и скажи, что не "
+        "уверен. Если на экране текст ошибки или сообщение, приведи его дословно. "
         "Не описывай оформление и расположение окон, если об этом не спросили."
     ),
     "en": (
         "You are looking at a screenshot and answering a question about it. "
-        "Answer in one or two sentences: the answer is read aloud. If there is "
+        "Answer in one or two sentences: the answer is read aloud. Answer the "
+        "question itself rather than describing the picture: asked who or what "
+        "this is (a character, film, game, thing), name it from your knowledge "
+        "and the clues on screen (window title, episode name, captions) and say "
+        "who they are in the story. If unsure, give your best guess and say so. "
+        "If there is "
         "an error message on screen, quote it verbatim. Do not describe the "
         "layout or styling unless asked."
     ),
@@ -140,16 +149,32 @@ def question_for(question: str, language: str) -> str:
     return _DEFAULT_QUESTION.get(language, _DEFAULT_QUESTION["ru"])
 
 
-def build_messages(question: str, image: str, language: str) -> list[Message]:
+_TITLE_HINT = {
+    "ru": "Заголовок активного окна: «{title}».",
+    "en": "Active window title: \"{title}\".",
+}
+
+
+def build_messages(
+    question: str, image: str, language: str, *, title: str = ""
+) -> list[Message]:
     """Собрать запрос к зрячей модели.
 
     Вопрос и картинка идут **одной репликой пользователя**: они про одно и то же,
     и разносить их по сообщениям значит заставлять модель догадываться, к чему
     относится вопрос.
+
+    Заголовок окна идёт подсказкой: на кадре из сериала видно «Сезон 3, Серия
+    10», а название самого сериала — только во вкладке. Без него на «кто это»
+    модель описывала внешность (10.10.2026, 22:45).
     """
+    text = question
+    if title.strip():
+        hint = _TITLE_HINT.get(language, _TITLE_HINT["ru"]).format(title=title.strip())
+        text = f"{question}\n\n{hint}"
     return [
         Message.system(_SYSTEM.get(language, _SYSTEM["ru"])),
-        Message.user(question, images=(image,)),
+        Message.user(text, images=(image,)),
     ]
 
 
@@ -264,6 +289,22 @@ def monitors() -> list[Box]:
     return sorted(found, key=lambda box: (box[0], box[1]))
 
 
+def foreground_title() -> str:
+    """Заголовок активного окна; пусто, если узнать нечем."""
+    if sys.platform != "win32":
+        return ""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    handle = user32.GetForegroundWindow()
+    if not handle:
+        return ""
+    buffer = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(wintypes.HWND(handle), buffer, len(buffer))
+    return buffer.value
+
+
 def region(target: str) -> Box | None:
     """Какой прямоугольник снимать. ``None`` — весь виртуальный стол."""
     if sys.platform != "win32":
@@ -339,7 +380,7 @@ class ScreenSkill(Skill):
     meta = SkillMeta(
         name="screen",
         description="Зрение: смотрит на экран и отвечает на вопросы о том, что видно",
-        version="0.1.2",
+        version="0.2.0",
         platforms=("windows",),
         spoken=("экран", "зрение", "screen", "vision"),
     )
@@ -392,7 +433,9 @@ class ScreenSkill(Skill):
         Годится на всё, что человек видит глазами: текст ошибки, содержимое
         окна, что за программа открыта, что написано в сообщении.
 
-        :param question: о чём спросить; пусто — просто описать экран.
+        :param question: вопрос владельца его же словами, ничего не дописывая
+            от себя: «кто это» значит имя и роль, а не описание внешности;
+            пусто — просто описать экран.
         :param target: что снимать. ``screen`` — монитор с активным окном,
             ``window`` — только активное окно, ``all`` — все мониторы сразу,
             номер (``1``, ``2``, ``3``) — конкретный монитор слева направо.
@@ -428,14 +471,16 @@ class ScreenSkill(Skill):
             )
             return ToolResult.failure("снимок слишком велик", speech=_NO_SCREEN)
 
+        title = await asyncio.to_thread(foreground_title)
         # Обещание из шапки модуля: каждый уход картинки наружу виден в логе.
         self.context.logger.info(
-            "Снимок экрана уходит в облако: %s, вопрос: %r",
+            "Снимок экрана уходит в облако: %s, вопрос: %r, окно: %r",
             describe(size, len(payload)),
             asked,
+            title,
         )
 
-        messages = build_messages(asked, to_data_uri(payload), language)
+        messages = build_messages(asked, to_data_uri(payload), language, title=title)
         try:
             response = await self.context.llm.complete(messages, task=VISION_TASK)
         except (LLMError, LLMNotConfigured) as exc:

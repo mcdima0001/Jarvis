@@ -92,6 +92,35 @@ def foreign_script(text: str) -> bool:
     """Есть ли в тексте буквы не кириллицы и не латиницы."""
     return bool(_FOREIGN_LETTERS.search(text))
 
+#: Сколько своих слов модели терпимо в аргументе выученной формулировки.
+#:
+#: Аргумент, который модель **сочинила**, а не услышала, выученным становится
+#: приказом: живой случай 10.10.2026, 22:45. «Кто этот мужик на экране?» модель
+#: разбора отдала в `screen.look` вопросом «…Опиши, что видно: внешность,
+#: одежда, контекст» — и зрячая модель честно описала внешность вместо имени и
+#: роли. Выучилось это навсегда: та же фраза задавала бы чужой вопрос без
+#: модели. Пересказ с парой своих слов («Твери» → «Тверь», «скажи» → «») —
+#: норма, четыре и больше чужих слов, да ещё большинство, — уже сочинение.
+MAX_INVENTED_WORDS = 3
+
+_WORD = re.compile(r"[^\W\d_]{3,}")
+
+
+def invented(utterance: str, arguments: Mapping[str, Any]) -> str:
+    """Имя аргумента, который модель дописала от себя, или пустая строка.
+
+    Слова сравниваются по началу (четыре буквы): падеж меняется, корень нет.
+    """
+    heard = {word[:4] for word in _WORD.findall(utterance.lower())}
+    for name, value in arguments.items():
+        if not isinstance(value, str):
+            continue
+        words = _WORD.findall(value.lower())
+        own = [word for word in words if word[:4] not in heard]
+        if len(own) > MAX_INVENTED_WORDS and len(own) * 2 > len(words):
+            return str(name)
+    return ""
+
 #: Сколько формулировок держать в памяти.
 #:
 #: Предел нужен не ради места на диске, а потому что **память копит ошибки
@@ -331,7 +360,13 @@ class LearnedResolver:
         if self._registry is None:
             return ()
         known = await self._load()
-        dead = [key for key, entry in known.items() if self._is_dead(entry) or foreign_script(key)]
+        dead = [
+            key
+            for key, entry in known.items()
+            if self._is_dead(entry)
+            or foreign_script(key)
+            or invented(key, entry.get("arguments") or {})
+        ]
         if not dead:
             return ()
 
@@ -344,7 +379,8 @@ class LearnedResolver:
 
         self._known = data
         logger.info(
-            "Выученное почищено: %d формулировк(и) — на исчезнувшие инструменты или ослышки",
+            "Выученное почищено: %d формулировк(и) — на исчезнувшие инструменты, "
+            "ослышки или сочинённые моделью аргументы",
             len(dead),
         )
         return tuple(dead)
@@ -417,6 +453,12 @@ class LearnedResolver:
             return ""
         if foreign_script(key):
             logger.info("Формулировку %r не запоминаю: в ней чужой алфавит — это ослышка", key)
+            return ""
+        made_up = invented(utterance, intent.arguments)
+        if made_up:
+            logger.info(
+                "Формулировку %r не запоминаю: %s модель дописала от себя", key, made_up
+            )
             return ""
 
         previous = known.get(key) or {}

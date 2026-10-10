@@ -148,6 +148,19 @@ def test_question_and_image_travel_in_one_message() -> None:
     assert messages[1].images == ("data:image/png;base64,AAAA",)
 
 
+def test_window_title_travels_as_a_hint() -> None:
+    """Название сериала есть только во вкладке, на кадре — «Серия 10»."""
+    messages = screen.build_messages("кто это", "x", "ru", title="Наруто — Сезон 3")
+    assert messages[1].content.startswith("кто это")
+    assert "«Наруто — Сезон 3»" in messages[1].content
+
+
+def test_who_is_it_asks_for_a_name_not_a_description() -> None:
+    """10.10.2026: на «кто это» модель описала внешность вместо имени и роли."""
+    assert "кто это по сюжету" in screen.build_messages("кто это", "x", "ru")[0].content
+    assert "in the story" in screen.build_messages("who is it", "x", "en")[0].content
+
+
 def test_system_prompt_follows_the_language_of_the_question() -> None:
     """Русская подсказка на английском вопросе утащила бы и ответ в русский."""
     assert "aloud" in screen.build_messages("what is this", "x", "en")[0].content
