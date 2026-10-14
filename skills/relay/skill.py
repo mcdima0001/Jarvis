@@ -33,7 +33,7 @@ from dataclasses import dataclass
 
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jarvis.skills.relay")
 
 #: Сколько читать за раз в каждую сторону туннеля.
 BUFFER = 64 * 1024
