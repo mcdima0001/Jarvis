@@ -41,6 +41,8 @@ BUFFER = 64 * 1024
 MAX_HEAD = 8 * 1024
 #: Сколько ждать заголовка от клиента и соединения с адресатом, с.
 HANDSHAKE_S = 10.0
+#: Через сколько снова пробовать открыть порт, если он не открылся, с.
+RETRY_S = 10.0
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 
@@ -126,18 +128,30 @@ class RelaySkill(Skill):
     async def on_start(self) -> None:
         if not self._enabled:
             return
+        if not await self._listen():
+            # Адреса Tailscale при старте службы может ещё не быть: пробуем дальше,
+            # иначе ноут остался бы без облаков до ручного перезапуска.
+            logger.warning("Прокси не поднялся: %s — пробую каждые %.0f с", self._error, RETRY_S)
+            self.context.scope.spawn(self._keep_trying(), name="relay-listen")
+
+    async def _keep_trying(self) -> None:
+        while not await self._listen():
+            await asyncio.sleep(RETRY_S)
+
+    async def _listen(self) -> bool:
         try:
             self._server = await asyncio.start_server(self._serve, self._host, self._port)
         except OSError as exc:
             self._error = f"порт {self._host}:{self._port} не открылся: {exc}"
-            logger.warning("Прокси не поднялся: %s", self._error)
-            return
+            return False
+        self._error = ""
         logger.info(
             "Прокси для ноутбука на %s:%d (клиенты %s, порты %s)",
             self._host, self._port,
             ", ".join(map(str, self._allow)) or "никто",
             ", ".join(map(str, sorted(self._ports))) or "никакие",
         )
+        return True
 
     async def on_stop(self) -> None:
         server, self._server = self._server, None

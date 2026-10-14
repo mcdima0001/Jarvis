@@ -37,6 +37,10 @@ _REQUIREMENTS = {
     "silero": ("torch", "silero"),
     "xtts": ("TTS", "xtts"),
     "edge": ("edge_tts", "edge"),
+    "vosk": ("vosk_tts", "vosk"),
+    # Облаку нужен только httpx, а он основной. Без этой строки fish проверялся
+    # как piper и на сервере без piper молчал (14.10.2026).
+    "fish": ("httpx", "full"),
 }
 
 

@@ -151,3 +151,27 @@ async def test_disabled_relay_opens_no_port() -> None:
         assert (await skill.health()).detail == "выключен"
     finally:
         await skill.on_stop()
+
+
+async def test_busy_port_is_retried_until_it_frees(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Адреса Tailscale при старте может ещё не быть — прокси пробует снова."""
+    monkeypatch.setattr(relay, "RETRY_S", 0.05)
+    blocker = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    port = blocker.sockets[0].getsockname()[1]
+    tasks: list[asyncio.Task[Any]] = []
+    skill = relay.RelaySkill()
+    values = {"enabled": True, "host": "127.0.0.1", "port": port, "allow": ["127.0.0.0/8"]}
+    skill._context = SimpleNamespace(
+        setting=lambda key, default=None: values.get(key, default),
+        scope=SimpleNamespace(spawn=lambda coro, name=None: tasks.append(asyncio.create_task(coro)) or tasks[-1]),
+    )
+    await skill.on_setup()
+    await skill.on_start()
+    try:
+        assert skill._server is None and "не открылся" in (await skill.health()).detail
+        blocker.close()
+        await blocker.wait_closed()
+        await asyncio.wait_for(tasks[0], 2)
+        assert skill._server is not None
+    finally:
+        await skill.on_stop()
