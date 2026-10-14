@@ -7,7 +7,8 @@
 Пишется **каждая** фраза, которую услышал детектор речи, а не только поданная
 в распознавание: самое интересное — как раз пропущенное имя и ложное
 срабатывание. Файлы лежат локально, в `memory/` (в репозиторий не едет),
-по папке на день, и сами удаляются через `keep_days`. В комнате говорят не
+по папке на день, и сами удаляются через `keep_days` (ноль — хранить всегда:
+записи копятся для обучения имени, 14.10.2026). В комнате говорят не
 только владелец — поэтому по умолчанию выключено и включается осознанно.
 """
 
@@ -28,11 +29,12 @@ class UtteranceRecorder:
     def __init__(self, directory: Path, *, sample_rate: int, keep_days: int = 3) -> None:
         self.directory = directory
         self._rate = sample_rate
-        self._keep_days = max(1, keep_days)
+        #: Ноль — не удалять никогда.
+        self._keep_days = max(0, keep_days)
 
     def cleanup(self, *, today: datetime | None = None) -> int:
         """Удалить дни старше `keep_days`. Возвращает, сколько папок удалено."""
-        if not self.directory.is_dir():
+        if not self._keep_days or not self.directory.is_dir():
             return 0
         border = (today or datetime.now()).date() - timedelta(days=self._keep_days)
         removed = 0

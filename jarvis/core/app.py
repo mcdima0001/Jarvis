@@ -135,10 +135,15 @@ def _false_wake(config: JarvisConfig, registry: ToolRegistry) -> FalseWakeLog | 
     logger.info(
         "Ложные срабатывания имени пишу в %s (%s%s)",
         log.directory,
-        f"звук хранится {wake.false_keep_days} дн." if wake.false_audio else "без звука",
+        (_kept(wake.false_keep_days, "звук хранится") if wake.false_audio else "без звука"),
         f", старых дней удалено: {removed}" if removed else "",
     )
     return log
+
+
+def _kept(days: int, what: str) -> str:
+    """Срок хранения для строки лога: ноль значит «всегда»."""
+    return f"{what} всегда" if days <= 0 else f"{what} {days} дн."
 
 
 def _recorder(config: JarvisConfig) -> UtteranceRecorder | None:
@@ -152,9 +157,9 @@ def _recorder(config: JarvisConfig) -> UtteranceRecorder | None:
     )
     removed = recorder.cleanup()
     logger.info(
-        "Записываю каждую услышанную фразу в %s (хранится %d дн.%s)",
+        "Записываю каждую услышанную фразу в %s (%s%s)",
         recorder.directory,
-        config.audio.record_keep_days,
+        _kept(config.audio.record_keep_days, "записи хранятся"),
         f", старых дней удалено: {removed}" if removed else "",
     )
     return recorder

@@ -77,3 +77,13 @@ def test_old_sound_is_removed_but_the_journal_stays(tmp_path: Path) -> None:
     assert log.cleanup(today=datetime(2026, 10, 10)) == 1
     assert (tmp_path / "audio" / "2026-10-09").is_dir()
     assert (tmp_path / "false.jsonl").exists()
+
+
+def test_zero_keep_days_keeps_all_sound(tmp_path: Path) -> None:
+    """Ноль — звук хранится всегда: это отрицательные примеры для обучения имени."""
+    from datetime import datetime
+
+    (tmp_path / "audio" / "2020-01-01").mkdir(parents=True)
+    log = FalseWakeLog(tmp_path, sample_rate=RATE, keep_days=0)
+    assert log.cleanup(today=datetime(2026, 10, 14)) == 0
+    assert (tmp_path / "audio" / "2020-01-01").is_dir()

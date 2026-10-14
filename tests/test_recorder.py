@@ -22,3 +22,11 @@ def test_phrase_is_saved_with_name_mark_and_old_days_go(tmp_path: Path) -> None:
     assert recorder.cleanup(today=datetime(2026, 9, 19)) == 1
     assert (tmp_path / "recordings" / "2026-09-19").exists()
     assert (tmp_path / "recordings" / "не дата").exists()
+
+
+def test_zero_keep_days_keeps_everything(tmp_path: Path) -> None:
+    """Ноль — хранить всегда: записи копятся для обучения имени (14.10.2026)."""
+    recorder = UtteranceRecorder(tmp_path / "recordings", sample_rate=16000, keep_days=0)
+    (tmp_path / "recordings" / "2020-01-01").mkdir(parents=True)
+    assert recorder.cleanup(today=datetime(2026, 10, 14)) == 0
+    assert (tmp_path / "recordings" / "2020-01-01").exists()

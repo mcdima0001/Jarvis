@@ -83,7 +83,8 @@ class FalseWakeLog:
     ) -> None:
         self.directory = directory
         self._rate = sample_rate
-        self._keep_days = max(1, keep_days)
+        #: Ноль — не удалять никогда.
+        self._keep_days = max(0, keep_days)
         self._audio = audio
         self._playing = playing
         self._pending: _Pending | None = None
@@ -165,7 +166,7 @@ class FalseWakeLog:
     def cleanup(self, *, today: datetime | None = None) -> int:
         """Удалить звук старше `keep_days`. Журнал не трогается: он весит байты."""
         folder = self.directory / AUDIO
-        if not folder.is_dir():
+        if not self._keep_days or not folder.is_dir():
             return 0
         border = (today or datetime.now()).date() - timedelta(days=self._keep_days)
         removed = 0
