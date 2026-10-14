@@ -66,6 +66,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="работать без консоли, со значком в трее (так запускает Jarvis.exe)",
     )
     parser.add_argument(
+        "--service",
+        action="store_true",
+        help="запуск службой systemd: перезапуск — выход с кодом 75, службу поднимет systemd",
+    )
+    parser.add_argument(
         "--devices",
         action="store_true",
         help="показать звуковые устройства и выйти",
@@ -218,11 +223,21 @@ async def _amain(
 
     if tray is not None:
         tray.attach(app)
+    if args.service and app.lifecycle is not None:
+        # Поднимет заново systemd (`Restart=on-failure`), как на ноуте — трей.
+        app.lifecycle.restartable = True
     await app.run()
+    if args.service and app.lifecycle is not None and app.lifecycle.restarting:
+        return SERVICE_RESTART
     if tray is not None and app.lifecycle is not None and app.lifecycle.restarting:
         # Попросили голосом или сам на новое ядро: процесс поднимет трей.
         tray.restart = True
     return 0
+
+
+#: Код выхода «перезапусти меня» для systemd. Обычный выход (0) — «выключись
+#: насовсем», и служба остаётся лежать, как и просили голосом.
+SERVICE_RESTART = 75
 
 
 def main(argv: list[str] | None = None) -> int:

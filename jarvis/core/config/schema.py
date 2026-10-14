@@ -469,9 +469,24 @@ class WakeWordConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class NetworkAudioConfig:
+    """Колонка по сети (`audio.engine: network`, `audio/network.py`)."""
+
+    #: Где ждать колонку. Снаружи её встречает Caddy с TLS, поэтому по
+    #: умолчанию только своя машина.
+    host: str = "127.0.0.1"
+    port: int = 8770
+    #: Общий секрет колонки. Пустой — колонка не подключится вовсе: порт
+    #: смотрит в интернет, а это микрофон в квартире.
+    token: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AudioConfig:
     """Захват и воспроизведение звука."""
 
+    #: ``sounddevice`` — микрофон и колонки этой машины, ``network`` —
+    #: колонка на ESP32 по сети (`audio.network`), ``none`` — без звука.
     engine: str = "sounddevice"
     input_device: str | int | None = None
     output_device: str | int | None = None
@@ -515,6 +530,7 @@ class AudioConfig:
     vad: VADConfig = field(default_factory=VADConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
     aec: AECConfig = field(default_factory=AECConfig)
+    network: NetworkAudioConfig = field(default_factory=NetworkAudioConfig)
 
     @property
     def frame_bytes(self) -> int:

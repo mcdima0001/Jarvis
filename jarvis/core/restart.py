@@ -213,6 +213,7 @@ class Lifecycle:
 
     Сам процесс перезапускает не он, а тот, кто его запустил, — трей
     (`tray/session.py`): новый процесс поднимается, когда старый отпустит место.
+    На сервере это systemd (`--service`): выход с кодом 75, и служба встаёт снова.
     Поэтому без трея перезапуска нет (`restartable`), и инструмент честно
     об этом говорит, а не выключает ассистента с обещанием вернуться.
     """
@@ -247,7 +248,7 @@ class Lifecycle:
         :return: пусто, если перезапуск начат; иначе — почему нет.
         """
         if not self.restartable:
-            return "перезапуск умеет только Jarvis из трея"
+            return "перезапуск умеет только Jarvis из трея или службы"
         if not checked and self._check is not None and self.code_changed():
             error = await self._check()
             if error:

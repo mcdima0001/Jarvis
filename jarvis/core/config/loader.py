@@ -29,6 +29,7 @@ from .schema import (
     LoggingConfig,
     MemoryConfig,
     ModelPrice,
+    NetworkAudioConfig,
     PersonaConfig,
     ProviderConfig,
     RestartConfig,
@@ -317,11 +318,20 @@ def _build_llm(section: Mapping[str, Any]) -> LLMConfig:
     )
 
 
-def load_config(path: Path | str | None = None, *, root: Path | None = None) -> JarvisConfig:
+#: Местные настройки машины рядом с config.yaml: ложатся поверх него вглубь.
+#: В git не едут — так серверный экземпляр (колонка, прокси) отличается от ноута,
+#: не правя общий файл, который приходит с каждым `git pull`.
+LOCAL_CONFIG = "local.yaml"
+
+
+def load_config(
+    path: Path | str | None = None, *, root: Path | None = None, local: bool = True
+) -> JarvisConfig:
     """Прочитать конфиг и вернуть проверенную структуру настроек.
 
     :param path: путь к config.yaml; по умолчанию ``config/config.yaml``.
     :param root: корень проекта, относительно которого разрешаются пути.
+    :param local: наложить ``local.yaml`` из того же каталога, если он есть.
     """
     config_path = Path(path or os.environ.get("JARVIS_CONFIG") or DEFAULT_CONFIG_PATH)
     config_path = config_path.expanduser().resolve()
@@ -337,6 +347,15 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
         raise ConfigError(f"Не удалось разобрать {config_path}: {exc}") from exc
     if not isinstance(raw, Mapping):
         raise ConfigError(f"{config_path}: ожидался словарь на верхнем уровне")
+    local_path = config_path.parent / LOCAL_CONFIG
+    if local and local_path.is_file():
+        try:
+            over = yaml.safe_load(local_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"Не удалось разобрать {local_path}: {exc}") from exc
+        if not isinstance(over, Mapping):
+            raise ConfigError(f"{local_path}: ожидался словарь на верхнем уровне")
+        raw = _deep_merge(dict(raw), over)
 
     data = _expand(raw)
 
@@ -543,6 +562,11 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                 tail_ms=float(_section(audio, "aec").get("tail_ms", 400.0)),
                 residual=bool(_section(audio, "aec").get("residual", True)),
                 high_pass_hz=float(_section(audio, "aec").get("high_pass_hz", 120.0)),
+            ),
+            network=NetworkAudioConfig(
+                host=str(_section(audio, "network").get("host") or "127.0.0.1"),
+                port=int(_section(audio, "network").get("port", 8770)),
+                token=str(_section(audio, "network").get("token") or ""),
             ),
         ),
         persona=PersonaConfig(

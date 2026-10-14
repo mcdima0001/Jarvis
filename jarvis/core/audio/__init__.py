@@ -183,9 +183,12 @@ def build_audio(config: AudioConfig, *, meter: "Meter | None" = None) -> AudioSt
             wake_word=wake_word,
         )
 
+    if config.engine == "network":
+        return _network(config, vad, wake_word)
+
     if config.engine != "sounddevice":
         logger.warning(
-            "Неизвестный движок звука %r — использую заглушки. Доступен: sounddevice",
+            "Неизвестный движок звука %r — использую заглушки. Доступны: sounddevice, network",
             config.engine,
         )
         return AudioStack(
@@ -213,6 +216,32 @@ def build_audio(config: AudioConfig, *, meter: "Meter | None" = None) -> AudioSt
         source=_with_echo_cancelling(microphone, config, meter=meter),
         # Вывод знает микрофон: перечитать устройства можно, только закрыв его.
         sink=SoundDeviceSink(config, source=microphone),
+        vad=vad,
+        wake_word=wake_word,
+        hotwords=_build_hotwords(config, wake_word),
+    )
+
+
+def _network(config: AudioConfig, vad: VAD, wake_word: WakeWord) -> AudioStack:
+    """Колонка по сети. Без токена не поднимается: это микрофон в квартире."""
+    if not config.network.token:
+        logger.warning(
+            "Колонка по сети не поднимается: не задан audio.network.token — без него "
+            "микрофон в квартире мог бы подменить кто угодно. Звук отключён"
+        )
+        return AudioStack(source=NullAudioSource(), sink=NullAudioSink(), vad=vad, wake_word=wake_word)
+    from .network import NetworkAudio
+
+    hub = NetworkAudio(
+        host=config.network.host,
+        port=config.network.port,
+        token=config.network.token,
+        sample_rate=config.sample_rate,
+        frame_ms=config.frame_ms,
+    )
+    return AudioStack(
+        source=hub.source,
+        sink=hub.sink,
         vad=vad,
         wake_word=wake_word,
         hotwords=_build_hotwords(config, wake_word),

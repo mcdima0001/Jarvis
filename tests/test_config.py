@@ -474,7 +474,7 @@ def test_every_scalar_in_project_config_reaches_the_schema() -> None:
 
     root = Path(__file__).resolve().parent.parent
     raw = yaml.safe_load((root / "config" / "config.yaml").read_text(encoding="utf-8"))
-    config = load_config(root / "config" / "config.yaml")
+    config = load_config(root / "config" / "config.yaml", local=False)
     sections = {
         "logging": (raw.get("logging") or {}, config.logging),
         "audio": (raw.get("audio") or {}, config.audio),
@@ -498,3 +498,16 @@ def test_every_scalar_in_project_config_reaches_the_schema() -> None:
             if not same:
                 lost.append(f"{name}.{key}: в файле {value!r}, в схеме {got!r}")
     assert not lost, "\n".join(lost)
+
+
+def test_local_yaml_lies_over_the_main_config_deeply(tmp_path: Path) -> None:
+    """`local.yaml` рядом с конфигом меняет только названное, остальное — из общего."""
+    path = _write(tmp_path, _MINIMAL)
+    (path.parent / "local.yaml").write_text(
+        "audio:\n  engine: network\n  network:\n    token: t\n", encoding="utf-8"
+    )
+    config = load_config(path)
+    assert config.audio.engine == "network"
+    assert config.audio.network.token == "t"
+    assert config.audio.network.port == 8770  # не названное — умолчание
+    assert load_config(path, local=False).audio.engine != "network"

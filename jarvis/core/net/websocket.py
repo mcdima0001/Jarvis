@@ -1,8 +1,9 @@
 """Минимальный WebSocket-сервер для локальных клиентов.
 
-Нужен ровно для одного: расширение браузера должно постоянно висеть на связи
-с Jarvis. Обычный HTTP тут не подходит — команды идут от Jarvis к браузеру, а
-слушать порт расширение не умеет, только подключаться.
+Нужен для того, кто сам подключается к Jarvis и висит на связи: расширение
+браузера (команды идут от Jarvis к браузеру, а слушать порт расширение не
+умеет) и колонка на ESP32 (звук в обе стороны двоичными кадрами,
+`audio/network.py`). Обычный HTTP не подходит ни тому, ни другому.
 
 Своя реализация вместо библиотеки по двум причинам. Первая: протокол
 (RFC 6455) в нужном объёме — это разбор кадров и рукопожатие, полторы сотни
@@ -124,6 +125,11 @@ def encode_frame(payload: bytes, *, opcode: int = OP_TEXT) -> bytes:
     return bytes(header) + payload
 
 
+def _accusative(peer: str) -> str:
+    """«Жду колонку», а не «жду колонка»: винительный для слов на -а."""
+    return peer[:-1] + "у" if peer.endswith("а") else peer
+
+
 class _Client:
     """Одно соединение: куда писать и как закрыть."""
 
@@ -145,8 +151,12 @@ class WebSocketServer:
     """Слушает локальный порт и держит соединения с доверенными клиентами.
 
     :param on_message: вызывается на каждое текстовое сообщение клиента.
+    :param on_binary: вызывается на каждое двоичное сообщение; нет — двоичное
+        читается как текст, как было до колонки.
+    :param on_disconnect: клиент ушёл (сам, вытеснен или порт закрылся).
     :param token: общий секрет; пустой — проверка отключена.
     :param origins: разрешённые начала ``Origin``; пусто — проверка отключена.
+    :param peer: кто подключается — для строк лога («расширение», «колонка»).
     """
 
     def __init__(
@@ -158,6 +168,9 @@ class WebSocketServer:
         origins: Iterable[str] = (),
         on_message: Callable[[str], Awaitable[None]] | None = None,
         on_connect: Callable[[], Awaitable[None]] | None = None,
+        on_binary: Callable[[bytes], Awaitable[None]] | None = None,
+        on_disconnect: Callable[[], Awaitable[None]] | None = None,
+        peer: str = "расширение",
     ) -> None:
         self._host = host
         self._port = port
@@ -167,6 +180,9 @@ class WebSocketServer:
         #: после него самого, и подставить их конструктором не получается.
         self.on_message = on_message
         self.on_connect = on_connect
+        self.on_binary = on_binary
+        self.on_disconnect = on_disconnect
+        self._peer = peer
         self._server: asyncio.AbstractServer | None = None
         #: Список, а не множество: порядок подключения тут значим. Команда
         #: уходит **одному** клиенту — последнему подключившемуся, см. `send`.
@@ -192,7 +208,7 @@ class WebSocketServer:
         if self._server is not None:
             return
         self._server = await asyncio.start_server(self._serve, self._host, self._port)
-        logger.info("Жду расширение на %s", self.address)
+        logger.info("Жду %s на %s", _accusative(self._peer), self.address)
 
     async def stop(self) -> None:
         """Закрыть порт и все соединения.
@@ -247,6 +263,22 @@ class WebSocketServer:
             return 1
         return 0
 
+    async def send_binary(self, data: bytes) -> int:
+        """Отправить двоичное сообщение последнему подключившемуся (как `send`).
+
+        :return: 1, если ушло, иначе 0.
+        """
+        while self._clients:
+            client = self._clients[-1]
+            try:
+                await client.send(data, opcode=OP_BINARY)
+            except OSError as exc:
+                logger.debug("Клиент отвалился при отправке: %s", exc)
+                await self._drop(client)
+                continue
+            return 1
+        return 0
+
     # --- соединение --------------------------------------------------------
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -261,7 +293,7 @@ class WebSocketServer:
                 return
             await self._replace_same_origin(client)
             self._clients.append(client)
-            logger.info("Расширение подключилось (%s)", client.origin or "без origin")
+            logger.info("На связи: %s (%s)", self._peer, client.origin or "без origin")
             if self.on_connect is not None:
                 await self.on_connect()
             await self._read_loop(reader, client)
@@ -270,14 +302,16 @@ class WebSocketServer:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Ошибка в соединении с расширением")
+            logger.exception("Ошибка в соединении: %s", self._peer)
         finally:
             if handler is not None:
                 self._handlers.discard(handler)
             if client is not None:
                 await self._drop(client)
                 if not client.replaced:
-                    logger.info("Расширение отключилось")
+                    logger.info("Связь оборвалась: %s", self._peer)
+                if self.on_disconnect is not None:
+                    await self.on_disconnect()
             else:
                 writer.close()
 
@@ -303,7 +337,9 @@ class WebSocketServer:
             await self._reject(writer, "403 Forbidden")
             return None
 
-        if self._token and not hmac.compare_digest(query_token(target), self._token):
+        if self._token and not hmac.compare_digest(
+            query_token(target).encode("utf-8"), self._token.encode("utf-8")
+        ):
             logger.warning("Отказано в подключении: неверный токен (origin %r)", origin)
             await self._reject(writer, "403 Forbidden")
             return None
@@ -330,6 +366,8 @@ class WebSocketServer:
     async def _read_loop(self, reader: asyncio.StreamReader, client: _Client) -> None:
         """Читать кадры и собирать из них сообщения."""
         parts: list[bytes] = []
+        #: Код первого кадра сообщения: продолжения приходят с кодом 0.
+        kind = OP_TEXT
         while True:
             fin, opcode, payload = await self._read_frame(reader)
 
@@ -342,6 +380,8 @@ class WebSocketServer:
             if opcode == OP_PONG:
                 continue
 
+            if not parts:
+                kind = opcode
             parts.append(payload)
             if not fin:
                 # Длинное сообщение разбито на куски — ждём последний.
@@ -349,7 +389,9 @@ class WebSocketServer:
 
             message = b"".join(parts)
             parts.clear()
-            if self.on_message is not None:
+            if kind == OP_BINARY and self.on_binary is not None:
+                await self.on_binary(message)
+            elif self.on_message is not None:
                 await self.on_message(message.decode("utf-8", errors="replace"))
 
     @staticmethod
@@ -385,7 +427,7 @@ class WebSocketServer:
             return
         for client in [item for item in self._clients if item.origin == fresh.origin]:
             client.replaced = True
-            logger.info("Прежнее соединение расширения закрыто: подключилось новое")
+            logger.info("Прежнее соединение закрыто (%s): подключилось новое", self._peer)
             await self._drop(client)
 
     async def _drop(self, client: _Client) -> None:
