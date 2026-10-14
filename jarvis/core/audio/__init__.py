@@ -11,7 +11,7 @@ from jarvis.core.meter import Meter
 
 from .devices import SoundDeviceSink, SoundDeviceSource, list_devices
 from .echo import EchoCancellingSource
-from .null import AlwaysActiveWakeWord, NullAudioSink, NullAudioSource, PassthroughVAD
+from .null import AlwaysActiveWakeWord, DeafWakeWord, NullAudioSink, NullAudioSource, PassthroughVAD
 from .protocol import (
     VAD,
     AudioFrame,
@@ -94,6 +94,12 @@ def _build_wake_word(config: AudioConfig) -> WakeWord:
     """
     if config.wake_word.mode != "acoustic":
         return AlwaysActiveWakeWord(config.wake_word.phrase)
+    if config.wake_word.engine == "remote":
+        # Имя слышит колонка; её детектор подставит `_network`. Без колонки — глухо,
+        # а не «всегда»: иначе обращением считалась бы любая речь в комнате.
+        if config.engine != "network":
+            logger.warning("Имя «слышит колонка» (engine: remote), но звук не с колонки — имя не услышу")
+        return DeafWakeWord(config.wake_word.phrase)
 
     try:
         if config.wake_word.engine == "openwakeword":
@@ -102,7 +108,7 @@ def _build_wake_word(config: AudioConfig) -> WakeWord:
             return _vosk_wake_word(config)
         logger.warning(
             "Неизвестный движок активации %r — слушаю имя по тексту. "
-            "Доступны: vosk, openwakeword",
+            "Доступны: vosk, openwakeword, remote (с audio.engine: network)",
             config.wake_word.engine,
         )
     except Exception as exc:  # noqa: BLE001 — нет модели, сети или пакета
@@ -238,7 +244,11 @@ def _network(config: AudioConfig, vad: VAD, wake_word: WakeWord) -> AudioStack:
         token=config.network.token,
         sample_rate=config.sample_rate,
         frame_ms=config.frame_ms,
+        silence_ms=config.silence_ms,
+        phrase=config.wake_word.phrase,
     )
+    if config.wake_word.mode == "acoustic" and config.wake_word.engine == "remote":
+        wake_word = hub.wake_word
     return AudioStack(
         source=hub.source,
         sink=hub.sink,

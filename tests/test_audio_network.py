@@ -13,8 +13,9 @@ import pytest
 
 from jarvis.core.audio import NullAudioSource, build_audio
 from jarvis.core.audio import network as network_module
-from jarvis.core.audio.network import NetworkAudio
-from jarvis.core.config import AudioConfig, NetworkAudioConfig
+from jarvis.core.audio.network import NetworkAudio, RemoteWakeWord
+from jarvis.core.audio.protocol import AudioFrame
+from jarvis.core.config import AudioConfig, NetworkAudioConfig, WakeWordConfig
 from jarvis.core.net import OP_BINARY, OP_TEXT, unmask
 
 TOKEN = "секрет-колонки"
@@ -213,3 +214,55 @@ def test_network_engine_builds_the_speaker() -> None:
     stack = build_audio(AudioConfig(engine="network", network=NetworkAudioConfig(token=TOKEN)))
     assert stack.source.service_name == "audio-in(колонка)"
     assert stack.sink.service_name == "audio-out(колонка)"
+
+
+async def test_wake_from_the_speaker_marks_the_first_frame_after_it() -> None:
+    """Имя слышит колонка: срабатывает кадр, пришедший после `wake`, а не раньше."""
+    hub, port = await _hub()
+    try:
+        speaker = await _connected(port)
+        frame = RATE * 30 // 1000 * 2
+        await speaker.send(b"\x01\x00" * (frame // 2), OP_BINARY)  # до имени
+        await asyncio.sleep(0.05)
+        await speaker.say({"type": "wake"})
+        await asyncio.sleep(0.05)
+        await speaker.send(b"\x02\x00" * (frame // 2), OP_BINARY)  # после
+        frames = hub.source.frames()
+        before = await asyncio.wait_for(anext(frames), 1)
+        after = await asyncio.wait_for(anext(frames), 1)
+        assert not hub.wake_word.detect(before)
+        assert hub.wake_word.detect(after)
+        assert not hub.wake_word.detect(after), "одно имя — одно срабатывание"
+        speaker.close()
+    finally:
+        await hub.sink.stop()
+
+
+async def test_end_from_the_speaker_closes_the_phrase_with_silence() -> None:
+    """Колонка замолчала: конвейеру подкладывается тишина длиннее `silence_ms`."""
+    hub, port = await _hub()
+    try:
+        speaker = await _connected(port)
+        await speaker.say({"type": "end"})
+        frames = hub.source.frames()
+        got = [await asyncio.wait_for(anext(frames), 1) for _ in range(hub._end_frames)]
+        assert all(frame.data == bytes(len(frame.data)) for frame in got)
+        assert len(got) * 30 > 800
+        speaker.close()
+    finally:
+        await hub.sink.stop()
+
+
+def test_remote_name_without_a_speaker_hears_nothing() -> None:
+    """Без колонки «имя слышит колонка» — значит не слышит никто, а не «всегда»."""
+    stack = build_audio(AudioConfig(engine="none", wake_word=WakeWordConfig(mode="acoustic", engine="remote")))
+    assert not stack.wake_word.detect(AudioFrame(data=b"\x00\x00" * 480, sample_rate=RATE))
+
+
+def test_remote_name_with_a_speaker_listens_to_it() -> None:
+    config = AudioConfig(
+        engine="network",
+        network=NetworkAudioConfig(token=TOKEN),
+        wake_word=WakeWordConfig(mode="acoustic", engine="remote"),
+    )
+    assert isinstance(build_audio(config).wake_word, RemoteWakeWord)

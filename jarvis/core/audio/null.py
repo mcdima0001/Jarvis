@@ -109,3 +109,25 @@ class AlwaysActiveWakeWord:
 
     def reset(self) -> None:
         """Состояния нет — сбрасывать нечего."""
+
+
+class DeafWakeWord:
+    """Детектор, который имени не слышит никогда.
+
+    Стоит там, где имя должен был сообщить кто-то другой (колонка, ``engine:
+    remote``), а сообщить некому. Пропускающая заглушка здесь опасна: в режиме
+    ``acoustic`` она объявила бы обращением любую речь в комнате.
+    """
+
+    def __init__(self, phrase: str) -> None:
+        self._phrase = phrase
+
+    @property
+    def phrase(self) -> str:
+        return self._phrase
+
+    def detect(self, frame: AudioFrame) -> bool:
+        return False
+
+    def reset(self) -> None:
+        """Сбрасывать нечего."""

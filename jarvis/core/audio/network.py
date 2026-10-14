@@ -16,6 +16,10 @@ Caddy, и без токена микрофон в квартире мог бы �
 * колонка → Jarvis, двоичное: микрофон с частотой ``audio.sample_rate``;
 * колонка → Jarvis, текст: ``{"type": "hello", "rate": 16000, "device": "…"}``
   при подключении и ``{"type": "played"}``, когда доиграла реплику до конца;
+* колонка → Jarvis, текст: ``{"type": "wake"}`` — колонка сама услышала имя;
+  следом идёт звук фразы, начиная с кусочка до имени (Deepgram должен
+  услышать «Джарвис» целиком, иначе конвейер не отрежет его от команды).
+  ``{"type": "end"}`` — колонка сама услышала конец фразы и замолкает;
 * Jarvis → колонка, текст: ``{"type": "play", "rate": 24000}`` — начало
   реплики с её частотой, затем двоичные куски, затем ``{"type": "end"}``;
   ``{"type": "stop"}`` — оборвать звучащее («замолчи»).
@@ -25,6 +29,13 @@ Caddy, и без токена микрофон в квартире мог бы �
 хвост, и вернись `play` раньше — колонка услышала бы саму себя и выполнила
 собственную реплику как команду. Колонка говорит ``played``; не сказала —
 ждём по длительности звука.
+
+**Имя ловит колонка, а не сервер** (решение владельца 14.10.2026: «на сервере
+только голова»). Модель имени на сервере — это 124–185 МБ памяти на устройство,
+которое и так умеет слушать само (microWakeWord на ESP32-S3, учится на записях
+`audio.record_dir` с ноута). Поэтому детектор здесь — `RemoteWakeWord`: он
+не слушает, а верит сигналу ``wake``. Колонка шлёт звук только после имени,
+так что чужая речь в квартире на сервер не уходит вовсе.
 
 **Звук уходит с опережением, а не весь сразу**: не больше `LEAD_S` впереди
 того, что уже должно было прозвучать. Памяти у ESP мало, а «замолчи» должно
@@ -57,6 +68,10 @@ PLAYED_GRACE_S = 1.5
 #: Сколько секунд микрофона держать в очереди. Конвейер отстал дольше — старое
 #: выбрасывается: команда, сказанная три секунды назад, уже не новость.
 QUEUE_S = 3.0
+#: Сколько тишины подложить конвейеру после ``end``: дольше `audio.silence_ms`,
+#: чтобы детектор речи закрыл фразу сразу, а не ждал следующего звука, которого
+#: колонка уже не пришлёт.
+END_SILENCE_MS = 400
 
 
 class NetworkAudio:
@@ -75,10 +90,17 @@ class NetworkAudio:
         token: str,
         sample_rate: int,
         frame_ms: int,
+        silence_ms: int = 800,
+        phrase: str = "джарвис",
     ) -> None:
         self._rate = sample_rate
         self._frame_bytes = int(sample_rate * frame_ms / 1000) * 2
-        self._frames: deque[bytes] = deque(maxlen=max(1, int(QUEUE_S * 1000 / frame_ms)))
+        #: Кадр и время его прихода: по времени `RemoteWakeWord` узнаёт первый
+        #: кадр после ``wake``, даже если конвейер разбирает очередь с опозданием.
+        self._frames: deque[tuple[bytes, float]] = deque(maxlen=max(1, int(QUEUE_S * 1000 / frame_ms)))
+        self._end_frames = max(1, (silence_ms + END_SILENCE_MS) // frame_ms)
+        #: Когда колонка сказала «услышала имя»; ноль — не говорила.
+        self.wake_at = 0.0
         self._arrived = asyncio.Event()
         self._buffer = bytearray()
         #: Микрофон колонки пишет не с той частотой — звук не принимаем.
@@ -100,6 +122,7 @@ class NetworkAudio:
         )
         self.source = NetworkSource(self)
         self.sink = NetworkSink(self)
+        self.wake_word = RemoteWakeWord(self, phrase)
 
     @property
     def connected(self) -> bool:
@@ -140,6 +163,11 @@ class NetworkAudio:
         kind = message.get("type")
         if kind == "played":
             self._played.set()
+        elif kind == "wake":
+            self.wake_at = time.time()
+            logger.info("Колонка услышала имя")
+        elif kind == "end":
+            self._close_phrase()
         elif kind == "hello":
             self.device = str(message.get("device") or "")
             rate = message.get("rate", self._rate)
@@ -158,10 +186,20 @@ class NetworkAudio:
         self._buffer += data
         size = self._frame_bytes
         while len(self._buffer) >= size:
-            if len(self._frames) == self._frames.maxlen:
-                self.dropped += 1
-            self._frames.append(bytes(self._buffer[:size]))
+            self._push(bytes(self._buffer[:size]))
             del self._buffer[:size]
+        self._arrived.set()
+
+    def _push(self, frame: bytes) -> None:
+        if len(self._frames) == self._frames.maxlen:
+            self.dropped += 1
+        self._frames.append((frame, time.time()))
+
+    def _close_phrase(self) -> None:
+        """Колонка замолчала: дописать тишину, чтобы детектор речи закрыл фразу."""
+        self._buffer.clear()
+        for _ in range(self._end_frames):
+            self._push(bytes(self._frame_bytes))
         self._arrived.set()
 
     async def frames(self) -> AsyncIterator[AudioFrame]:
@@ -169,7 +207,8 @@ class NetworkAudio:
             while not self._frames:
                 self._arrived.clear()
                 await self._arrived.wait()
-            yield AudioFrame(data=self._frames.popleft(), sample_rate=self._rate, timestamp=time.time())
+            data, at = self._frames.popleft()
+            yield AudioFrame(data=data, sample_rate=self._rate, timestamp=at)
 
     # --- к колонке ----------------------------------------------------------
 
@@ -219,6 +258,28 @@ class NetworkAudio:
 
     async def _send(self, message: dict[str, Any]) -> None:
         await self._server.send(json.dumps(message))
+
+
+class RemoteWakeWord:
+    """Имя слышит колонка: детектор срабатывает на первом кадре после ``wake``."""
+
+    def __init__(self, hub: NetworkAudio, phrase: str) -> None:
+        self._hub = hub
+        self._phrase = phrase
+
+    @property
+    def phrase(self) -> str:
+        return self._phrase
+
+    def detect(self, frame: AudioFrame) -> bool:
+        at = self._hub.wake_at
+        if at and frame.timestamp >= at:
+            self._hub.wake_at = 0.0
+            return True
+        return False
+
+    def reset(self) -> None:
+        """Сбрасывать нечего: ждём следующего ``wake``."""
 
 
 class NetworkSource:
