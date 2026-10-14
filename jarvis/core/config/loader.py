@@ -367,6 +367,8 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             console=bool(log.get("console", True)),
             time_format=str(log.get("time_format", "%d.%m.%y, %H:%M:%S")),
             keep_days=int(log.get("keep_days", 14)),
+            file_level=str(log.get("file_level", "DEBUG")).upper(),
+            color=str(log.get("color", "auto")),
         ),
         runtime=RuntimeConfig(
             worker_threads=int(runtime.get("worker_threads", 2)),
@@ -486,6 +488,10 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
             min_utterance_ms=int(audio.get("min_utterance_ms", 300)),
             echo_tail_ms=int(audio.get("echo_tail_ms", 500)),
             pending_limit=int(audio.get("pending_limit", 2)),
+            preroll_ms=int(audio.get("preroll_ms", 300)),
+            record_dir=str(audio.get("record_dir") or ""),
+            record_keep_days=int(audio.get("record_keep_days", 3)),
+            working_after_s=float(audio.get("working_after_s", 2.5)),
             activation_sound=(
                 _resolve(project_root, audio["activation_sound"])
                 if audio.get("activation_sound")
@@ -526,6 +532,10 @@ def load_config(path: Path | str | None = None, *, root: Path | None = None) -> 
                     str(word).lower() for word in (_section(audio, "wake_word").get("hotwords") or ())
                 ),
                 hotwords_mode=str(_section(audio, "wake_word").get("hotwords_mode") or "off"),
+                rivals=bool(_section(audio, "wake_word").get("rivals", True)),
+                false_log=str(_section(audio, "wake_word").get("false_log") or ""),
+                false_audio=bool(_section(audio, "wake_word").get("false_audio", True)),
+                false_keep_days=int(_section(audio, "wake_word").get("false_keep_days", 14)),
             ),
             aec=AECConfig(
                 enabled=bool(_section(audio, "aec").get("enabled", True)),

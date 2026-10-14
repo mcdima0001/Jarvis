@@ -458,3 +458,43 @@ def test_env_expands_in_skill_file(
     config = load_config(_write(tmp_path, _MINIMAL))
 
     assert config.skills.settings["foo"]["token"] == "s3cr3t"
+
+
+def test_every_scalar_in_project_config_reaches_the_schema() -> None:
+    """Значение из `config.yaml` доезжает до схемы, а не молча меняется на умолчание.
+
+    Загрузчик перечисляет поля руками, и забытое поле не ломает ничего — оно
+    просто остаётся умолчанием. Так `audio.record_dir` (19.09) и
+    `wake_word.false_log` (10.10) были включены в конфиге и ни разу не
+    сработали: запись фраз и журнал ложных срабатываний молчали три недели.
+    """
+    import dataclasses
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    raw = yaml.safe_load((root / "config" / "config.yaml").read_text(encoding="utf-8"))
+    config = load_config(root / "config" / "config.yaml")
+    sections = {
+        "logging": (raw.get("logging") or {}, config.logging),
+        "audio": (raw.get("audio") or {}, config.audio),
+        "audio.wake_word": ((raw.get("audio") or {}).get("wake_word") or {}, config.audio.wake_word),
+        "audio.vad": ((raw.get("audio") or {}).get("vad") or {}, config.audio.vad),
+        "audio.aec": ((raw.get("audio") or {}).get("aec") or {}, config.audio.aec),
+    }
+    lost = []
+    for name, (values, loaded) in sections.items():
+        fields = {field.name for field in dataclasses.fields(loaded)}
+        for key, value in values.items():
+            if key not in fields or not isinstance(value, (str, int, float, bool)):
+                continue
+            got = getattr(loaded, key)
+            if isinstance(got, Path):
+                continue  # пути раскрываются относительно корня
+            if isinstance(got, str) and isinstance(value, str):
+                same = got.lower() == value.lower()  # уровни логов приводятся к верхнему
+            else:
+                same = got == value
+            if not same:
+                lost.append(f"{name}.{key}: в файле {value!r}, в схеме {got!r}")
+    assert not lost, "\n".join(lost)
