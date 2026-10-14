@@ -345,7 +345,9 @@ class VoicePipeline:
         if self._is_slow is not None:
             self._resolved = self._events.subscribe(IntentResolved.NAME, self._on_resolved)
         phrase = self._config.wake_word.phrase
-        if self._acoustic:
+        if self._acoustic and self._config.wake_word.engine == "remote":
+            logger.info("Слушаю. Имя «%s» слышит колонка и шлёт сигнал", phrase)
+        elif self._acoustic:
             logger.info("Слушаю. Имя «%s» ловлю моделью, по звуку", phrase)
         elif self._config.wake_word.mode in ("text", "acoustic"):
             logger.info("Слушаю. Обращение по имени: «%s»", phrase)
