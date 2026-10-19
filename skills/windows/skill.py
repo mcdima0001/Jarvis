@@ -1466,10 +1466,13 @@ def start_elevated(target: str) -> None:
 class WindowsSkill(Skill):
     """Запуск программ, блокировка компьютера и громкость."""
 
+    #: Кого снимать с паузы переключателем (`media.TOGGLE_TO_RESUME`).
+    _toggle: frozenset[int] = frozenset()
+
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.16.1",
+        version="0.16.2",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
@@ -1794,6 +1797,7 @@ class WindowsSkill(Skill):
             self.log.debug("Видео нашёл, а окна нет — паузу не ставлю")
             return
         self._paused = found
+        self._toggle = frozenset({s.pid for s in sessions if s.pid in found and s.name.lower() in media().TOGGLE_TO_RESUME})
         names = ", ".join(sorted({s.name for s in sessions if s.pid in found}))
         self.log.info("Ставлю видео на паузу на время реплики: %s", names)
 
@@ -1827,6 +1831,7 @@ class WindowsSkill(Skill):
             if not self._paused and not self._vlc_paused and not self._tabs_paused:
                 return
             paused, self._paused = self._paused, ()
+            toggle, self._toggle = self._toggle, frozenset()
             tabs, self._tabs_paused = self._tabs_paused, []
             if tabs and self.tools.has(RESUME_TABS_TOOL):
                 try:
@@ -1836,7 +1841,7 @@ class WindowsSkill(Skill):
             if self._vlc_paused:
                 self._vlc_paused = False
                 await asyncio.to_thread(self._vlc.play)
-            sent = await asyncio.to_thread(media().play, set(paused))
+            sent = await asyncio.to_thread(media().play, set(paused), toggle)
             self.log.debug("Видео снял с паузы: %d окон", sent)
 
     async def _duck(self) -> None:

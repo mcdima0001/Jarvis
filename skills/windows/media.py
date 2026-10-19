@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 WM_APPCOMMAND = 0x0319
 APPCOMMAND_MEDIA_PAUSE = 47
 APPCOMMAND_MEDIA_PLAY = 46
+APPCOMMAND_MEDIA_PLAY_PAUSE = 14
 APPCOMMAND_MEDIA_NEXTTRACK = 11
 APPCOMMAND_MEDIA_PREVIOUSTRACK = 12
 
@@ -161,9 +162,22 @@ def pause(pids: Container[int]) -> int:
     return tell(pids, APPCOMMAND_MEDIA_PAUSE)
 
 
-def play(pids: Container[int]) -> int:
-    """Снять с паузы."""
-    return tell(pids, APPCOMMAND_MEDIA_PLAY)
+#: Плееры, которые на «играй» с паузы не выходят, а слушают только
+#: переключатель. VLC 4 (19.10.2026): `APPCOMMAND_MEDIA_PAUSE` ставит паузу, а
+#: `APPCOMMAND_MEDIA_PLAY` зовёт `playlist->play()`, который для уже начатого
+#: и замершего плеера ничего не делает — фильм так и стоял после реплики.
+#: Переключатель тут безопасен: шлём его только тем, кого сами только что
+#: остановили, то есть известно, что они на паузе.
+TOGGLE_TO_RESUME = frozenset({"vlc.exe"})
+
+
+def play(pids: Iterable[int], toggle: Container[int] = frozenset()) -> int:
+    """Снять с паузы; процессам из `toggle` — переключателем."""
+    every = set(pids)
+    flip = {pid for pid in every if pid in toggle}
+    plain = every - flip
+    sent = tell(plain, APPCOMMAND_MEDIA_PLAY) if plain else 0
+    return sent + (tell(flip, APPCOMMAND_MEDIA_PLAY_PAUSE) if flip else 0)
 
 
 def next_track(pids: Container[int]) -> int:
