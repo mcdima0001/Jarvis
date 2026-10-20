@@ -219,3 +219,53 @@ def menu_commands(menu: tuple[MenuItem | None, ...] = MENU) -> list[tuple[int, M
         (0 if item is None else FIRST_COMMAND + index, item)
         for index, item in enumerate(menu)
     ]
+
+
+# --- всплывашка (toast.py) --------------------------------------------------
+
+#: Точка у текста: что включилось — зелёным, что свернулось — янтарным.
+KIND_COLORS = {"on": "#6ee7a0", "off": "#ffa928", "info": PALETTE["accent"]}
+
+#: Появление, показ и угасание, секунды.
+FADE_IN_S, HOLD_S, FADE_OUT_S = 0.18, 4.5, 0.6
+#: Непрозрачность на полном показе: чуть сквозит, как стекло панели.
+FULL_ALPHA = 242
+
+
+@dataclass(frozen=True)
+class ToastLayout:
+    """Размеры всплывашки в пикселях монитора."""
+
+    width: int
+    height: int
+
+
+def toast_layout(scale: float = 1.0, *, detail: bool = False) -> ToastLayout:
+    """Шапка с именем, строка текста и, если есть, строка помельче."""
+    height = 92 if detail else 74
+    return ToastLayout(width=round(340 * scale), height=round(height * scale))
+
+
+def toast_position(work: tuple[int, int, int, int], size: tuple[int, int], gap: int) -> tuple[int, int]:
+    """Левый верхний угол: правый нижний угол рабочей области, с зазором.
+
+    Рабочая область — без панели задач, где бы она ни стояла: справа внизу
+    значит над часами, а не под ними.
+    """
+    _, _, right, bottom = work
+    width, height = size
+    return right - gap - width, bottom - gap - height
+
+
+def toast_alpha(elapsed: float, *, hold: float = HOLD_S) -> int | None:
+    """Непрозрачность через ``elapsed`` секунд после показа; ``None`` — пора убрать."""
+    if elapsed < 0:
+        return 0
+    if elapsed < FADE_IN_S:
+        return round(FULL_ALPHA * elapsed / FADE_IN_S)
+    if elapsed < FADE_IN_S + hold:
+        return FULL_ALPHA
+    left = FADE_IN_S + hold + FADE_OUT_S - elapsed
+    if left <= 0:
+        return None
+    return round(FULL_ALPHA * left / FADE_OUT_S)

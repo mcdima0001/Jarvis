@@ -327,6 +327,23 @@ async def test_sleep_takes_the_number_from_speech(registry) -> None:
     assert result.value["minutes"] == 45
 
 
+async def test_a_call_is_deaf_until_woken(registry) -> None:
+    """Созвон: не слушать и придержать напоминания; «проснись» снимает оба режима."""
+    from jarvis.core.state import MEETING
+    from jarvis.core.tools import collect_tools
+
+    modes = Modes()
+    for item in collect_tools(_core(modes=modes), namespace="core"):
+        registry.register(item)
+
+    result = await registry.invoke("core.meeting")
+    assert result.ok and modes.active(DEAF) and modes.active(MEETING)
+    assert "проснись" in result.speech_for("ru").lower()
+
+    await registry.invoke("core.as_usual")
+    assert not modes.active(MEETING) and not modes.active(DEAF)
+
+
 async def test_as_usual_is_honest_about_doing_nothing(registry) -> None:
     """«Как обычно» в обычном состоянии — не «сделал», а «нечего делать»."""
     from jarvis.core.tools import collect_tools

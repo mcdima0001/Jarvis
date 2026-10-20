@@ -29,7 +29,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from jarvis.core.contracts import Event, SystemStarted, SystemStopping
+from jarvis.core.contracts import Event, NoticeRequested, SystemStarted, SystemStopping
 from jarvis.core.logging.visible import visible_levels
 
 from .autostart import Autostart, AutostartError
@@ -434,6 +434,7 @@ class TraySession:
         self._hush = pipeline.interrupt if pipeline is not None else None
         app.events.subscribe(SystemStarted.NAME, self._on_started)
         app.events.subscribe(SystemStopping.NAME, self._on_stopping)
+        app.events.subscribe(NoticeRequested.NAME, self._on_notice)
         self._set(STARTING)
         if self._quit_early:
             app.stopping.set()
@@ -512,6 +513,12 @@ class TraySession:
 
     async def _on_stopping(self, event: Event) -> None:
         self._set(STOPPING)
+
+    async def _on_notice(self, event: Event) -> None:
+        """Тихое уведомление — всплывашкой у значка; значок без неё — не беда."""
+        show = getattr(self.icon, "notice", None)
+        if show is not None and isinstance(event, NoticeRequested):
+            show(event.text, event.detail, event.kind)
 
     def _set(self, state: str) -> None:
         self.icon.set_state(state, tip(self.name, state))

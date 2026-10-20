@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 from jarvis.core.attention import LOW, NORMAL
 from jarvis.core.contracts import AnnouncementRequested, Intent, SkillLoaded
 from jarvis.core.pending import Pending
-from jarvis.core.state import BRIEF, DEAF, QUIET
+from jarvis.core.state import BRIEF, DEAF, MEETING, QUIET
 from jarvis.core.tts.normalize import plural_form
 
 if TYPE_CHECKING:
@@ -60,7 +60,7 @@ WATCHED = frozenset({".py", ".html", ".js", ".css"})
 
 #: Режимы, которые переживают перезапуск. Только флаги: тихий режим (`QUIET`)
 #: ещё и закрывает панель и отпускает модели, и флаг без этих действий врал бы.
-CARRIED_MODES = (DEAF, BRIEF)
+CARRIED_MODES = (DEAF, BRIEF, MEETING)
 
 #: Что собирается пробно: конфиг и вся сборка системы, без звука и скиллов.
 #: Скилл упасть может — он загружается отдельно и никого за собой не тянет;

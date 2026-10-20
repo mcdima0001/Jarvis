@@ -67,9 +67,9 @@ protocols:
                ZPFloatVideoWndClass, ZPFloatToolbarClass]
       # при переходе в комнату сессий Zoom пересоздаёт окно — это не конец
       gone_s: 20
-    quiet: true                            # ни «запущен», ни «свёрнут»: на всю конференцию
+    quiet: true                            # вслух ни «запущен», ни «свёрнут» — только всплывашкой
     steps:
-      - {tool: core.sleep, args: {minutes: 0}}   # не слушать, пока она идёт
+      - {tool: core.meeting}               # не слушать, и напоминания ждут конца
     after:
       - проснись
 

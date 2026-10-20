@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from jarvis.core.contracts import ToolResult, Utterance
+from jarvis.core.contracts import NoticeRequested, ToolResult, Utterance
 from jarvis.core.router.resolvers.phrase import PhraseResolver
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 from jarvis.core.text import best_match
@@ -157,7 +157,7 @@ class ProtocolsSkill(Skill):
     meta = SkillMeta(
         name="protocols",
         description="Протоколы: одна фраза — набор действий",
-        version="0.4.0",
+        version="0.5.0",
         spoken=("протоколы", "protocols"),
     )
 
@@ -240,13 +240,18 @@ class ProtocolsSkill(Skill):
                 # Тихий протокол молчит и о запуске, и о сбоях: повод у него
                 # такой, что любая реплика прозвучит не к месту — в конференции.
                 said = "" if item.quiet else self._tell(f"{{address}}, протокол «{item.name}» запущен.")
+                # Всплывашка — всем, и тихому тоже: глазами видно, что он
+                # сработал, а в конференции не слышно никому.
+                self._show(f"Протокол «{item.name}» запущен", "on", self._active[item.name])
                 # Запомнили, сказали ли о запуске: от этого зависит, обязаны ли
                 # мы досказать об отбое.
                 self._announced[item.name] = said == "say"
                 result = await self._carry_out(item.name, item.steps)
                 failed = (result.value or {}).get("failed") if result.value else None
-                if failed and not item.quiet:
-                    self._tell(f"В протоколе «{item.name}» не вышло: {', '.join(failed)}.")
+                if failed:
+                    if not item.quiet:
+                        self._tell(f"В протоколе «{item.name}» не вышло: {', '.join(failed)}.")
+                    self._show(f"Протокол «{item.name}»: не всё вышло", "info", ", ".join(failed))
             elif was and not found:
                 # Повод сменился (одно окно конференции на другое) — это не
                 # пропажа. Пропал совсем — ждём `gone_s`, вдруг вернётся.
@@ -266,6 +271,11 @@ class ProtocolsSkill(Skill):
                 announced = self._announced.pop(item.name, False)
                 if not item.quiet:
                     self._tell(f"Протокол «{item.name}» свёрнут, всё как было.", important=announced)
+                self._show(f"Протокол «{item.name}» свёрнут", "off", "всё как было")
+
+    def _show(self, text: str, kind: str, detail: str = "") -> None:
+        """Тихое уведомление на экране — всплывашкой справа внизу, если есть трей."""
+        self.events.emit(NoticeRequested(source=self.meta.name, text=text, detail=detail, kind=kind))
 
     def _tell(self, text: str, *, important: bool = False) -> str:
         """Сказать вслух о протоколе, который запустился сам.

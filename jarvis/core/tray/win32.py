@@ -37,6 +37,7 @@ from .menu import (
     menu_commands,
 )
 from .popup import StyledMenu
+from .toast import Toast
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ _WM_APP = 0x8000
 _WM_STATE = _WM_APP + 1
 #: Событие мыши над значком — так его называет `uCallbackMessage`.
 _WM_TRAY = _WM_APP + 2
+#: Пришло уведомление: показать всплывашку справа внизу.
+_WM_NOTICE = _WM_APP + 3
 
 _NIM_ADD, _NIM_MODIFY, _NIM_DELETE = 0, 1, 2
 _NIF_MESSAGE, _NIF_ICON, _NIF_TIP = 0x1, 0x2, 0x4
@@ -280,6 +283,9 @@ class TrayIcon:
         self._owned: list[int] = []
         self._taskbar_created = 0
         self._styled: StyledMenu | None = None
+        self._toast: Toast | None = None
+        #: Последнее уведомление: строки окну не передать сообщением, а потоки разные.
+        self._notice: tuple[str, str, str] | None = None
         #: Какие переключатели меню включены — спрашивается при каждом открытии.
         #: Ставит сессия трея (`TraySession.checked_actions`).
         self.checked: Callable[[], frozenset[str]] = frozenset
@@ -297,6 +303,12 @@ class TrayIcon:
         self._state, self._tip = state, tip
         if self._hwnd and self._user32 is not None:
             self._user32.PostMessageW(self._hwnd, _WM_STATE, 0, 0)
+
+    def notice(self, text: str, detail: str = "", kind: str = "info") -> None:
+        """Показать всплывашку. Можно звать из любого потока."""
+        self._notice = (text, detail, kind)
+        if self._hwnd and self._user32 is not None:
+            self._user32.PostMessageW(self._hwnd, _WM_NOTICE, 0, 0)
 
     def stop(self) -> None:
         """Убрать значок и остановить поток."""
@@ -372,6 +384,9 @@ class TrayIcon:
         if self._styled is not None:
             self._styled.dispose()
             self._styled = None
+        if self._toast is not None:
+            self._toast.dispose()
+            self._toast = None
         for icon in self._owned:
             user32.DestroyIcon(icon)
         self._owned.clear()
@@ -426,6 +441,13 @@ class TrayIcon:
                 return 0
             if message == _WM_STATE:
                 self._notify(_NIM_MODIFY)
+                return 0
+            if message == _WM_NOTICE:
+                notice, self._notice = self._notice, None
+                if notice is not None:
+                    if self._toast is None:
+                        self._toast = Toast(self._icon_files)
+                    self._toast.show(*notice)
                 return 0
             if self._taskbar_created and message == self._taskbar_created:
                 self._notify(_NIM_ADD)

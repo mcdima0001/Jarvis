@@ -209,6 +209,35 @@ async def test_reminder_is_announced_when_due(
     assert "позвонить" in heard[0].text
 
 
+async def test_a_reminder_waits_for_the_call_to_end(
+    tmp_path: Path, events: LocalEventBus, registry: ToolRegistry
+) -> None:
+    """Просьба владельца 20.10.2026: напоминание на всю конференцию хуже опоздания.
+
+    Пока идёт созвон, срок не теряется, а ждёт; кончился — звучит.
+    """
+    heard: list[Any] = []
+
+    async def note(event: Any) -> None:
+        heard.append(event)
+
+    events.subscribe("assistant.announcement", note)
+    skill = await _ready(tmp_path, events, registry)
+    await registry.invoke("reminders.remind", {"request": "через 1 секунду позвонить"})
+
+    skill.context.modes.on("meeting")
+    await asyncio.sleep(1.2)
+    await skill._fire_due()
+    await asyncio.sleep(0.05)
+    assert not heard, "посреди созвона молчим"
+    assert len(skill._items) == 1, "но и не теряем"
+
+    skill.context.modes.off("meeting")
+    await skill._fire_due()
+    await asyncio.sleep(0.05)
+    assert len(heard) == 1 and "позвонить" in heard[0].text
+
+
 async def test_reminder_survives_a_restart(
     tmp_path: Path, events: LocalEventBus, registry: ToolRegistry
 ) -> None:

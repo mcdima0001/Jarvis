@@ -72,7 +72,9 @@ async def _skill(settings: dict[str, Any]) -> tuple[Any, Studio, ToolRegistry]:
         logger=logging.getLogger("test.protocols"),
         tools=registry,
         announcer=SimpleNamespace(offer=lambda text, **kwargs: "say"),
+        events=SimpleNamespace(emit=lambda event: skill.notices.append(event)),
     )
+    skill.notices = []
     await skill.on_setup()
     for item in collect_tools(skill, namespace="protocols"):
         registry.register(item)
@@ -301,6 +303,10 @@ async def test_a_meeting_window_silences_without_a_word() -> None:
     shown.clear()
     await skill._look([meeting], nothing, windows)
     assert studio.calls[-1] == ("volume", {"level": 50}), "конференция кончилась — вернули"
+    assert [(n.text, n.kind) for n in skill.notices] == [
+        ("Протокол «конференция» запущен", "on"),
+        ("Протокол «конференция» свёрнут", "off"),
+    ], "молча, но глазами видно: всплывашка о запуске и отбое"
 
 
 def test_the_zoom_protocol_in_the_shipped_config_is_quiet() -> None:
@@ -310,7 +316,7 @@ def test_the_zoom_protocol_in_the_shipped_config_is_quiet() -> None:
     raw = yaml.safe_load((_ROOT / "skills" / "protocols" / "config.yaml").read_text(encoding="utf-8"))
     meeting = protocols.parse_protocols(raw["protocols"])["конференция"]
     assert meeting.quiet and "zpcontentviewwndclass" in meeting.windows
-    assert meeting.steps == [{"tool": "core.sleep", "args": {"minutes": 0}}]
+    assert meeting.steps == [{"tool": "core.meeting", "args": {}}], "созвон: не слушать и придержать напоминания"
 
 
 async def test_a_brief_gap_in_the_reason_does_not_unwind(monkeypatch) -> None:

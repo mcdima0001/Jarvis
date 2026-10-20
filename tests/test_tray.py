@@ -20,7 +20,7 @@ import pytest
 
 from jarvis.__main__ import _parse_args
 from jarvis.core.bus import LocalEventBus
-from jarvis.core.contracts import SystemStarted
+from jarvis.core.contracts import NoticeRequested, SystemStarted
 from jarvis.core.tray import menu
 from jarvis.core.tray.session import (
     RESTART_ENV,
@@ -520,3 +520,46 @@ async def test_an_open_panel_is_not_opened_twice(tmp_path: Path) -> None:
     session.attach(_app(tmp_path))
     session.on_action(menu.PANEL_TOGGLE)
     assert opened == [] and panels.done == [("focus", 7)]
+
+
+# --- всплывашка (toast.py) ---------------------------------------------------
+
+
+async def test_a_notice_reaches_the_icon_as_a_toast(tmp_path: Path) -> None:
+    """«Протокол запущен» — всплывашкой: в конференции голосом нельзя (20.10.2026)."""
+    shown: list[tuple[str, str, str]] = []
+
+    class NoticeIcon(FakeIcon):
+        def notice(self, text: str, detail: str = "", kind: str = "info") -> None:
+            shown.append((text, detail, kind))
+
+    session = TraySession(NoticeIcon, opener=lambda path: None)
+    app = _app(tmp_path)
+    session.attach(app)
+    await app.events.publish(NoticeRequested(source="protocols", text="Протокол «игра» запущен", kind="on"))
+    assert shown == [("Протокол «игра» запущен", "", "on")]
+
+
+async def test_an_icon_without_toasts_ignores_notices(tmp_path: Path) -> None:
+    session = _session()
+    app = _app(tmp_path)
+    session.attach(app)
+    await app.events.publish(NoticeRequested(source="protocols", text="x"))
+
+
+def test_the_toast_sits_above_the_clock_with_a_gap() -> None:
+    """Справа внизу рабочей области, то есть над панелью задач, а не под ней."""
+    layout = menu.toast_layout(1.5, detail=True)
+    assert (layout.width, layout.height) == (510, 138)
+    assert menu.toast_layout(1.0).height < menu.toast_layout(1.0, detail=True).height
+    x, y = menu.toast_position((0, 0, 1920, 1032), (340, 92), 16)
+    assert (x + 340, y + 92) == (1904, 1016)
+
+
+def test_the_toast_fades_in_holds_and_fades_out() -> None:
+    assert menu.toast_alpha(0.0) == 0
+    assert 0 < menu.toast_alpha(menu.FADE_IN_S / 2) < menu.FULL_ALPHA  # type: ignore[operator]
+    assert menu.toast_alpha(1.0) == menu.FULL_ALPHA
+    end = menu.FADE_IN_S + menu.HOLD_S + menu.FADE_OUT_S
+    assert 0 < menu.toast_alpha(end - 0.1) < menu.FULL_ALPHA  # type: ignore[operator]
+    assert menu.toast_alpha(end) is None, "догорела — окно убирают"

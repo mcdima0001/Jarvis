@@ -34,6 +34,7 @@ from jarvis.core.situation import Situation
 from jarvis.core.state import (
     BRIEF,
     DEAF,
+    MEETING,
     MORNING_HOUR,
     QUIET,
     WAKE_PHRASES,
@@ -1475,6 +1476,32 @@ class CoreTools:
                 "en": ("Going quiet, sir. Still listening.",
                        "I'll stay out of the way.",
                        "Understood. Enjoy the game."),
+            },
+        )
+
+    @tool(
+        name="meeting",
+        phrases=[
+            "я на созвоне", "у меня созвон", "я на конференции", "у меня конференция",
+            "i'm in a call", "i'm in a meeting",
+        ],
+        routable=False,
+        reversible=True,
+    )
+    async def meeting(self) -> ToolResult:
+        """Идёт созвон: не слушать и не говорить без вопроса, пока не скажут «проснись».
+
+        Сильнее, чем «не слушай»: напоминания тоже ждут конца созвона — их
+        обещали, но не на всю конференцию. Сам включается протоколом
+        «конференция», когда открыто окно Zoom; голосом — для остальных звонков.
+        """
+        self._modes.on(DEAF)
+        self._modes.on(MEETING)
+        return ToolResult.success(
+            {"mode": MEETING},
+            speech={
+                "ru": ("Молчу до конца созвона. Скажи «Джарвис, проснись», когда закончишь.",),
+                "en": ("Staying silent until the call ends. Say “Jarvis, wake up” when you're done.",),
             },
         )
 

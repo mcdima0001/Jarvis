@@ -37,6 +37,7 @@ from datetime import datetime, timedelta
 from jarvis.core.contracts import AnnouncementRequested, ToolResult, parse_number
 from jarvis.core.errors import MemoryError_
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
+from jarvis.core.state import MEETING
 from jarvis.core.tools import tool
 from jarvis.core.tts.normalize import plural_form
 
@@ -392,7 +393,7 @@ class RemindersSkill(Skill):
 
     meta = SkillMeta(
         name="reminders",
-        version="0.2.0",
+        version="0.3.0",
         description="Напоминания и таймеры: «напомни через час», «таймер на 10 минут»",
         spoken=("напоминания", "часы", "таймеры", "reminders"),
     )
@@ -498,6 +499,11 @@ class RemindersSkill(Skill):
         now = time.time()
         due = [item for item in self._items if float(item["at"]) <= now]
         if not due:
+            return
+        if self.context.modes.active(MEETING):
+            # Идёт созвон: напоминание на всю конференцию хуже опоздания. Срок
+            # остаётся в списке и сработает, когда созвон кончится, — с
+            # «напоминание было на …», так что ясно, о чём речь.
             return
 
         self._items = [item for item in self._items if float(item["at"]) > now]
