@@ -190,6 +190,37 @@ def running(names: Iterable[str]) -> set[str]:
     return found
 
 
+def window_classes(names: Iterable[str]) -> set[str]:
+    """У каких из названных классов окна есть видимое окно верхнего уровня.
+
+    Повод протокола там, где процесса мало: Zoom сидит в трее весь день, а окно
+    конференции (`ZPContentViewWndClass`) живёт ровно столько, сколько она.
+    Свёрнутое окно Windows считает видимым — и правильно: свернул конференцию,
+    а она идёт.
+    """
+    if sys.platform != "win32":
+        return set()
+    import ctypes
+    from ctypes import wintypes
+
+    wanted = {name.lower() for name in names}
+    found: set[str] = set()
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetClassNameW.argtypes = [wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(handle: int, _: int) -> bool:
+        if user32.IsWindowVisible(handle):
+            kind = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(handle, kind, 256)
+            if kind.value.lower() in wanted:
+                found.add(kind.value.lower())
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
 def spoken_name(process: str, names: Mapping[str, str]) -> str:
     """Как программа называется вслух: «browser.exe» человеку ничего не говорит."""
     low = process.lower()

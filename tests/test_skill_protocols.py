@@ -267,3 +267,89 @@ async def test_an_unheard_start_leaves_the_fold_up_ordinary() -> None:
     await skill._look([game], seen)
 
     assert offered[-1][1] == "normal"
+
+
+async def test_a_meeting_window_silences_without_a_word() -> None:
+    """Конференция Zoom: повод — окно, а не процесс, и о запуске ни звука.
+
+    Zoom.exe висит в трее весь день, а окно конференции живёт, пока она идёт.
+    «Протокол запущен» вслух прозвучал бы на всю конференцию.
+    """
+    skill, studio, _ = await _skill({
+        "pause_s": 0,
+        "protocols": {
+            "конференция": {
+                "when": {"window": ["ZPContentViewWndClass"]},
+                "quiet": True,
+                "steps": [{"tool": "studio.volume", "args": {"level": 0}}],
+                "after": [{"tool": "studio.volume", "args": {"level": 50}}],
+            },
+        },
+    })
+    said: list[str] = []
+    skill.context.announcer.offer = lambda text, **kwargs: said.append(text) or "say"
+    meeting = skill._protocols["конференция"]
+    assert meeting.watched and meeting.windows == ("zpcontentviewwndclass",)
+    shown = {"zpcontentviewwndclass"}
+    nothing = lambda names: set()  # noqa: E731 — процессов этот протокол не ждёт
+    windows = lambda names: {name for name in names if name in shown}  # noqa: E731
+
+    await skill._look([meeting], nothing, windows)
+    assert studio.calls == [("volume", {"level": 0})]
+    assert not said, "о запуске тихого протокола не говорят"
+
+    shown.clear()
+    await skill._look([meeting], nothing, windows)
+    assert studio.calls[-1] == ("volume", {"level": 50}), "конференция кончилась — вернули"
+
+
+def test_the_zoom_protocol_in_the_shipped_config_is_quiet() -> None:
+    """Протокол из конфига скилла: окно Zoom, тишина, сон до конца конференции."""
+    import yaml
+
+    raw = yaml.safe_load((_ROOT / "skills" / "protocols" / "config.yaml").read_text(encoding="utf-8"))
+    meeting = protocols.parse_protocols(raw["protocols"])["конференция"]
+    assert meeting.quiet and "zpcontentviewwndclass" in meeting.windows
+    assert meeting.steps == [{"tool": "core.sleep", "args": {"minutes": 0}}]
+
+
+async def test_a_brief_gap_in_the_reason_does_not_unwind(monkeypatch) -> None:
+    """Комната сессий: Zoom закрывает окно конференции и открывает новое.
+
+    Свернуться на этом стыке — значит проснуться посреди конференции.
+    """
+    skill, studio, _ = await _skill({
+        "pause_s": 0,
+        "protocols": {
+            "конференция": {
+                "when": {"window": ["ZPContentViewWndClass", "ZPFloatVideoWndClass"], "gone_s": 20},
+                "quiet": True,
+                "steps": [{"tool": "studio.volume", "args": {"level": 0}}],
+                "after": [{"tool": "studio.volume", "args": {"level": 50}}],
+            },
+        },
+    })
+    clock = [1000.0]
+    monkeypatch.setattr(protocols.time, "monotonic", lambda: clock[0])
+    meeting = skill._protocols["конференция"]
+    shown = {"zpcontentviewwndclass"}
+    nothing = lambda names: set()  # noqa: E731
+    windows = lambda names: {name for name in names if name in shown}  # noqa: E731
+
+    await skill._look([meeting], nothing, windows)
+    shown.clear()
+    clock[0] += 5
+    await skill._look([meeting], nothing, windows)
+    assert len(studio.calls) == 1, "окна нет пять секунд — ещё не конец"
+
+    shown.add("zpfloatvideowndclass")
+    clock[0] += 5
+    await skill._look([meeting], nothing, windows)
+    assert len(studio.calls) == 1, "конференцию свернули в мини-окно — она идёт"
+
+    shown.clear()
+    clock[0] += 5
+    await skill._look([meeting], nothing, windows)
+    clock[0] += 21
+    await skill._look([meeting], nothing, windows)
+    assert studio.calls[-1] == ("volume", {"level": 50}), "окна нет дольше gone_s — свернулись"

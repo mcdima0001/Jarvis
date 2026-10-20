@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -80,15 +81,33 @@ def parse_protocols(raw: object) -> dict[str, "Protocol"]:
             steps = parse_steps(body.get("steps"))
             after = parse_steps(body.get("after"))
             when = body.get("when")
-            watch = tuple(
-                str(item).lower() for item in (when or {}).get("process", ())
-                if isinstance(when, Mapping) and str(item).strip()
-            )
+            watch = _names(when, "process")
+            windows = _names(when, "window")
+            quiet = bool(body.get("quiet", False))
+            try:
+                gone = max(0.0, float(when.get("gone_s", 0))) if isinstance(when, Mapping) else 0.0
+            except (TypeError, ValueError):
+                gone = 0.0
         else:
-            steps, after, watch = parse_steps(body), [], ()
+            steps, after, watch, windows, quiet, gone = parse_steps(body), [], (), (), False, 0.0
         if steps or after:
-            found[key] = Protocol(name=key, steps=steps, after=after, processes=watch)
+            found[key] = Protocol(
+                name=key, steps=steps, after=after, processes=watch, windows=windows,
+                quiet=quiet, gone_s=gone,
+            )
     return found
+
+
+def _names(when: object, key: str) -> tuple[str, ...]:
+    """Список имён повода (`process`, `window`) — в нижнем регистре, без пустых."""
+    if not isinstance(when, Mapping):
+        return ()
+    raw = when.get(key, ())
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, Sequence):
+        return ()
+    return tuple(str(item).strip().lower() for item in raw if str(item).strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,17 +117,33 @@ class Protocol:
     Повод — имена процессов (`when.process`). Именно они, а не полноэкранное
     окно: полный экран — признак обманчивый, так же выглядит фильм, и протокол
     срабатывал бы посреди кино.
+
+    Бывает, что процесса мало: Zoom висит в трее весь день, а конференция идёт
+    час. Тогда повод — **класс окна** (`when.window`): окно конференции у Zoom
+    своё и живёт ровно столько, сколько она. Класс, а не заголовок: заголовок
+    переводится и совпадает с вкладкой браузера «Zoom Meeting».
+
+    `when.gone_s` — сколько повод обязан отсутствовать, прежде чем протокол
+    свернётся. Zoom при переходе в комнату сессий закрывает окно конференции и
+    открывает новое: без задержки протокол успел бы проснуться посреди неё.
+
+    `quiet` — не объявлять о запуске и отбое вслух. Нужен там, где сам повод значит
+    «молчи»: «протокол запущен» на всю конференцию — ровно то, от чего он и
+    защищает.
     """
 
     name: str
     steps: list[str | dict[str, Any]]
     after: list[str | dict[str, Any]]
     processes: tuple[str, ...] = ()
+    windows: tuple[str, ...] = ()
+    quiet: bool = False
+    gone_s: float = 0.0
 
     @property
     def watched(self) -> bool:
         """Запускается ли сам."""
-        return bool(self.processes)
+        return bool(self.processes or self.windows)
 
 
 def step_label(step: str | Mapping[str, Any]) -> str:
@@ -122,7 +157,7 @@ class ProtocolsSkill(Skill):
     meta = SkillMeta(
         name="protocols",
         description="Протоколы: одна фраза — набор действий",
-        version="0.3.2",
+        version="0.4.0",
         spoken=("протоколы", "protocols"),
     )
 
@@ -139,6 +174,9 @@ class ProtocolsSkill(Skill):
         self._watch = bool(self.context.setting("watch", True))
         #: Какой протокол сейчас «идёт» и из-за какого процесса.
         self._active: dict[str, str] = {}
+        #: С какого момента повод пропал (часы `monotonic`): сворачиваемся,
+        #: только когда он отсутствует дольше `gone_s`.
+        self._gone_since: dict[str, float] = {}
         #: О запуске какого протокола успели сказать вслух: об отбое тех же
         #: обязаны сказать тоже, иначе история остаётся недосказанной.
         self._announced: dict[str, bool] = {}
@@ -165,22 +203,33 @@ class ProtocolsSkill(Skill):
         Список процессов стоит миллисекунды, а заметить запуск игры хочется до
         того, как загрузится уровень.
         """
-        running = self._processes()
+        running = self._machine("running")
         if running is None:
             self.log.warning("Нет psutil — протоколы по поводу работать не будут")
             return
+        windows = self._machine("window_classes")
         while True:
             await asyncio.sleep(self._every)
             try:
-                await self._look(watched, running)
+                await self._look(watched, running, windows)
             except Exception:  # noqa: BLE001 — наблюдатель не должен падать молча
                 self.log.exception("Проверка повода сорвалась")
 
-    async def _look(self, watched: list[Protocol], running: Any) -> None:
-        """Одна проверка: повод появился или пропал."""
+    async def _look(self, watched: list[Protocol], running: Any, windows: Any = None) -> None:
+        """Одна проверка: повод появился или пропал.
+
+        :param running: какие из названных процессов запущены.
+        :param windows: у каких из названных классов есть видимое окно.
+        """
         for item in watched:
-            found = await asyncio.to_thread(running, item.processes)
+            found: set[str] = set()
+            if item.processes:
+                found |= await asyncio.to_thread(running, item.processes)
+            if item.windows and windows is not None:
+                found |= await asyncio.to_thread(windows, item.windows)
             was = self._active.get(item.name, "")
+            if found:
+                self._gone_since.pop(item.name, None)
             if found and not was:
                 self._active[item.name] = sorted(found)[0]
                 self.log.info("Повод для «%s»: %s", item.name, self._active[item.name])
@@ -188,15 +237,23 @@ class ProtocolsSkill(Skill):
                 # ассистент в этот момент неотличим от не сработавшего. Живой
                 # запуск 24.09.2026: протокол отработал целиком и молча, и
                 # владелец спросил, сработал ли он вообще.
-                said = self._tell(f"{{address}}, протокол «{item.name}» запущен.")
+                # Тихий протокол молчит и о запуске, и о сбоях: повод у него
+                # такой, что любая реплика прозвучит не к месту — в конференции.
+                said = "" if item.quiet else self._tell(f"{{address}}, протокол «{item.name}» запущен.")
                 # Запомнили, сказали ли о запуске: от этого зависит, обязаны ли
                 # мы досказать об отбое.
                 self._announced[item.name] = said == "say"
                 result = await self._carry_out(item.name, item.steps)
                 failed = (result.value or {}).get("failed") if result.value else None
-                if failed:
+                if failed and not item.quiet:
                     self._tell(f"В протоколе «{item.name}» не вышло: {', '.join(failed)}.")
-            elif was and was not in found:
+            elif was and not found:
+                # Повод сменился (одно окно конференции на другое) — это не
+                # пропажа. Пропал совсем — ждём `gone_s`, вдруг вернётся.
+                since = self._gone_since.setdefault(item.name, time.monotonic())
+                if time.monotonic() - since < item.gone_s:
+                    continue
+                self._gone_since.pop(item.name, None)
                 self._active.pop(item.name, None)
                 self.log.info("Повод для «%s» пропал: %s закрылся", item.name, was)
                 if item.after:
@@ -206,10 +263,9 @@ class ProtocolsSkill(Skill):
                 # «протокол «игра» запущен» прозвучал, а «свёрнут» политика
                 # придержала (реплики шли подряд), и владелец решил, что
                 # протокол не выключился. Недосказанная история хуже молчания.
-                self._tell(
-                    f"Протокол «{item.name}» свёрнут, всё как было.",
-                    important=self._announced.pop(item.name, False),
-                )
+                announced = self._announced.pop(item.name, False)
+                if not item.quiet:
+                    self._tell(f"Протокол «{item.name}» свёрнут, всё как было.", important=announced)
 
     def _tell(self, text: str, *, important: bool = False) -> str:
         """Сказать вслух о протоколе, который запустился сам.
@@ -227,8 +283,8 @@ class ProtocolsSkill(Skill):
         self.log.debug("Протокол сказал (%s): %s", decision, text)
         return decision
 
-    def _processes(self) -> Any:
-        """Чем смотреть за процессами. Живёт в скилле `windows` — Windows-only."""
+    def _machine(self, name: str) -> Any:
+        """Чем смотреть за процессами и окнами. Живёт в скилле `windows`."""
         import importlib.util
         import sys
         from pathlib import Path
@@ -245,7 +301,7 @@ class ProtocolsSkill(Skill):
             module = importlib.util.module_from_spec(spec)
             sys.modules[name] = module
             spec.loader.exec_module(module)
-        return getattr(module, "running", None)
+        return getattr(module, name, None)
 
     @tool(
         phrases=["протокол {name}", "запусти протокол {name}", "включи протокол {name}",

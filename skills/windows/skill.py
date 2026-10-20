@@ -1472,7 +1472,7 @@ class WindowsSkill(Skill):
     meta = SkillMeta(
         name="windows",
         description="Управление компьютером студии",
-        version="0.16.2",
+        version="0.17.0",
         platforms=("windows",),
         spoken=("система", "виндовс", "компьютер", "windows"),
     )
