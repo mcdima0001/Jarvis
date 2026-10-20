@@ -392,6 +392,7 @@ class JarvisApp:
             output_device=config.audio.output_device,
             output_names=config.audio.output_names,
             checker=checker,
+            voice_tags=getattr(tts, "speaks_tags", None),
         )
         for core_tool in collect_tools(core_tools, namespace=CORE_NAMESPACE):
             registry.register(core_tool)

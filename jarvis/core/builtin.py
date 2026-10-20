@@ -285,8 +285,13 @@ class CoreTools:
         output_device: str | int | None = None,
         output_names: Mapping[str, str] | None = None,
         checker: "Checker | None" = None,
+        voice_tags: Callable[[str], bool] | None = None,
     ) -> None:
         self._llm = llm
+        #: Понимает ли голос языка теги манеры речи («[sad]»): тогда разговор
+        #: просит модель ими пользоваться. Спрашивается на каждом ответе — голос
+        #: меняют на ходу.
+        self._voice_tags = voice_tags
         #: Глаза плана: смотреть на экран после шага и перед докладом.
         self._checker = checker
         #: Вывод звука — чтобы переключать его голосом. Выход из настроек
@@ -379,7 +384,8 @@ class CoreTools:
         # `LLMService`, через который проходит любой текст вслух. Пока проверка
         # была здесь, поиск в том же режиме зачитывал три предложения из
         # Википедии — он про режим не знал.
-        system = f"{_DIALOG_SYSTEM[code]} {self._persona.style(code)}"
+        tags = self._voice_tags is not None and self._voice_tags(code)
+        system = f"{_DIALOG_SYSTEM[code]} {self._persona.style(code, tags=tags)}"
         # Обстановка вместо одной только даты: разговор тоже выигрывает от того,
         # что ассистент знает, в каком он режиме и что делал минуту назад.
         # Недавние реплики — то, без чего разговор был не разговором, а цепочкой

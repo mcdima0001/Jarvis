@@ -518,6 +518,26 @@ _STYLE_ADDRESS: Mapping[str, str] = {
     "en": "Address the user as \"{address}\" — where it fits, not in every sentence.",
 }
 
+#: Что дописать, когда голос понимает теги манеры речи (`tts/tags.py`).
+#: Примеры — под характер: дворецкий из фильма не хохочет и не рыдает, а тег,
+#: звучащий на каждой фразе, превращает сдержанность в кривляние.
+_STYLE_TAGS: Mapping[str, str] = {
+    "ru": (
+        "Твой голос понимает теги манеры речи в квадратных скобках по-английски: "
+        "[amused], [dry], [sigh], [concerned], [warm], [whispering], [sarcastic] — "
+        "и любые другие, придумывай под момент. Тег ставится перед словами, к "
+        "которым относится, и сам не произносится. Ставь его там, где он делает "
+        "речь живее, обычно один-два на ответ; ровная справка обходится без них."
+    ),
+    "en": (
+        "Your voice understands speech-manner tags in square brackets: [amused], "
+        "[dry], [sigh], [concerned], [warm], [whispering], [sarcastic] — or any "
+        "other, invent them as the moment needs. A tag goes right before the words "
+        "it colours and is not spoken. Use one or two where they make the reply "
+        "livelier; a plain factual answer needs none."
+    ),
+}
+
 #: Обращение вместе с запятой при нём: убираются только вместе, иначе от
 #: «Слушаю, {address}.» осталось бы «Слушаю, .».
 _ADDRESS_SLOT = re.compile(
@@ -729,8 +749,12 @@ class Persona:
         recent.append(chosen)
         return chosen
 
-    def style(self, language: str | None = None) -> str:
-        """Описание характера для системной подсказки языковой модели."""
+    def style(self, language: str | None = None, *, tags: bool = False) -> str:
+        """Описание характера для системной подсказки языковой модели.
+
+        :param tags: голос понимает теги манеры речи — попросить модель ими
+            пользоваться. Решает тот, кто знает голос: персона его не знает.
+        """
         code = _code(language or self._default)
         if code not in _STYLE:
             code = "ru"
@@ -738,6 +762,8 @@ class Persona:
         address = self.address_for(code)
         if address:
             style = f"{style} {_STYLE_ADDRESS[code].format(address=address)}"
+        if tags:
+            style = f"{style} {_STYLE_TAGS[code]}"
         return style
 
     def summary(self) -> str:

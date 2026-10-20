@@ -27,6 +27,7 @@ from .backends import SpeechBackend, StreamingBackend, build_backend, parse_voic
 from .cache import SpeechCache, worth_caching
 from .normalize import normalize_for_speech
 from .protocol import Speech
+from .tags import split_tags, strip_tags
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,36 @@ class CompositeTTS:
         return code, engine, voice
 
     def _spoken_language(self, text: str, hint: str | None) -> str | None:
-        """Язык, на котором читать эту реплику. См. `voice_language`."""
-        return voice_language(text, hint, tuple(self._config.voices))
+        """Язык, на котором читать эту реплику. См. `voice_language`.
+
+        Теги в счёт не идут: «[sad]» пишется латиницей в любой реплике, и на
+        короткой русской фразе перевесил бы её алфавит.
+        """
+        return voice_language(strip_tags(text), hint, tuple(self._config.voices))
+
+    def speaks_tags(self, language: str | None = None) -> bool:
+        """Понимает ли голос этого языка теги манеры речи (`tags.py`).
+
+        Спрашивает тот, кто пишет реплику, — чтобы просить модель о тегах
+        только там, где они прозвучат, а не потратятся впустую.
+        """
+        _code, engine, _voice = self.resolve(language)
+        return bool(getattr(self._backend(engine), "tags", False))
+
+    def _prepare(self, text: str, code: str, engine: str) -> str:
+        """Текст для движка: теги — тому, кто их понимает, остальное — нормализовать.
+
+        Нормализуется только текст между тегами: подготовка переводит латиницу
+        в кириллицу и выкидывает скобки, и «[sad]» стало бы словом «сэд».
+        """
+        pronounce = self._config.pronounce
+        if not getattr(self._backend(engine), "tags", False):
+            return normalize_for_speech(strip_tags(text), pronounce, language=code)
+        pieces = [
+            piece if is_tag else normalize_for_speech(piece, pronounce, language=code)
+            for piece, is_tag in split_tags(text)
+        ]
+        return " ".join(piece for piece in pieces if piece)
 
     def _backend(self, engine: str) -> SpeechBackend:
         """Взять движок из кеша или создать."""
@@ -329,7 +358,10 @@ class CompositeTTS:
         """
         # Чужой алфавит движок читает как кашу, поэтому текст готовим здесь,
         # а не в каждом скилле: латиница попадает в речь ещё и подстановками.
-        spoken = normalize_for_speech(text, self._config.pronounce, language=code)
+        spoken = self._prepare(text, code, engine)
+        if not spoken:
+            # Реплика из одних тегов, а голос их не знает: сказать нечего.
+            return Speech(audio=b"", sample_rate=0, text=text, language=code)
         if spoken != text:
             logger.debug("Текст для синтеза (%s): %r -> %r", code, text, spoken)
 
@@ -434,7 +466,9 @@ class CompositeTTS:
         if not isinstance(self._sink, StreamingAudioSink):
             return False
 
-        spoken = normalize_for_speech(text, self._config.pronounce, language=code)
+        spoken = self._prepare(text, code, engine)
+        if not spoken:
+            return False
         speed = self._config.length_scale
         if self._cache is not None and worth_caching(spoken):
             # Готовая реплика звучит мгновенно — поток ей только помешал бы.
