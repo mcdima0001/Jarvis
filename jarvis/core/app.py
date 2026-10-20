@@ -69,6 +69,7 @@ from jarvis.core.state import Modes
 from jarvis.core.stt import FallbackSTT, build_stt
 from jarvis.core.tools import ToolRegistry, collect_tools
 from jarvis.core.tts import TTS, build_tts
+from jarvis.core.update import GitUpdate
 from jarvis.core.verify import Checker
 from jarvis.core.version import current, platform_line
 from jarvis.core.voice import VoicePipeline
@@ -463,6 +464,14 @@ class JarvisApp:
         lifecycle.code_changed = watch.code_changed
         # Только живому сеансу: `--check` и `--say` перезапускать некому.
         runner.add(watch, needs=EARS)
+        # Новое в git приезжает на диск само, а там его подхватывает `watch`.
+        runner.add(
+            GitUpdate(
+                settings=config.runtime.update, root=config.root, registry=registry,
+                announcer=announcer, restart=lifecycle.restart,
+            ),
+            needs=EARS,
+        )
 
         panel = (
             ControlPanel(

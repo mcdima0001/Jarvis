@@ -39,6 +39,7 @@ from .schema import (
     STTConfig,
     TaskProfile,
     TTSConfig,
+    UpdateConfig,
     VADConfig,
     VerbatimRule,
     WakeWordConfig,
@@ -107,6 +108,16 @@ def _restart(data: Mapping[str, Any]) -> RestartConfig:
         settle_s=float(data.get("settle_s", 60.0)),
         check_s=max(1.0, float(data.get("check_s", 30.0))),
         busy_tool=str(data.get("busy_tool", "") or ""),
+    )
+
+
+def _update(data: Mapping[str, Any]) -> UpdateConfig:
+    """Настройки обновления из git."""
+    return UpdateConfig(
+        enabled=bool(data.get("enabled", True)),
+        check_s=max(30.0, float(data.get("check_s", 300.0))),
+        branch=str(data.get("branch", "main") or ""),
+        git=str(data.get("git", "git") or "git"),
     )
 
 
@@ -395,6 +406,7 @@ def load_config(
             meter=bool(runtime.get("meter", True)),
             meter_seconds=float(runtime.get("meter_seconds", 60.0)),
             restart=_restart(_section(runtime, "restart")),
+            update=_update(_section(runtime, "update")),
         ),
         skills=SkillsConfig(
             paths=(skill_paths := tuple(

@@ -73,6 +73,20 @@ class RestartConfig:
     skills: str = "tell"
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UpdateConfig:
+    """Обновление из git: догнать ветку и отдать новые файлы `CoreWatch` (`core/update.py`)."""
+
+    #: Смотреть ли в git сам; голосом «проверь обновления» работает и без этого.
+    enabled: bool = True
+    #: Как часто спрашивать удалённый репозиторий, секунд.
+    check_s: float = 300.0
+    #: Какую ветку догонять; открыта другая — не трогать. Пусто — любую текущую.
+    branch: str = "main"
+    #: Чем звать git: у владельца его может не быть в PATH.
+    git: str = "git"
+
+
 RESTART_AUTO = frozenset({"idle", "tell", "off"})
 SKILLS_AUTO = frozenset({"tell", "quiet", "off"})
 
@@ -91,6 +105,7 @@ class RuntimeConfig:
     #: тогда итог виден по команде «сколько ты ешь».
     meter_seconds: float = 60.0
     restart: RestartConfig = field(default_factory=RestartConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
