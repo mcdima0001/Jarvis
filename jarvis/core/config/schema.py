@@ -85,9 +85,6 @@ class UpdateConfig:
     branch: str = "main"
     #: Чем звать git: у владельца его может не быть в PATH.
     git: str = "git"
-    #: Ходить ли в GitHub через `HTTPS_PROXY` из `.env`. Нет: GitHub с ноута
-    #: доступен напрямую, а прокси сделал бы обновление зависимым от туннеля.
-    proxy: bool = False
 
 
 RESTART_AUTO = frozenset({"idle", "tell", "off"})

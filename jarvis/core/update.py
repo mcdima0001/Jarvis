@@ -100,13 +100,7 @@ _PROXY_VARS = frozenset({"https_proxy", "http_proxy", "all_proxy"})
 
 
 def _git_env(*, proxy: bool) -> dict[str, str]:
-    """Окружение для git: без вопросов в пустоту и, если не просили, без прокси.
-
-    `HTTPS_PROXY` из `.env` лежит в окружении всего процесса — он для облаков,
-    которые с ноута напрямую недоступны. GitHub доступен и так, а через прокси
-    обновление зависело бы от туннеля на сервер: 20.10.2026 тот лёг, и git
-    вместе с ним (`Failed to connect … via 100.98.141.99`).
-    """
+    """Окружение для git: без вопросов в пустоту, с прокси или без него."""
     env = {key: value for key, value in os.environ.items()
            if proxy or key.lower() not in _PROXY_VARS}
     # Никаких вопросов в пустоту: окна нет, спросить пароль некого.
@@ -114,7 +108,31 @@ def _git_env(*, proxy: bool) -> dict[str, str]:
     return env
 
 
-def _git(root: Path, git: str, *args: str, proxy: bool = False, timeout: float = GIT_TIMEOUT_S) -> str:
+def _proxied() -> bool:
+    return any(key.lower() in _PROXY_VARS for key in os.environ)
+
+
+def _fetch(root: Path, git: str) -> None:
+    """Скачать новое: через `HTTPS_PROXY` из `.env`, а не вышло — напрямую.
+
+    Одного пути мало, и оба уже отказывали. Прокси (туннель на сервер) лёг
+    20.10.2026 вместе с адресом в Tailscale — обновление легло с ним. Напрямую
+    GitHub с ноута сбрасывает соединение (замер 21.10.2026 из процесса Jarvis),
+    хотя у владельца в его сеансе git ходит и так. Порядок — как у остального
+    сетевого: прокси первым.
+    """
+    try:
+        _git(root, git, "fetch", "--quiet")
+    except GitError as first:
+        if not _proxied():
+            raise
+        try:
+            _git(root, git, "fetch", "--quiet", proxy=False)
+        except GitError as second:
+            raise GitError(f"{first}; напрямую — {second}") from second
+
+
+def _git(root: Path, git: str, *args: str, proxy: bool = True, timeout: float = GIT_TIMEOUT_S) -> str:
     """Выполнить git в клоне и вернуть вывод; отказ — `GitError`.
 
     `safe.directory` указан явно: Jarvis у владельца запущен с правами
@@ -140,7 +158,7 @@ def _git(root: Path, git: str, *args: str, proxy: bool = False, timeout: float =
     return done.stdout.strip()
 
 
-def pull(root: Path, *, git: str = "git", branch: str = "main", proxy: bool = False) -> Pulled:
+def pull(root: Path, *, git: str = "git", branch: str = "main") -> Pulled:
     """Догнать удалённую ветку перемоткой вперёд. Блокирует — звать из потока."""
     if not (root / ".git").exists():
         return Pulled(NO_GIT, reason="не клон git")
@@ -149,7 +167,7 @@ def pull(root: Path, *, git: str = "git", branch: str = "main", proxy: bool = Fa
         if branch and current != branch:
             return Pulled(OTHER_BRANCH, reason=f"сейчас ветка {current}, обновляется {branch}")
         upstream = "@{upstream}"
-        _git(root, git, "fetch", "--quiet", proxy=proxy)
+        _fetch(root, git)
         before = _git(root, git, "rev-parse", "HEAD")
         after = _git(root, git, "rev-parse", upstream)
         if before == after:
@@ -317,5 +335,5 @@ _REFUSED = {
 
 
 def _default_pull(root: Path, settings: UpdateConfig) -> Pulled:
-    return pull(root, git=settings.git, branch=settings.branch, proxy=settings.proxy)
+    return pull(root, git=settings.git, branch=settings.branch)
 

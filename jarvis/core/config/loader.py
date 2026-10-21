@@ -139,7 +139,6 @@ def _update(data: Mapping[str, Any]) -> UpdateConfig:
         check_s=max(30.0, float(data.get("check_s", 300.0))),
         branch=str(data.get("branch", "main") or ""),
         git=str(data.get("git", "git") or "git"),
-        proxy=bool(data.get("proxy", False)),
     )
 
 

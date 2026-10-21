@@ -139,7 +139,7 @@ def test_missing_git_is_not_a_crash(repos: tuple[Path, Path]) -> None:
     assert pull(machine, git="no-such-git-binary").status == NO_GIT
 
 
-def test_git_goes_around_the_proxy_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_git_env_with_and_without_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     from jarvis.core.update import _git_env
 
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
@@ -150,6 +150,36 @@ def test_git_goes_around_the_proxy_unless_asked(monkeypatch: pytest.MonkeyPatch)
     assert "HTTPS_PROXY" not in plain and "http_proxy" not in plain
     assert plain["NO_PROXY"] == "localhost" and plain["GIT_TERMINAL_PROMPT"] == "0"
     assert _git_env(proxy=True)["HTTPS_PROXY"] == "http://127.0.0.1:8888"
+
+
+def test_dead_proxy_falls_back_to_direct(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Туннель лёг — fetch идёт напрямую (20.10.2026 обновление легло вместе с ним)."""
+    from jarvis.core import update
+
+    calls: list[bool] = []
+
+    def git(root: Path, binary: str, *args: str, proxy: bool = True, timeout: float = 0) -> str:
+        calls.append(proxy)
+        if proxy:
+            raise update.GitError("git fetch: Failed to connect via 100.98.141.99")
+        return ""
+
+    monkeypatch.setattr(update, "_git", git)
+    monkeypatch.setenv("HTTPS_PROXY", "http://100.98.141.99:8888")
+    update._fetch(tmp_path, "git")
+    assert calls == [True, False]
+
+
+def test_both_ways_failing_names_both(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from jarvis.core import update
+
+    def git(root: Path, binary: str, *args: str, proxy: bool = True, timeout: float = 0) -> str:
+        raise update.GitError("через прокси" if proxy else "сброшено")
+
+    monkeypatch.setattr(update, "_git", git)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    with pytest.raises(update.GitError, match="через прокси; напрямую — сброшено"):
+        update._fetch(tmp_path, "git")
 
 
 def test_speech_counts_commits() -> None:
