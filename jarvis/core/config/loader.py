@@ -51,16 +51,37 @@ _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 DEFAULT_CONFIG_PATH = Path("config/config.yaml")
 
 
+#: Какие переменные положил в окружение сам `.env` — через запятую.
+DOTENV_KEYS = "JARVIS_DOTENV_KEYS"
+
+
 def load_dotenv(path: Path) -> None:
-    """Загрузить пары KEY=VALUE из .env, не затирая уже заданное окружение."""
+    """Загрузить пары KEY=VALUE из .env, не затирая заданное окружение.
+
+    «Заданное» — то, что пришло снаружи, а не из прошлого чтения `.env`.
+    Перезапуск поднимает новый процесс с окружением старого, и без этой
+    разницы значения из прежнего `.env` выигрывали у нового: 21.10.2026 адрес
+    прокси в `.env` сменили, Jarvis перезапустился сам и продолжил ходить на
+    старый. Поэтому прочитанное отсюда помечается (`DOTENV_KEYS`) и при
+    следующем чтении снимается — правка `.env` и удалённая строка действуют.
+    """
+    for key in os.environ.pop(DOTENV_KEYS, "").split(","):
+        if key:
+            os.environ.pop(key, None)
     if not path.is_file():
         return
+    loaded: list[str] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+        key = key.strip()
+        if key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip("'\"")
+        loaded.append(key)
+    os.environ[DOTENV_KEYS] = ",".join(loaded)
 
 
 def _expand(value: Any) -> Any:

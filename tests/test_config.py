@@ -511,3 +511,40 @@ def test_local_yaml_lies_over_the_main_config_deeply(tmp_path: Path) -> None:
     assert config.audio.network.token == "t"
     assert config.audio.network.port == 8770  # не названное — умолчание
     assert load_config(path, local=False).audio.engine != "network"
+
+
+# --- .env и перезапуск (21.10.2026) ------------------------------------------------
+
+
+def test_dotenv_does_not_override_the_real_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.core.config.loader import DOTENV_KEYS, load_dotenv
+
+    monkeypatch.delenv(DOTENV_KEYS, raising=False)
+    monkeypatch.setenv("JARVIS_TEST_OUTSIDE", "снаружи")
+    (tmp_path / ".env").write_text("JARVIS_TEST_OUTSIDE=из файла\n", "utf-8")
+
+    load_dotenv(tmp_path / ".env")
+
+    assert __import__("os").environ["JARVIS_TEST_OUTSIDE"] == "снаружи"
+
+
+def test_restart_sees_an_edited_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Новый процесс наследует окружение старого — правка .env всё равно действует."""
+    import os
+
+    from jarvis.core.config.loader import DOTENV_KEYS, load_dotenv
+
+    monkeypatch.delenv(DOTENV_KEYS, raising=False)
+    for key in ("JARVIS_TEST_PROXY", "JARVIS_TEST_GONE"):
+        monkeypatch.delenv(key, raising=False)
+    env = tmp_path / ".env"
+    env.write_text("JARVIS_TEST_PROXY=http://100.98.141.99:8888\nJARVIS_TEST_GONE=1\n", "utf-8")
+    load_dotenv(env)
+    inherited = dict(os.environ)  # так окружение уезжает в перезапущенный процесс
+
+    env.write_text("JARVIS_TEST_PROXY=http://127.0.0.1:8888\n", "utf-8")
+    monkeypatch.setattr(os, "environ", inherited)
+    load_dotenv(env)
+
+    assert inherited["JARVIS_TEST_PROXY"] == "http://127.0.0.1:8888"
+    assert "JARVIS_TEST_GONE" not in inherited
