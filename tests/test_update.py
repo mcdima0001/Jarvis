@@ -139,6 +139,19 @@ def test_missing_git_is_not_a_crash(repos: tuple[Path, Path]) -> None:
     assert pull(machine, git="no-such-git-binary").status == NO_GIT
 
 
+def test_git_goes_around_the_proxy_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.core.update import _git_env
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:8888")
+    monkeypatch.setenv("NO_PROXY", "localhost")
+
+    plain = _git_env(proxy=False)
+    assert "HTTPS_PROXY" not in plain and "http_proxy" not in plain
+    assert plain["NO_PROXY"] == "localhost" and plain["GIT_TERMINAL_PROMPT"] == "0"
+    assert _git_env(proxy=True)["HTTPS_PROXY"] == "http://127.0.0.1:8888"
+
+
 def test_speech_counts_commits() -> None:
     assert updated_speech(Pulled(UPDATED, commits=3)) == "Скачал 3 коммита."
     assert updated_speech(Pulled(UPDATED, commits=1)) == "Скачал 1 коммит."

@@ -95,7 +95,26 @@ class GitError(Exception):
     """Команда git не выполнилась; текст — её последняя строка."""
 
 
-def _git(root: Path, git: str, *args: str, timeout: float = GIT_TIMEOUT_S) -> str:
+#: Переменные прокси, которые git берёт из окружения.
+_PROXY_VARS = frozenset({"https_proxy", "http_proxy", "all_proxy"})
+
+
+def _git_env(*, proxy: bool) -> dict[str, str]:
+    """Окружение для git: без вопросов в пустоту и, если не просили, без прокси.
+
+    `HTTPS_PROXY` из `.env` лежит в окружении всего процесса — он для облаков,
+    которые с ноута напрямую недоступны. GitHub доступен и так, а через прокси
+    обновление зависело бы от туннеля на сервер: 20.10.2026 тот лёг, и git
+    вместе с ним (`Failed to connect … via 100.98.141.99`).
+    """
+    env = {key: value for key, value in os.environ.items()
+           if proxy or key.lower() not in _PROXY_VARS}
+    # Никаких вопросов в пустоту: окна нет, спросить пароль некого.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _git(root: Path, git: str, *args: str, proxy: bool = False, timeout: float = GIT_TIMEOUT_S) -> str:
     """Выполнить git в клоне и вернуть вывод; отказ — `GitError`.
 
     `safe.directory` указан явно: Jarvis у владельца запущен с правами
@@ -104,8 +123,7 @@ def _git(root: Path, git: str, *args: str, timeout: float = GIT_TIMEOUT_S) -> st
     настройки внутри самого репозитория.
     """
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
-    # Никаких вопросов в пустоту: окна нет, спросить пароль некого.
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    env = _git_env(proxy=proxy)
     try:
         done = subprocess.run(  # noqa: S603 — git из конфига, аргументы наши
             [git, "-c", f"safe.directory={root.as_posix()}", *args],
@@ -122,7 +140,7 @@ def _git(root: Path, git: str, *args: str, timeout: float = GIT_TIMEOUT_S) -> st
     return done.stdout.strip()
 
 
-def pull(root: Path, *, git: str = "git", branch: str = "main") -> Pulled:
+def pull(root: Path, *, git: str = "git", branch: str = "main", proxy: bool = False) -> Pulled:
     """Догнать удалённую ветку перемоткой вперёд. Блокирует — звать из потока."""
     if not (root / ".git").exists():
         return Pulled(NO_GIT, reason="не клон git")
@@ -131,7 +149,7 @@ def pull(root: Path, *, git: str = "git", branch: str = "main") -> Pulled:
         if branch and current != branch:
             return Pulled(OTHER_BRANCH, reason=f"сейчас ветка {current}, обновляется {branch}")
         upstream = "@{upstream}"
-        _git(root, git, "fetch", "--quiet")
+        _git(root, git, "fetch", "--quiet", proxy=proxy)
         before = _git(root, git, "rev-parse", "HEAD")
         after = _git(root, git, "rev-parse", upstream)
         if before == after:
@@ -299,5 +317,5 @@ _REFUSED = {
 
 
 def _default_pull(root: Path, settings: UpdateConfig) -> Pulled:
-    return pull(root, git=settings.git, branch=settings.branch)
+    return pull(root, git=settings.git, branch=settings.branch, proxy=settings.proxy)
 
