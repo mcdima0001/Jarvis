@@ -1784,3 +1784,44 @@ def test_open_results_for_the_same_query_are_recognised() -> None:
     assert page.shows_search_for(url, "arctic mankins 505")
     assert not page.shows_search_for(url, "nirvana")
     assert not page.shows_search_for("https://music.yandex.ru/", "arctic mankins 505")
+
+
+@pytest.mark.parametrize(
+    ("track", "liked"),
+    [
+        ("любимое", True),
+        ("плейлист Любимое", True),
+        ("плейлист, любимая", True),
+        ("мне нравится", True),
+        ("мои лайки на яндекс музыке", True),
+        ("любимая", False),  # это и название песни
+        ("Arctic Monkeys 505", False),
+    ],
+)
+def test_liked_songs_are_recognised(track: str, liked: bool) -> None:
+    """22.10.2026: «включи плейлист Любимое» включало «Мою волну: Любимое»."""
+    assert page.liked_music(track) is liked
+
+
+async def test_liked_songs_go_through_the_collection(loaded) -> None:
+    """«Включи любимое» — не поиск, а «Мне нравится» в коллекции, мимо лайка в плеере."""
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch_delay = module.SEARCH_DELAY
+    module.SEARCH_DELAY = 0
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [{"done": "item", "detail": "мне нравится — воспроизведение", "played": True}]
+    try:
+        result = await registry.invoke("page.play_item", {"track": "плейлист Любимое"})
+    finally:
+        module.SEARCH_DELAY = monkeypatch_delay
+
+    assert result.ok, result.error
+    assert ("go", "https://music.yandex.ru/collection", 7) in fake.CALLS
+    plans = [call[1] for call in fake.CALLS if call[0] == "run"]
+    assert plans[0][0]["item"][0] == "мне нравится"
+    assert any("PlayerBar" in selector for selector in plans[0][0]["skip"]), "лайк в плеере не защищён"
+    assert not any("type" in step for plan in plans for step in plan), "поиском не ищем"
+    await manager.stop()

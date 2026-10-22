@@ -184,6 +184,34 @@ def any_music(track: str) -> bool:
     return text in _ANY_MUSIC
 
 
+#: Как плитка лайкнутых треков подписана на странице коллекции.
+LIKED_NAMES: tuple[str, ...] = ("мне нравится", "liked songs")
+
+#: «Мне нравится» — лайкнутые треки владельца (22.10.2026). «Любимое» у Яндекса
+#: это **настройка «Моей волны»** (в боковом меню так и подписано: «Моя волна
+#: Любимое»), и по этому слову Jarvis раз за разом включал волну. Владелец под
+#: «любимым» имеет в виду лайки — значит, и слово ведёт туда.
+_LIKED = frozenset({
+    "мне нравится", "любимое", "любимые", "любимые треки",
+    "любимые песни", "любимую музыку", "мою любимую музыку", "мои лайки", "лайки",
+    "лайкнутые", "лайкнутые треки", "понравившиеся", "понравившиеся треки",
+    "liked", "liked songs", "my likes",
+})
+
+
+def liked_music(track: str) -> bool:
+    """Просят ли лайкнутые треки, а не что-то названное. Чистая функция."""
+    text = " ".join(str(track).lower().replace("ё", "е").replace(",", " ").split()).strip(" «»\"'.!?")
+    text = _MUSIC_SITE_TAILS.sub("", text).strip(" .")
+    playlist = False
+    for head in ("плейлист ", "мой плейлист ", "playlist "):
+        if text.startswith(head):
+            text, playlist = text[len(head):].strip(" «»\"'"), True
+    # «Любимая» — и название песни, а «плейлист любимая» — ослышка «любимое»
+    # (живой лог 22.10.2026, 09:51: «ключи, плейлист, любимая»).
+    return text in _LIKED or (playlist and text in ("любимая", "любимую"))
+
+
 def clicked_name(detail: str) -> str:
     """Что нажали, по отчёту страницы: «arctic monkeys 505 — воспроизведение» → «arctic monkeys 505».
 
@@ -441,6 +469,14 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
         # бывает единственным, что есть, — её и нажимали вместо «Arctic Monkeys
         # 505». Подсказку «возможно, вы искали» жмёт свой шаг. Селекторы уходят
         # в шаг `item` полем `skip` (`_with_top`).
+        # «Мне нравится»: куда идти и чего на той странице не трогать. Плеер
+        # внизу держит кнопки «Нравится» и «Не нравится» — совпади название с
+        # ними, лайк получил бы играющий трек (22.10.2026, по сохранённой
+        # странице: `CommonControlsBar_likeIcon`, `PlayerBarDesktop…`).
+        "liked_page": ({"go": "/collection"},),
+        "not_liked": (
+            {"click": ['[class*="PlayerBar"]', '[class*="CommonControlsBar"]', '[class*="QueryToVibe"]']},
+        ),
         "not_track": (
             {"click": ['[class*="QueryToVibe"]', '[class*="SearchCorrectedText"]']},
         ),
@@ -1103,7 +1139,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.7.3",
+        version="0.8.0",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1272,6 +1308,65 @@ class PageSkill(Skill):
 
         return await self._act("play", site=MUSIC_SITE, otherwise=local)
 
+    @tool(routable=False, phrases=["включи мне нравится", "включи мои лайки", "включи любимое",
+                                   "включи любимые треки", "поставь мне нравится",
+                                   "включи плейлист мне нравится", "play my liked songs"],
+          reversible=True)
+    async def play_liked(self) -> ToolResult:
+        """Включить «Мне нравится» — лайкнутые треки на музыкальном сайте.
+
+        Через «Коллекцию», а не поиском: в поиске «любимое» находит волну, а
+        «мне нравится» — чужие плейлисты. На странице коллекции нажимается
+        «играть» у плитки «Мне нравится»; плеер внизу и кнопки лайка в
+        `skip` — иначе «нравится» совпало бы с лайком играющего трека.
+        """
+        if not self.tools.has("browser.page_go"):
+            return await self.play_music()
+        found = await self.tools.invoke(
+            "browser.page_target", {"site": self._music_site, "active": False, "open_missing": True}
+        )
+        if not found.ok or not isinstance(found.value, Mapping):
+            return found if not found.ok else self._nothing("liked")
+        target = dict(found.value)
+        tab = int(target.get("tabId") or 0)
+        url = str(target.get("url", ""))
+        host = host_of(url)
+        page = recipes_for(host, SITE_RECIPES).get("liked_page", ())
+        collection = str(page[0].get("go", "")) if page else ""
+        if not collection:
+            return self._nothing("liked", host=host)
+        if not url.rstrip("/").endswith(collection.rstrip("/")):
+            moved = await self.tools.invoke(
+                "browser.page_go", {"url": origin_of(url).rstrip("/") + collection, "tab": tab}
+            )
+            if not moved.ok:
+                return moved
+        steps = [{
+            "item": list(LIKED_NAMES),
+            "hint": list(PLAY_HINTS),
+            "play": True,
+            "skip": [
+                selector
+                for step in recipes_for(host, SITE_RECIPES).get("not_liked", ())
+                for selector in step.get("click", ())
+            ],
+        }]
+        try:
+            result = await self._await_results(validate_plan(steps), tab)
+        except PageUnreachable as exc:
+            return ToolResult.failure(str(exc), speech={"ru": "Вкладка музыки не отвечает.", "en": "The music tab isn't responding."})
+        if result is None:
+            return ToolResult.failure(
+                "на странице коллекции не нашлось «Мне нравится»",
+                speech={"ru": "Не нашёл «Мне нравится» в коллекции.", "en": "Couldn't find your liked songs."},
+            )
+        if silent(result):
+            return self._not_playing("item:мне нравится", result)
+        return self._done("item:мне нравится", result, {
+            "ru": ("Включаю «Мне нравится».", "Ваши любимые, сэр.", "Ставлю то, что вам нравится."),
+            "en": ("Playing your liked songs.", "Your favourites, coming up."),
+        })
+
     # «Дальше» и «следующий» без существительного — то, как это говорят на
     # самом деле. Одинокое слово тут не опасно: до роутера доходит только то,
     # что сказано после имени или в окне ответа.
@@ -1370,6 +1465,9 @@ class PageSkill(Skill):
                 return forced
         # «Включи ролик про котов», «включи клип Queen» — про видео сказано прямо,
         # и это исключение из правила «трек — в музыку» (владелец, 14.09.2026).
+        if not site.strip() and liked_music(track):
+            self.log.info("%r — это «Мне нравится», а не название", track)
+            return await self.play_liked()
         if not site.strip() and any_music(track):
             self.log.info("%r — это просто музыка, а не название: включаю, что есть", track)
             return await self.play_music()
