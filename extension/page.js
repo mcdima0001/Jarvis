@@ -868,6 +868,22 @@ async function jarvisRunPlan(plan) {
    * «включаю» — и тишина. Поэтому с `play: true` успехом считается только
    * появившийся звук: не появился — пробуем следующий способ, а не врём.
    */
+  /** Лежит ли элемент внутри чего-то из списка селекторов (`skip` у шага `item`). */
+  const within = (element, selectors) => {
+    for (let node = element; node; node = node.parentElement) {
+      for (const selector of selectors) {
+        try {
+          if (typeof node.matches === "function" && node.matches(String(selector))) {
+            return true;
+          }
+        } catch (error) {
+          // кривой селектор из памяти — просто не мешает
+        }
+      }
+    }
+    return false;
+  };
+
   const playItem = async (step) => {
     const ITEMS =
       'a[href], button, [role="button"], [role="row"], [role="listitem"], li, tr';
@@ -898,12 +914,18 @@ async function jarvisRunPlan(plan) {
       }
       return null;
     };
-    const top = Array.isArray(step.prefer) ? preferred(step.prefer) : null;
+    // Чего не нажимать никогда: на выдаче Яндекса это «Моя волна» по запросу —
+    // просили трек, а играла волна (22.10.2026).
+    const skip = Array.isArray(step.skip) ? step.skip : [];
+    const allowed = (node) => !node || !skip.length || !within(node, skip);
+    const preferredTop = Array.isArray(step.prefer) ? preferred(step.prefer) : null;
+    const top = allowed(preferredTop) ? preferredTop : null;
 
     // Иначе побеждает самое тесное совпадение. У списка треков подпись
     // начинается с первого трека, и без этого выбирался весь список целиком:
     // «i need your love oliver nelson & tobtok remix… midnight city…».
-    const found = top || bestMatch(ITEMS, wanted, [], true);
+    const matched = top || bestMatch(ITEMS, wanted, [], true);
+    const found = allowed(matched) ? matched : null;
     if (!found) {
       // Ничего не совпало. Расскажем, что было **ближе всего** к просьбе, а не
       // что попалось первым: первыми на странице стоят пункты бокового меню
@@ -964,7 +986,7 @@ async function jarvisRunPlan(plan) {
           // Событие не прошло — не страшно, кнопка может быть и так видна.
         }
       }
-      const inside = Array.from(node.querySelectorAll(CLICKABLE));
+      const inside = Array.from(node.querySelectorAll(CLICKABLE)).filter(allowed);
       if (inside.length) {
         nearby = inside;
       }
@@ -978,6 +1000,9 @@ async function jarvisRunPlan(plan) {
           // Нажимать надо кнопку: поднимаемся от находки к ближайшему нажимаемому.
           button = mark && mark.closest ? mark.closest(CLICKABLE) || mark : mark;
         } catch (error) {
+          button = null;
+        }
+        if (!allowed(button)) {
           button = null;
         }
       }

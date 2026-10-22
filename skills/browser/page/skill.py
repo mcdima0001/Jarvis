@@ -436,6 +436,14 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
                 ]
             },
         ),
+        # Что на выдаче не трек, хоть и играет (22.10.2026, по сохранённой
+        # странице): «Моя волна» по запросу стоит **над** треками и на ослышке
+        # бывает единственным, что есть, — её и нажимали вместо «Arctic Monkeys
+        # 505». Подсказку «возможно, вы искали» жмёт свой шаг. Селекторы уходят
+        # в шаг `item` полем `skip` (`_with_top`).
+        "not_track": (
+            {"click": ['[class*="QueryToVibe"]', '[class*="SearchCorrectedText"]']},
+        ),
         # Поиск живёт в боковом меню и на живой странице находится по подписи —
         # это проверено: «нажми поиск на сайте» работало ещё до всех переделок.
         "search": ({"label": ["поиск"]}, {"click": ['[data-test-id="SEARCH_INPUT"]']}),
@@ -858,6 +866,11 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 prefer = _strings(step.get("prefer", ()))
                 if prefer:
                     clean["prefer"] = prefer
+                # Чего не нажимать никогда: на выдаче Яндекса это «Моя волна»
+                # по запросу — просили трек, а не волну (22.10.2026).
+                skip = _strings(step.get("skip", ()))
+                if skip:
+                    clean["skip"] = skip
             if verb == "label":
                 # Запретные слова: подпись «не нравится» содержит «нравится»
                 # целиком, и без них лайк оказывается дизлайком.
@@ -1090,7 +1103,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.7.2",
+        version="0.7.3",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -2343,10 +2356,20 @@ class PageSkill(Skill):
             for step in self._plan("first", host)
             for selector in step.get("click", ())
         ]
-        if not top:
+        skip = [
+            selector
+            for step in recipes_for(host, SITE_RECIPES).get("not_track", ())
+            for selector in step.get("click", ())
+        ]
+        if not top and not skip:
             return [dict(step) for step in steps]
+        extra: dict[str, Any] = {}
+        if top:
+            extra["prefer"] = top
+        if skip:
+            extra["skip"] = skip
         return validate_plan(
-            [{**step, "prefer": top} if "item" in step else step for step in steps]
+            [{**step, **extra} if "item" in step else step for step in steps]
         )
 
     async def _learn_action(

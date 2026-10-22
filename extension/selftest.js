@@ -979,6 +979,28 @@ check("кнопка подсказки — не трек, даже если на
   assert(wave.clicked === 0, "заиграла волна");
 });
 
+check("волна по запросу не нажимается, даже если она одна", async () => {
+  // 22.10.2026: на выдаче по ослышке «Моя волна» стоит над треками, а трека
+  // может не быть вовсе. Просили трек — честное «не нашёл» лучше волны.
+  const audio = player({ tag: "audio", paused: true });
+  const play = element({ attributes: { "aria-label": "Воспроизведение" }, starts: audio });
+  const wave = element({ attributes: { "aria-label": "Arctic Mankins 505" }, children: [play] });
+  wave.matches = (selector) => selector.includes("QueryToVibe");
+  const api = load(makeDocument({ controls: [wave, play], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([
+    {
+      item: ["arctic mankins 505"],
+      hint: ["воспроизв"],
+      play: true,
+      skip: ['[class*="QueryToVibe"]'],
+    },
+  ]);
+
+  assert(result.done === null, `нажалось ${result.done}: ${result.detail}`);
+  assert(play.clicked === 0 && wave.clicked === 0, "заиграла волна");
+});
+
 check("нет подсказки — шаг не срабатывает", async () => {
   const row = element({ attributes: { "aria-label": "Трек Волшебная" } });
   const api = load(makeDocument({ controls: [row] }));
