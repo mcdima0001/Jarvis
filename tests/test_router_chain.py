@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from jarvis.core.bus import LocalEventBus
-from jarvis.core.contracts import Intent, ToolResult, Utterance
+from jarvis.core.contracts import Choice, Intent, ToolResult, Utterance
 from jarvis.core.router import Dispatcher, FallbackResolver, PhraseResolver, Router
 from jarvis.core.tools import ToolRegistry, tool
 from jarvis.core.tools.tool import collect_tools
@@ -36,6 +36,18 @@ class _Commands:
         """Поставить на паузу."""
         self.done.append("pause")
         return ToolResult.success("ok", tool="demo.pause", speech="Пауза.")
+
+    @tool(phrases=["подключись к {device}"])
+    async def connect(self, device: str) -> ToolResult:
+        """Подключить устройство.
+
+        :param device: название.
+        """
+        self.done.append(f"connect:{device}")
+        return ToolResult.choosing(
+            [Choice("JBL Flip 6", Intent(tool="demo.connect", arguments={"device": "JBL Flip 6"}))],
+            question="Что подключить? 1 — JBL Flip 6.",
+        )
 
     @tool(phrases=["включи трек {track}"])
     async def play(self, track: str) -> ToolResult:
@@ -147,3 +159,28 @@ async def test_hypothesis_never_asks_the_model(events: LocalEventBus) -> None:
     assert all(" и " not in text for text in asked) or len(asked) == 1, (
         f"модель спрашивали на проверку гипотезы: {asked}"
     )
+
+
+async def test_broken_chain_tells_what_was_done_first(parts) -> None:
+    """«Включи блютуз и подключись к Jubev»: включённое не теряется за вопросом.
+
+    Живой запуск 22.10.2026: прозвучал только вопрос «что подключить», и о
+    том, что первая половина сделана, владелец не узнал.
+    """
+    skill, dispatcher = parts
+
+    result = await dispatcher.handle(Utterance(text="поставь на паузу и подключись к jubev"))
+
+    assert skill.done == ["pause", "connect:jubev"]
+    assert result.speech_for("ru") == "Пауза. Что подключить? 1 — JBL Flip 6."
+    assert result.choices, "вопрос остаётся вопросом"
+    assert dispatcher.awaiting is not None
+
+
+async def test_choice_breaks_a_chain(parts) -> None:
+    """Выбор из вариантов обрывает цепочку, как и вопрос «да или нет»."""
+    skill, dispatcher = parts
+
+    await dispatcher.handle(Utterance(text="подключись к jubev и поставь на паузу"))
+
+    assert skill.done == ["connect:jubev"]

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable
 
 from jarvis.core.bus import EventBus
@@ -234,6 +234,11 @@ class Dispatcher:
         Реплика одна на всю цепочку, и берётся она от последней удачной
         команды: слушать подряд «готово, готово» утомительно, а знать надо
         главное — дошло ли дело до конца.
+
+        **Но оборванная цепочка докладывает и сделанное** (22.10.2026). «Включи
+        блютуз и подключись к Jubev» включило блютуз и спросило, что подключить,
+        — а вслух прозвучал один вопрос, и о включённом владелец не узнал.
+        Сделанное до обрыва говорится первым: «Блютуз включён. Что подключить?…»
         """
         logger.info(
             "Цепочка из %d команд: %s",
@@ -241,6 +246,7 @@ class Dispatcher:
             " + ".join(intent.tool for intent in intents),
         )
         result = ToolResult.failure("Пустая цепочка", tool="")
+        done: list[ToolResult] = []
         for number, intent in enumerate(intents, start=1):
             try:
                 result = await self._registry.invoke(intent.tool, intent.arguments)
@@ -253,16 +259,17 @@ class Dispatcher:
 
             self._remember(utterance, intent.tool, result.ok)
             self._note_question(utterance, result)
-            if not result.ok or result.confirm is not None:
+            if not result.ok or result.confirm is not None or result.choices:
                 # Вопрос обрывает цепочку так же, как неудача: продолжать, не
                 # дождавшись ответа, значило бы выполнить остаток вслепую.
                 logger.info(
                     "Цепочка прервана на %d-й команде (%s): %s",
                     number,
                     intent.tool,
-                    result.error or "жду подтверждения",
+                    result.error or "жду ответа",
                 )
-                return self._voiced(utterance, result)
+                return self._voiced(utterance, _after(done, result))
+            done.append(result)
 
         return self._voiced(utterance, result)
 
@@ -584,3 +591,22 @@ class Dispatcher:
     async def handle_text(self, text: str, *, source: str = "text") -> ToolResult:
         """Удобная обёртка для текстовой команды (режим ``--say``, Telegram)."""
         return await self.handle(Utterance(text=text, source=source))
+
+
+def _after(done: list[ToolResult], result: ToolResult) -> ToolResult:
+    """Реплика оборванной цепочки: сперва сделанное, потом то, на чём встала.
+
+    Языков ровно два, и реплика собирается на оба: какой из них нужен, решает
+    тот, кто будет говорить. Молчаливые шаги («громче») не докладываются — их
+    и так слышно. Варианты реплики шага сводятся к первому: склеенная фраза
+    одна, выбирать в ней персоне нечего.
+    """
+    if not done or result.speech is None:
+        return result
+    speech: dict[str, str] = {}
+    for code in ("ru", "en"):
+        lines = [step.speech_for(code) for step in done if not step.silent]
+        lines.append(result.speech_for(code))
+        speech[code] = " ".join(line for line in lines if line)
+    return replace(result, speech=speech)
+
