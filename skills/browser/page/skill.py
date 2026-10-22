@@ -470,6 +470,11 @@ SUGGEST_MARKS: tuple[str, ...] = (
     "search instead for",
 )
 
+#: Только вопрос «вы имели в виду?» — его жмём **до** выдачи. «Показаны
+#: результаты для X, искать вместо этого Y» значит, что сайт уже исправил сам,
+#: и нажатие вернуло бы ослышку.
+DID_YOU_MEAN: tuple[str, ...] = ("возможно, вы искали", "возможно вы искали", "did you mean")
+
 
 def silent(result: Mapping[str, Any]) -> bool:
     """Нажали, но звук не появился.
@@ -1068,7 +1073,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.7.0",
+        version="0.7.1",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -2237,9 +2242,19 @@ class PageSkill(Skill):
         # тишина» повторять нечего: строка на месте, все способы включить её уже
         # перебраны внутри страницы, и второй круг — это ещё столько же нажатий
         # впустую.
-        found = await self._await_results(plan, tab)
-        if found is not None:
+        #
+        # **Подсказка сайта — первой** (22.10.2026, 09:27). «Arctic Mankins 505»
+        # Яндекс встретил баннером «Возможно, вы искали Arctic Monkeys 505», а
+        # верхней карточкой поставил «Моя волна» по услышанному — её и нажали, и
+        # заиграла волна. Раньше баннер нажимался, только если в выдаче не нашлось
+        # ничего, а при ослышке там всегда что-нибудь да есть. Шаг `suggest` идёт
+        # в том же плане перед `item`: баннер есть — жмём его, нет — включаем
+        # верхнее, без лишнего обмена со страницей.
+        found = await self._await_results(plan, tab, suggest=True)
+        if found is not None and found.get("done") != "suggest":
             return found
+        if found is not None:
+            return None  # подсказку нажали, а исправленная выдача так и не дорисовалась
 
         # Ничего не нашлось — возможно, услышано с ошибкой, и сайт сам это знает.
         # «Нервы, волшануя» он встречает баннером «Возможно, вы искали нервы,
@@ -2254,16 +2269,32 @@ class PageSkill(Skill):
         return await self._await_results(plan, tab)
 
     async def _await_results(
-        self, plan: Sequence[Mapping[str, Any]], tab: int
+        self, plan: Sequence[Mapping[str, Any]], tab: int, *, suggest: bool = False
     ) -> dict[str, Any] | None:
-        """Прогнать план по кругу, пока выдача не дорисуется."""
+        """Прогнать план по кругу, пока выдача не дорисуется.
+
+        :param suggest: сперва нажать подсказку сайта «возможно, вы искали», если
+            она есть. Нажимается один раз: после нажатия на её месте бывает
+            «искать вместо этого …», и второе нажатие вернуло бы ослышку.
+        """
+        steps = [{"suggest": list(DID_YOU_MEAN)}, *plan] if suggest else list(plan)
+        pressed: dict[str, Any] | None = None
         for attempt in range(SEARCH_ATTEMPTS):
             if attempt:
                 await asyncio.sleep(SEARCH_DELAY)
-            result = await self._run(plan, tab)
-            if result is not None:
-                return result
-        return None
+            result = await self._run(steps, tab)
+            if result is None:
+                continue
+            if result.get("done") == "suggest" and pressed is None:
+                self.log.info(
+                    "Сайт подсказал %r — нажал, включаю из исправленной выдачи",
+                    str(result.get("detail", "")).strip(),
+                )
+                pressed = result
+                steps = list(plan)
+                continue
+            return result
+        return pressed
 
     def _with_top(
         self, host: str, steps: Sequence[Mapping[str, Any]]

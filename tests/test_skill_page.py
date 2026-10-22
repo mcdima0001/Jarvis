@@ -327,7 +327,9 @@ async def test_missing_track_is_searched_on_the_page(loaded, monkeypatch) -> Non
     # вложенный: сам по себе класс кнопки встречается на странице 38 раз, и
     # первым идёт кнопка в боковом меню — по сохранённой странице это «Вайбы
     # отдыха». То есть «включи трек» запускало бы плейлист из сайдбара.
-    prefer = plans[3][0]["prefer"]
+    # Первым шагом — подсказка сайта «возможно, вы искали» (22.10.2026).
+    assert "suggest" in plans[3][0]
+    prefer = plans[3][1]["prefer"]
     assert prefer and all("SearchBestResults" in item for item in prefer), prefer
     await manager.stop()
 
@@ -1317,7 +1319,7 @@ async def test_channel_is_looked_up_through_site_search(loaded, monkeypatch) -> 
     assert typed and typed[0][0]["type"] == "Лололошка"
     # Подбора по названию среди шагов нет вовсе — только рецепт выдачи.
     assert not [plan for plan in plans if any("item" in step for step in plan)]
-    assert "ytd-channel-renderer a#main-link" in plans[-1][0]["click"]
+    assert "ytd-channel-renderer a#main-link" in plans[-1][1]["click"]
     await manager.stop()
 
 
@@ -1742,3 +1744,35 @@ def test_what_was_clicked_is_read_from_the_page_report() -> None:
     assert page.clicked_name("arctic monkeys 505 — воспроизведение") == "arctic monkeys 505"
     assert page.clicked_name("верхний результат: Faint — Play") == "Faint"
     assert page.clicked_name("") == ""
+
+
+async def test_site_suggestion_is_pressed_before_the_top_result(loaded, monkeypatch) -> None:
+    """22.10.2026, 09:27: «Arctic Mankins 505» — сверху «Моя волна» по ослышке.
+
+    Яндекс сам подсказывал «Возможно, вы искали Arctic Monkeys 505», а Jarvis
+    нажимал верхнюю карточку, и играла волна. Подсказка — первой, и один раз.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "SEARCH_DELAY", 0)
+    monkeypatch.setattr(module, "SEARCH_OPEN_DELAY", 0)
+    monkeypatch.setattr(module, "CONFIRM_WITHIN_S", 0)
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [
+        {"done": None},                              # на открытой странице трека нет
+        {"done": "label", "detail": "Поиск"},        # нажал «Поиск»
+        {"done": "type", "detail": "arctic mankins 505"},
+        {"done": "suggest", "detail": "Arctic Monkeys 505"},
+        {"done": "item", "detail": "505 — воспроизведение", "played": True},
+    ]
+
+    result = await registry.invoke("page.play_item", {"track": "Arctic Mankins 505"})
+
+    assert result.ok
+    plans = [call[1] for call in fake.CALLS if call[0] == "run"]
+    after_suggest = plans[4]
+    assert not any("suggest" in step for step in after_suggest), "подсказку жмём один раз"
+    assert any("item" in step for step in after_suggest)
+    await manager.stop()
