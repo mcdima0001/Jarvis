@@ -194,10 +194,32 @@ async function jarvisRunPlan(plan) {
   };
 
   /** Лучшее совпадение подписи с просьбой среди элементов страницы. */
+  /**
+   * Лежит ли элемент в подсказке «возможно, вы искали …».
+   *
+   * Живой случай 22.10.2026, 09:47: на выдаче «Arctic Mankins 505» название
+   * лучше всего совпало с кнопкой подсказки «Arctic Monkeys 505», от неё поиск
+   * кнопки «играть» поднялся к соседней карточке «Моя волна» — и заиграла
+   * волна. Подсказку жмёт свой шаг `suggest`; совпадением по названию она не
+   * бывает никогда.
+   */
+  const DID_YOU_MEAN = ["возможно, вы искали", "возможно вы искали", "did you mean"];
+  const inCorrection = (element) => {
+    let node = element;
+    for (let depth = 0; node && depth < 3; depth += 1) {
+      const text = spaced(caption(node)).trim();
+      if (DID_YOU_MEAN.some((mark) => text.startsWith(spaced(mark).trim()))) {
+        return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  };
+
   const bestMatch = (selector, wanted, forbidden, tighter) => {
     const found = [];
     for (const element of document.querySelectorAll(selector)) {
-      if (!seen(element)) {
+      if (!seen(element) || inCorrection(element)) {
         continue;
       }
       const caption_ = caption(element);

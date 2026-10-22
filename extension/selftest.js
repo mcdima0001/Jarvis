@@ -960,6 +960,25 @@ check("самый внутренний баннер, а не тело стран
   assert(footer.clicked === 0, "нажата ссылка из подвала");
 });
 
+check("кнопка подсказки — не трек, даже если название похоже", async () => {
+  // Живой случай 22.10.2026, 09:47, по сохранённой странице Яндекс Музыки:
+  // «Arctic Mankins 505» лучше всего совпало с кнопкой «Arctic Monkeys 505» в
+  // подсказке, от неё поиск «играть» поднялся к карточке «Моя волна».
+  const audio = player({ tag: "audio", paused: true });
+  const wave = element({ attributes: { "aria-label": "Воспроизвести волну" }, starts: audio });
+  const fix = element({ attributes: { "aria-label": "Arctic Monkeys 505" } });
+  const banner = element({ tag: "span", text: "Возможно, вы искали ", children: [fix] });
+  const page = element({ tag: "div", children: [banner, wave] });
+  const api = load(makeDocument({ controls: [page, banner, fix, wave], players: [audio] }));
+
+  const result = await api.jarvisRunPlan([
+    { item: ["arctic mankins 505"], hint: ["воспроизв"], play: true },
+  ]);
+
+  assert(result.done === null, `нажалось ${result.done}: ${result.detail}`);
+  assert(wave.clicked === 0, "заиграла волна");
+});
+
 check("нет подсказки — шаг не срабатывает", async () => {
   const row = element({ attributes: { "aria-label": "Трек Волшебная" } });
   const api = load(makeDocument({ controls: [row] }));

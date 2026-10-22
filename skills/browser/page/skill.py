@@ -41,7 +41,7 @@ import re
 import time
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from jarvis.core.contracts import ToolResult
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
@@ -194,6 +194,23 @@ def clicked_name(detail: str) -> str:
         if name.startswith(head):
             name = name[len(head):]
     return name.split(" — ", 1)[0].strip()
+
+
+def shows_search_for(url: str, query: str) -> bool:
+    """Открыта ли уже выдача сайта ровно по этому запросу. Чистая функция.
+
+    Живой случай 22.10.2026, 09:47: повторное «включи Arctic Mankins 505» застало
+    вкладку на выдаче по тому же запросу — и искало трек на ней как на любой
+    странице, мимо подсказки «возможно, вы искали».
+    """
+    parts = urlsplit(url)
+    if "search" not in parts.path.lower():
+        return False
+    asked = " ".join(query.lower().split())
+    for values in parse_qs(parts.query).values():
+        if any(" ".join(value.lower().split()) == asked for value in values):
+            return True
+    return False
 
 
 def split_local(track: str) -> tuple[str, bool]:
@@ -1073,7 +1090,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.7.1",
+        version="0.7.2",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1948,7 +1965,13 @@ class PageSkill(Skill):
             self.log.info("На %s искать нечем — на странице даже не смотрю", host or "этой странице")
             return await otherwise()
 
-        result = await self._run(steps, tab)
+        if search and searchable(host) and shows_search_for(str(target.get("url", "")), search):
+            # Выдача по этому запросу уже открыта: разбираем её как свою —
+            # подсказка сайта первой, потом верхний результат.
+            self.log.info("Выдача по %r уже открыта — беру из неё", search)
+            result, _ = await self._from_results(steps, tab=tab, host=host)
+        else:
+            result = await self._run(steps, tab)
         if search and result is None:
             # На странице этого нет — поищем на самом сайте, как это сделал бы
             # человек: нажать «Поиск», напечатать, включить верхнее.
@@ -2225,7 +2248,30 @@ class PageSkill(Skill):
             return None
 
         # 3. Дождаться выдачи и включить верхний результат.
-        #
+        found, suggested = await self._from_results(steps, tab=tab, host=host)
+        if found is not None or suggested:
+            return found
+
+        # Ничего не нашлось — возможно, услышано с ошибкой, и сайт сам это знает.
+        # «Нервы, волшануя» он встречает баннером «Возможно, вы искали нервы,
+        # волшебная»; нажать надо исправленный запрос, а он в конце строки.
+        corrected = await self._run([{"suggest": list(SUGGEST_MARKS)}], tab)
+        if corrected is None:
+            return None
+        self.log.info(
+            "Сайт поправил запрос на %r — ищу снова",
+            str(corrected.get("detail", "")).strip(),
+        )
+        return await self._await_results(self._with_top(host, steps), tab)
+
+    async def _from_results(
+        self, steps: Sequence[Mapping[str, Any]], *, tab: int, host: str
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Включить верхнее из выдачи сайта, сперва нажав его подсказку.
+
+        Второе значение — нажата ли подсказка: тогда выдача уже другая, и искать
+        исправленное снова незачем.
+        """
         # Порядок в выдаче расставил сайт — по всему, что он знает о треках. У
         # нас же есть только услышанное название, уже искажённое распознаванием,
         # и ранжировать им поверх готового порядка — значит менять хорошее знание
@@ -2251,22 +2297,9 @@ class PageSkill(Skill):
         # в том же плане перед `item`: баннер есть — жмём его, нет — включаем
         # верхнее, без лишнего обмена со страницей.
         found = await self._await_results(plan, tab, suggest=True)
-        if found is not None and found.get("done") != "suggest":
-            return found
-        if found is not None:
-            return None  # подсказку нажали, а исправленная выдача так и не дорисовалась
-
-        # Ничего не нашлось — возможно, услышано с ошибкой, и сайт сам это знает.
-        # «Нервы, волшануя» он встречает баннером «Возможно, вы искали нервы,
-        # волшебная»; нажать надо исправленный запрос, а он в конце строки.
-        corrected = await self._run([{"suggest": list(SUGGEST_MARKS)}], tab)
-        if corrected is None:
-            return None
-        self.log.info(
-            "Сайт поправил запрос на %r — ищу снова",
-            str(corrected.get("detail", "")).strip(),
-        )
-        return await self._await_results(plan, tab)
+        if found is not None and found.get("done") == "suggest":
+            return None, True  # подсказку нажали, а исправленная выдача так и не дорисовалась
+        return found, False
 
     async def _await_results(
         self, plan: Sequence[Mapping[str, Any]], tab: int, *, suggest: bool = False

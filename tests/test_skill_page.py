@@ -1776,3 +1776,11 @@ async def test_site_suggestion_is_pressed_before_the_top_result(loaded, monkeypa
     assert not any("suggest" in step for step in after_suggest), "подсказку жмём один раз"
     assert any("item" in step for step in after_suggest)
     await manager.stop()
+
+
+def test_open_results_for_the_same_query_are_recognised() -> None:
+    """09:47: вкладка уже стояла на выдаче «Arctic Mankins 505» — её и разбираем."""
+    url = "https://music.yandex.ru/search?text=Arctic+Mankins+505"
+    assert page.shows_search_for(url, "arctic mankins 505")
+    assert not page.shows_search_for(url, "nirvana")
+    assert not page.shows_search_for("https://music.yandex.ru/", "arctic mankins 505")
