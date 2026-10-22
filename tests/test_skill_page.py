@@ -1823,5 +1823,7 @@ async def test_liked_songs_go_through_the_collection(loaded) -> None:
     plans = [call[1] for call in fake.CALLS if call[0] == "run"]
     assert plans[0][0]["item"][0] == "мне нравится"
     assert any("PlayerBar" in selector for selector in plans[0][0]["skip"]), "лайк в плеере не защищён"
+    assert any("CollectionVibeAgent" in selector for selector in plans[0][0]["skip"]), "волна над лентой"
+    assert any("PlaylistWithTracks" in selector for selector in plans[0][0]["prefer"])
     assert not any("type" in step for plan in plans for step in plan), "поиском не ищем"
     await manager.stop()

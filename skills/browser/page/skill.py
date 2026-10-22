@@ -473,9 +473,22 @@ SITE_RECIPES: dict[str, dict[str, tuple[dict[str, Any], ...]]] = {
         # внизу держит кнопки «Нравится» и «Не нравится» — совпади название с
         # ними, лайк получил бы играющий трек (22.10.2026, по сохранённой
         # странице: `CommonControlsBar_likeIcon`, `PlayerBarDesktop…`).
+        #
+        # Своей кнопки «играть» у «Мне нравится» в коллекции нет (по сохранённой
+        # странице владельца 22.10.2026): это лента треков, у каждого кнопка своя,
+        # и такой блок `PlaylistWithTracks` на странице ровно один. Над ним стоит
+        # «Моя волна» (`CollectionVibeAgent`) со своим «Воспроизведение» — её в
+        # `skip`, иначе снова заиграла бы волна. Первый трек ленты запускает весь
+        # плейлист.
         "liked_page": ({"go": "/collection"},),
+        "liked_play": (
+            {"click": ['[class*="PlaylistWithTracks_root"] [class*="PlayButtonWithCover_playButton"]']},
+        ),
         "not_liked": (
-            {"click": ['[class*="PlayerBar"]', '[class*="CommonControlsBar"]', '[class*="QueryToVibe"]']},
+            {"click": [
+                '[class*="PlayerBar"]', '[class*="CommonControlsBar"]',
+                '[class*="QueryToVibe"]', '[class*="CollectionVibeAgent"]',
+            ]},
         ),
         "not_track": (
             {"click": ['[class*="QueryToVibe"]', '[class*="SearchCorrectedText"]']},
@@ -1139,7 +1152,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.8.0",
+        version="0.8.1",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1316,9 +1329,10 @@ class PageSkill(Skill):
         """Включить «Мне нравится» — лайкнутые треки на музыкальном сайте.
 
         Через «Коллекцию», а не поиском: в поиске «любимое» находит волну, а
-        «мне нравится» — чужие плейлисты. На странице коллекции нажимается
-        «играть» у плитки «Мне нравится»; плеер внизу и кнопки лайка в
-        `skip` — иначе «нравится» совпало бы с лайком играющего трека.
+        «мне нравится» — чужие плейлисты. В коллекции «Мне нравится» — лента
+        треков без общей кнопки, поэтому нажимается первый трек ленты (рецепт
+        `liked_play`); волна над лентой, плеер внизу и кнопки лайка в `skip` —
+        иначе «нравится» совпало бы с лайком играющего трека.
         """
         if not self.tools.has("browser.page_go"):
             return await self.play_music()
@@ -1345,6 +1359,11 @@ class PageSkill(Skill):
             "item": list(LIKED_NAMES),
             "hint": list(PLAY_HINTS),
             "play": True,
+            "prefer": [
+                selector
+                for step in recipes_for(host, SITE_RECIPES).get("liked_play", ())
+                for selector in step.get("click", ())
+            ],
             "skip": [
                 selector
                 for step in recipes_for(host, SITE_RECIPES).get("not_liked", ())
