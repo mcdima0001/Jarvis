@@ -469,6 +469,7 @@ class JarvisApp:
             GitUpdate(
                 settings=config.runtime.update, root=config.root, registry=registry,
                 announcer=announcer, restart=lifecycle.restart,
+                reload_skills=watch.reload_skills_now,
             ),
             needs=EARS,
         )

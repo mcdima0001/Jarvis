@@ -366,6 +366,22 @@ async def test_updated_skills_are_reloaded_and_said_in_one_line(tmp_path: Path, 
     assert await watch.skills_tick(now=start + 60) == "same"
 
 
+async def test_skills_reload_at_once_on_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """«Обновись» голосом: без ожидания тишины и без доклада — ответит сам инструмент."""
+    from jarvis.core import restart
+
+    monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "page сломан" if "page" in str(candidate.path) else "")
+    watch, skills, announcer = await _skill_watch(tmp_path)
+    _edit(tmp_path / "skills" / "peace" / "skill.py", "x = 2")
+    _edit(tmp_path / "skills" / "browser" / "page" / "skill.py", "x = 2")
+
+    assert await watch.reload_skills_now() == (["peace"], ["browser/page"])
+    assert skills.reloaded == ["peace"] and announcer.said == []
+    # Наблюдатель второй раз то же не переподключает.
+    assert await watch.skills_tick() == "same"
+    assert await watch.reload_skills_now() == ([], [])
+
+
 async def test_a_skill_that_does_not_import_is_left_as_it_was(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from jarvis.core import restart
 

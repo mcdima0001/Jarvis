@@ -565,9 +565,46 @@ class CoreWatch:
         if moment - self._active_at < SKILL_IDLE_S or (self._jobs is not None and self._jobs.running):
             return "busy"
 
+        updated, failed = await self._reload(changed, candidates)
+        # Точка отсчёта — то, что на диске сейчас: не вышедшее ждёт новой правки,
+        # а не пробуется каждые полминуты.
+        self._skill_base.update({label: current[label] for label in changed})
+        self._skill_seen = {}
+        self._tell_skills(updated, failed)
+        return "updated" if updated else "failed"
+
+    async def reload_skills_now(self) -> tuple[list[str], list[str]]:
+        """Переподключить обновившиеся скиллы сразу, не дожидаясь тишины.
+
+        Для «обновись» голосом (`core.update`): владелец сам попросил, ждать
+        `SKILL_SETTLE_S` и `SKILL_IDLE_S` незачем — файлы положил git целиком,
+        а разговор и есть эта просьба. Пробный импорт остаётся: сломанное не
+        выгружает рабочее. :return: что переподключено и что не поднялось.
+        """
+        if self._skills is None:
+            return [], []
+        candidates = {candidate.label: candidate for candidate in self._skills.candidates()}
+        current = await asyncio.to_thread(skill_prints, candidates.values())
+        changed = sorted(
+            label for label in current if current[label] != self._skill_base.get(label)
+        )
+        if not changed:
+            return [], []
+        updated, failed = await self._reload(changed, candidates)
+        self._skill_base.update({label: current[label] for label in changed})
+        self._skill_seen = {}
+        return updated, failed
+
+    async def _reload(
+        self, changed: list[str], candidates: Mapping[str, SkillCandidate]
+    ) -> tuple[list[str], list[str]]:
+        """Пробный импорт и переподключение каждого изменившегося скилла."""
         updated: list[str] = []
         failed: list[str] = []
-        disabled = self._skills.disabled
+        skills = self._skills
+        if skills is None:
+            return updated, failed
+        disabled = skills.disabled
         for label in changed:
             candidate = candidates[label]
             # Главный переподключается вместе с подскиллами — отдельно их не трогаем.
@@ -579,24 +616,19 @@ class CoreWatch:
                 failed.append(label)
                 continue
             try:
-                loaded = self._skills.resolve(candidate.name)
-                if loaded in self._skills.loaded:
-                    await self._skills.reload(loaded)
+                loaded = skills.resolve(candidate.name)
+                if loaded in skills.loaded:
+                    await skills.reload(loaded)
                 else:
-                    await self._skills.adopt(candidate.name)
+                    await skills.adopt(candidate.name)
             except Exception as exc:  # noqa: BLE001 — один скилл не роняет наблюдателя
                 logger.warning("Скилл %s после обновления не поднялся: %s", label, exc)
                 failed.append(label)
                 continue
             updated.append(label)
-        # Точка отсчёта — то, что на диске сейчас: не вышедшее ждёт новой правки,
-        # а не пробуется каждые полминуты.
-        self._skill_base.update({label: current[label] for label in changed})
-        self._skill_seen = {}
         if updated:
             logger.info("Скиллы переподключены после обновления: %s", ", ".join(updated))
-        self._tell_skills(updated, failed)
-        return "updated" if updated else "failed"
+        return updated, failed
 
     def _tell_skills(self, updated: list[str], failed: list[str]) -> None:
         if self._settings.skills != "tell" or self._announcer is None:

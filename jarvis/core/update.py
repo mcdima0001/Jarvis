@@ -194,6 +194,23 @@ def updated_speech(pulled: Pulled) -> str:
     return f"Скачал {pulled.commits} {word}."
 
 
+def modules_speech(updated: list[str], failed: list[str]) -> str:
+    """«Обновил модули: page, relay.» — что переподключено и что нет, словами.
+
+    Метка подскилла — путь («browser/page»), вслух идёт только его имя.
+    """
+    updated = [label.rsplit("/", 1)[-1] for label in updated]
+    failed = [label.rsplit("/", 1)[-1] for label in failed]
+    parts = []
+    if updated:
+        parts.append(f"Обновил {'модуль' if len(updated) == 1 else 'модули'}: {', '.join(updated)}.")
+    if failed:
+        word = "модуль" if len(failed) == 1 else "модули"
+        verb = "не поднялся" if len(failed) == 1 else "не поднялись"
+        parts.append(f"{word.capitalize()} {', '.join(failed)} {verb}, подробности в логе.")
+    return " ".join(parts) or "Модули не менялись."
+
+
 class GitUpdate:
     """Раз в `check_s` секунд догоняет ветку из git; голосом — «проверь обновления».
 
@@ -210,6 +227,7 @@ class GitUpdate:
         registry: ToolRegistry | None = None,
         announcer: Announcer | None = None,
         restart: Callable[[str], Awaitable[str]] | None = None,
+        reload_skills: Callable[[], Awaitable[tuple[list[str], list[str]]]] | None = None,
         pull: Callable[[], Pulled] | None = None,
     ) -> None:
         self._settings = settings
@@ -217,6 +235,8 @@ class GitUpdate:
         self._registry = registry
         self._announcer = announcer
         self._restart = restart
+        #: Переподключить приехавшие скиллы сейчас же (`CoreWatch.reload_skills_now`).
+        self._reload_skills = reload_skills
         self._pull = pull or (lambda: _default_pull(root, settings))
         self._task: asyncio.Task[None] | None = None
         self._registrations: list[Any] = []
@@ -309,7 +329,7 @@ class GitUpdate:
                 "ru": _REFUSED.get(pulled.status, "Обновиться не вышло, подробности в логе."),
                 "en": "I couldn't update, see the log."})
         speech = updated_speech(pulled)
-        value = {"updated": True, "commits": pulled.commits, "core": pulled.core}
+        value: dict[str, object] = {"updated": True, "commits": pulled.commits, "core": pulled.core}
         if pulled.core and self._restart is not None:
             refused = await self._restart("обновление из git по команде владельца")
             if not refused:
@@ -323,8 +343,16 @@ class GitUpdate:
             return ToolResult.success(value, speech={
                 "ru": f"{speech} Ядро новое — скажите «перезапустись», когда будет удобно.",
                 "en": "Updated. Say restart when convenient."})
+        if self._reload_skills is None:
+            return ToolResult.success(value, speech={
+                "ru": f"{speech} Модули подхватятся сами.", "en": "Updated. Modules will reload shortly."})
+        # Просил владелец — не ждём тишины, как ждёт наблюдатель: переподключаем сразу.
+        updated, failed = await self._reload_skills()
+        value |= {"reloaded": updated, "failed": failed}
         return ToolResult.success(value, speech={
-            "ru": f"{speech} Модули подхватятся сами.", "en": "Updated. Modules will reload shortly."})
+            "ru": f"{speech} {modules_speech(updated, failed)}",
+            "en": f"Updated. Reloaded {len(updated)}, failed {len(failed)}." if updated or failed
+            else "Updated. Nothing to reload."})
 
 
 _REFUSED = {

@@ -214,14 +214,31 @@ async def test_voice_update_with_core_restarts_at_once(tmp_path: Path) -> None:
     assert "Перезапускаюсь" in result.speech_for("ru")
 
 
-async def test_voice_update_with_skills_only_does_not_restart(tmp_path: Path) -> None:
+async def test_voice_update_with_skills_only_reloads_them_at_once(tmp_path: Path) -> None:
     restart = _Restart()
-    updater = _updater(tmp_path, Pulled(UPDATED, commits=1, files=("skills/rates/skill.py",)), restart)
+    reloads: list[str] = []
+
+    async def reload_skills() -> tuple[list[str], list[str]]:
+        reloads.append("now")
+        return ["rates"], []
+
+    updater = GitUpdate(
+        settings=UpdateConfig(), root=tmp_path, restart=restart, reload_skills=reload_skills,
+        pull=lambda: Pulled(UPDATED, commits=1, files=("skills/rates/skill.py",)),
+    )
 
     result = await updater.update()
 
-    assert result.ok and not restart.calls
-    assert "Модули подхватятся сами" in result.speech_for("ru")
+    assert result.ok and not restart.calls and reloads == ["now"]
+    assert result.speech_for("ru") == "Скачал 1 коммит. Обновил модуль: rates."
+
+
+def test_modules_speech() -> None:
+    from jarvis.core.update import modules_speech
+
+    assert modules_speech(["page", "relay"], []) == "Обновил модули: page, relay."
+    assert modules_speech([], ["browser/page"]) == "Модуль page не поднялся, подробности в логе."
+    assert modules_speech([], []) == "Модули не менялись."
 
 
 async def test_voice_update_with_nothing_new(tmp_path: Path) -> None:
