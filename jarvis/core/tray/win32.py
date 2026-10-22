@@ -155,7 +155,10 @@ _WAIT_OBJECT_0, _WAIT_ABANDONED = 0x0, 0x80
 
 #: Результат оконной процедуры — размером с указатель, а не 32-битный `int`.
 _LRESULT = ctypes.c_ssize_t
-_WNDPROC = ctypes.WINFUNCTYPE(_LRESULT, ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+#: На Linux `WINFUNCTYPE` нет, а модуль импортируют тесты: окна там не
+#: создаются, и соглашение о вызове не важно — нужен только тип.
+_FUNCTYPE = ctypes.WINFUNCTYPE if sys.platform == "win32" else ctypes.CFUNCTYPE
+_WNDPROC = _FUNCTYPE(_LRESULT, ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 
 class _WNDCLASSW(ctypes.Structure):

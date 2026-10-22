@@ -59,7 +59,10 @@ _TIMER_ID = 1
 _WATCH_MS = 120
 
 _LRESULT = ctypes.c_ssize_t
-_WNDPROC = ctypes.WINFUNCTYPE(_LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+#: На Linux `WINFUNCTYPE` нет, а модуль импортируют тесты: окна там не
+#: создаются, и соглашение о вызове не важно — нужен только тип.
+_FUNCTYPE = ctypes.WINFUNCTYPE if sys.platform == "win32" else ctypes.CFUNCTYPE
+_WNDPROC = _FUNCTYPE(_LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 
 class _WNDCLASSW(ctypes.Structure):

@@ -90,7 +90,7 @@ class AimpSkill(Skill):
     meta = SkillMeta(
         name="aimp",
         description="Своя музыка в AIMP: что играет, поиск по фонотеке, переключение треков.",
-        version="0.2.0",
+        version="0.2.1",
         spoken=("аимп", "aimp", "музыка", "music"),
     )
 

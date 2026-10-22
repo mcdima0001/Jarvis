@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -106,7 +106,7 @@ def task_xml(exe: Path, *, user: str, elevated: bool) -> str:
         level="HighestAvailable" if elevated else "LeastPrivilege",
         priority=PRIORITY,
         command=escape(str(exe)),
-        folder=escape(str(exe.parent)),
+        folder=escape(str(PureWindowsPath(exe).parent)),
     )
 
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class Track:
         """
         if self.title and self.artist:
             return f"{self.artist.replace(';', ', ')} - {self.title}"
-        return self.title or Path(self.path).stem
+        return self.title or PureWindowsPath(self.path).stem
 
 
 @dataclass(frozen=True)
