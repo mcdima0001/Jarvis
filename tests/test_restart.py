@@ -370,7 +370,7 @@ async def test_skills_reload_at_once_on_request(tmp_path: Path, monkeypatch: pyt
     """«Обновись» голосом: без ожидания тишины и без доклада — ответит сам инструмент."""
     from jarvis.core import restart
 
-    monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "page сломан" if "page" in str(candidate.path) else "")
+    monkeypatch.setattr(restart, "skill_check", lambda candidate, root: "сломан" if candidate.name == "page" else "")
     watch, skills, announcer = await _skill_watch(tmp_path)
     _edit(tmp_path / "skills" / "peace" / "skill.py", "x = 2")
     _edit(tmp_path / "skills" / "browser" / "page" / "skill.py", "x = 2")
