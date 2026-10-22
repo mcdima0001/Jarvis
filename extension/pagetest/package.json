@@ -1,0 +1,8 @@
+{
+  "name": "jarvis-pagetest",
+  "private": true,
+  "description": "page.js на сохранённых страницах сайтов: что найдёт и что нажмёт",
+  "devDependencies": {
+    "jsdom": "30.1.3"
+  }
+}

@@ -68,6 +68,14 @@ jobs:
       - name: Типы
         run: python -m mypy
 
+      # page.js на сохранённых страницах сайтов (tests/test_saved_pages.py):
+      # без jsdom эти тесты пропускаются, а здесь должны идти.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: jsdom для сохранённых страниц
+        run: npm ci --include=dev --prefix extension/pagetest
+
       # С 14.09 по 01.10.2026 здесь не выполнялось ни одного теста: тест буфера
       # обмена импортировал Pillow, которого не было в `dev`, и сбор прерывался на
       # первом же файле. Красный значок за семнадцать дней стал фоном. Теперь:

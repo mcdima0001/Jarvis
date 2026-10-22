@@ -199,6 +199,30 @@ _LIKED = frozenset({
 })
 
 
+def _selectors(host: str, recipe: str) -> list[str]:
+    """Селекторы шагов `click` встроенного рецепта сайта."""
+    return [
+        selector
+        for step in recipes_for(host, SITE_RECIPES).get(recipe, ())
+        for selector in step.get("click", ())
+    ]
+
+
+def liked_plan(host: str) -> list[dict[str, Any]]:
+    """План «включи „Мне нравится“» на странице коллекции. Чистая функция.
+
+    Отдельно от инструмента, чтобы его же прогонял тест на сохранённой
+    странице (`extension/pagetest`), а не его пересказ.
+    """
+    return validate_plan([{
+        "item": list(LIKED_NAMES),
+        "hint": list(PLAY_HINTS),
+        "play": True,
+        "prefer": _selectors(host, "liked_play"),
+        "skip": _selectors(host, "not_liked"),
+    }])
+
+
 def liked_music(track: str) -> bool:
     """Просят ли лайкнутые треки, а не что-то названное. Чистая функция."""
     text = " ".join(str(track).lower().replace("ё", "е").replace(",", " ").split()).strip(" «»\"'.!?")
@@ -1355,23 +1379,8 @@ class PageSkill(Skill):
             )
             if not moved.ok:
                 return moved
-        steps = [{
-            "item": list(LIKED_NAMES),
-            "hint": list(PLAY_HINTS),
-            "play": True,
-            "prefer": [
-                selector
-                for step in recipes_for(host, SITE_RECIPES).get("liked_play", ())
-                for selector in step.get("click", ())
-            ],
-            "skip": [
-                selector
-                for step in recipes_for(host, SITE_RECIPES).get("not_liked", ())
-                for selector in step.get("click", ())
-            ],
-        }]
         try:
-            result = await self._await_results(validate_plan(steps), tab)
+            result = await self._await_results(liked_plan(host), tab)
         except PageUnreachable as exc:
             return ToolResult.failure(str(exc), speech={"ru": "Вкладка музыки не отвечает.", "en": "The music tab isn't responding."})
         if result is None:
@@ -2473,11 +2482,7 @@ class PageSkill(Skill):
             for step in self._plan("first", host)
             for selector in step.get("click", ())
         ]
-        skip = [
-            selector
-            for step in recipes_for(host, SITE_RECIPES).get("not_track", ())
-            for selector in step.get("click", ())
-        ]
+        skip = _selectors(host, "not_track")
         if not top and not skip:
             return [dict(step) for step in steps]
         extra: dict[str, Any] = {}

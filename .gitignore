@@ -54,3 +54,6 @@ tests.py
 # Ярлык на него — у каждого свой путь.
 /Jarvis.lnk
 bench/
+
+# jsdom для прогона page.js на сохранённых страницах (tests/test_saved_pages.py)
+extension/pagetest/node_modules/

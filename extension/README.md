@@ -212,3 +212,14 @@ Jarvis принимает только `chrome-extension://` и `moz-extension:/
 - Ничего не происходит и логов нет — служебный поток уснул. Открой
   `chrome://extensions`, нажми «Служебный процесс» у расширения: консоль
   оживит его и покажет ошибки.
+
+## Проверка на сохранённых страницах (`pagetest/`)
+
+Сохрани страницу сайта (Ctrl+S, «Веб-страница полностью») и отдай её — копия
+без скриптов и стилей ложится в `pagetest/pages/`, и `tests/test_saved_pages.py`
+прогоняет на ней план из настоящего кода скилла `page`: что `page.js` нашёл бы и
+что нажал. Нужен jsdom:
+
+```bash
+npm install --include=dev --prefix extension/pagetest   # --include=dev — если NODE_ENV=production
+```
