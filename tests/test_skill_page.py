@@ -1677,3 +1677,68 @@ def test_play_music_is_not_resume_whatever_was_paused() -> None:
     assert "включи музыку" in specs["page.play_music"]
     assert "включи музыку" not in specs["page.play"]
     assert page.MUSIC_SITE == "яндекс музыка"
+
+
+async def test_a_wrong_track_is_clicked_once_more(loaded, monkeypatch) -> None:
+    """22.10.2026, 09:27: нажата строка «arctic monkeys 505», а играл прежний трек.
+
+    Второе нажатие той же строки и чинит дело; а заигравшее нажатое — верный
+    трек, хотя услышано было «mankins».
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "CONFIRM_EVERY_S", 0)
+    monkeypatch.setattr(module, "CONFIRM_WITHIN_S", 0.05)
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [
+        {"done": "item", "detail": "arctic monkeys 505 — воспроизведение", "played": True},
+        *[{"done": "now", "detail": "Sereas — Luar Na Lubre"}] * 50,
+    ]
+
+    async def settle(*_: Any, **__: Any) -> None:
+        # Как только пошло повторное нажатие — сайт переключился.
+        fake.REPLIES[:] = [
+            {"done": "item", "detail": "arctic monkeys 505 — воспроизведение", "played": True},
+            {"done": "now", "detail": "505 — Arctic Monkeys"},
+        ]
+
+    original = module.PageSkill._act
+
+    async def watching(self, action: str, **options: Any) -> Any:
+        extra = options.get("extra") or [{}]
+        if action.startswith("item:") and extra[0].get("item") == ["arctic monkeys 505"]:
+            await settle()
+        return await original(self, action, **options)
+
+    monkeypatch.setattr(module.PageSkill, "_act", watching)
+
+    result = await registry.invoke("page.play_item", {"track": "Arctic Mankins 505"})
+
+    assert result.ok
+    spoken = result.speech_for("ru")
+    assert "505 — Arctic Monkeys" in spoken and not spoken.startswith("Точно такого")
+    await manager.stop()
+
+
+@pytest.mark.parametrize(
+    ("track", "generic"),
+    [
+        ("музыку на Яндекс. Музыке", True),
+        ("музыку в яндекс музыке", True),
+        ("что-нибудь", True),
+        ("какую-нибудь музыку", True),
+        ("Arctic Monkeys 505", False),
+        ("музыку из фильма Интерстеллар", False),
+    ],
+)
+def test_just_music_is_not_a_track_name(track: str, generic: bool) -> None:
+    """22.10.2026, 09:25: «включи музыку на Яндекс Музыке» искалось как название."""
+    assert page.any_music(track) is generic
+
+
+def test_what_was_clicked_is_read_from_the_page_report() -> None:
+    assert page.clicked_name("arctic monkeys 505 — воспроизведение") == "arctic monkeys 505"
+    assert page.clicked_name("верхний результат: Faint — Play") == "Faint"
+    assert page.clicked_name("") == ""

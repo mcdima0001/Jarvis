@@ -1948,6 +1948,12 @@ Fish, httpx-скиллы и обновление из git. **Telegram тоже**
 Telethon `HTTPS_PROXY` не видит, поэтому `proxy` в `skills/telegram/config.yaml`
 по умолчанию `${HTTPS_PROXY}` и передаётся клиенту явно; нужен `python-socks`.
 `websockets` прокси не видит. tinyproxy остановлен и выключен, но не удалён.
+**Копия лога ноута — тем же прокси** (22.10.2026, 0.54.0): `logging.ship` на
+ноуте (по умолчанию выкл.) шлёт строки пачками `POST /log` в `HTTPS_PROXY`
+(`core/logging/ship.py`, на `http.client` — `httpx` сам писал бы в лог), `relay`
+дописывает их в `logs_dir` — на сервере `/opt/jarvis-head/laptop-logs/<машина>-<дата>.log`.
+Тяга `jarvis-logs` остаётся: копия толкается почти сразу и переживает
+выключенный ноут, тяга привозит ещё и `wake/`.
 
 **Серверный Jarvis — служба `jarvis-head`** (14.10.2026): голова колонки на
 ESP32 и прокси для ноутбука. Своя копия кода `/opt/jarvis-head/app` (не рабочая

@@ -49,6 +49,13 @@ class LoggingConfig:
     #: Сколько дневных файлов хранить. Один файл — один день: имя файла и есть
     #: ответ на вопрос «за какой это день».
     keep_days: int = 14
+    #: Копия лога на сервере (22.10.2026, `logging/ship.py`): строки пачками
+    #: уходят в прокси ноутбука (скилл `relay`). Выключено по умолчанию.
+    ship: bool = False
+    #: Адрес прокси; пусто — тот же, что `HTTPS_PROXY`.
+    ship_to: str = ""
+    #: Как часто отправлять, с.
+    ship_every_s: float = 5.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

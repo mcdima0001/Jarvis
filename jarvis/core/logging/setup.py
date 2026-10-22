@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
+import platform
 import sys
 import time
 
@@ -26,6 +28,7 @@ from jarvis.core.version import describe, executable_line
 
 from .colors import ColorFormatter, enable_windows_colors, supports_color
 from .daily import DailyFileHandler
+from .ship import ShipHandler, proxy_address
 
 #: Время стоит первым и в файле, и в консоли. Без него запись бесполезна для
 #: разбора: почти всё, что приходится выяснять по логу, — это «что было
@@ -62,6 +65,8 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
     root.setLevel(logging.WARNING)
     for handler in list(root.handlers):
         root.removeHandler(handler)
+        if isinstance(handler, ShipHandler):
+            handler.close()  # иначе поток отправки прежней настройки жил бы дальше
 
     config.dir.mkdir(parents=True, exist_ok=True)
     # Один файл — один день: `jarvis-2026-07-30.log`. Резать по размеру нельзя —
@@ -88,6 +93,10 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
             )
         root.addHandler(console)
 
+    shipping = _ship(config, file_level)
+    if shipping is not None:
+        root.addHandler(shipping)
+
     # Логгер должен пропускать самое подробное из двух: он решает **первым**, и
     # то, что он отсёк, до обработчиков уже не дойдёт. Кто из них что покажет —
     # дело их собственных уровней.
@@ -104,4 +113,24 @@ def setup_logging(config: LoggingConfig) -> logging.Logger:
     # коммита решался гаданием по поведению.
     app.info("%s", describe())
     app.debug("Интерпретатор: %s", executable_line())
+    if config.ship:
+        if shipping is None:
+            app.warning("Копия лога на сервер включена, но адреса прокси нет: ни ship_to, ни HTTPS_PROXY")
+        else:
+            app.info("Копия лога уходит на сервер через %s", config.ship_to or "HTTPS_PROXY")
     return app
+
+
+def _ship(config: LoggingConfig, level: int) -> ShipHandler | None:
+    """Обработчик копии лога на сервере; выключен или некуда — `None`."""
+    if not config.ship:
+        return None
+    address = proxy_address(config.ship_to or os.environ.get("HTTPS_PROXY", ""))
+    if address is None:
+        return None
+    handler = ShipHandler(
+        *address, every_s=config.ship_every_s, name=platform.node() or "jarvis"
+    )
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter(_FILE_FORMAT, datefmt=config.time_format))
+    return handler

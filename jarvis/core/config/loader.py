@@ -420,6 +420,9 @@ def load_config(
             keep_days=int(log.get("keep_days", 14)),
             file_level=str(log.get("file_level", "DEBUG")).upper(),
             color=str(log.get("color", "auto")),
+            ship=bool(log.get("ship", False)),
+            ship_to=str(log.get("ship_to") or ""),
+            ship_every_s=float(log.get("ship_every_s", 5.0)),
         ),
         runtime=RuntimeConfig(
             worker_threads=int(runtime.get("worker_threads", 2)),

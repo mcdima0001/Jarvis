@@ -175,3 +175,63 @@ async def test_busy_port_is_retried_until_it_frees(monkeypatch: pytest.MonkeyPat
         assert skill._server is not None
     finally:
         await skill.on_stop()
+
+
+def test_log_post_is_parsed_and_the_name_cannot_leave_the_folder() -> None:
+    head = (
+        b"POST /log HTTP/1.1\r\nContent-Length: 12\r\nX-Log-Date: 2026-10-22\r\n"
+        b"X-Log-Name: ../../etc/DIMA-PC\r\n\r\n"
+    )
+    assert relay.parse_log_post(head) == relay.LogPost(name="etcDIMA-PC", day="2026-10-22", length=12)
+    assert relay.parse_log_post(b"POST /log HTTP/1.1\r\nContent-Length: 1\r\nX-Log-Date: 22.10\r\n\r\n") is None
+    assert relay.parse_log_post(b"POST /other HTTP/1.1\r\n\r\n") is None
+
+
+async def test_laptop_log_lands_on_the_server(tmp_path: Path) -> None:
+    """Сквозной круг: обработчик на ноуте → прокси → дневной файл на сервере."""
+    import logging
+
+    from jarvis.core.logging.ship import ShipHandler
+
+    skill = await _started(logs_dir=str(tmp_path))
+    port = skill._port
+    handler = ShipHandler("127.0.0.1", port, every_s=0.5, name="DIMA-PC")
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    log = logging.getLogger("ship-test")
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        log.info("Распознано: включи музыку")
+        for _ in range(50):
+            await asyncio.sleep(0.1)
+            files = list(tmp_path.glob("DIMA-PC-*.log"))
+            if files and files[0].read_text(encoding="utf-8"):
+                break
+        assert files, "файл не появился"
+        assert files[0].read_text(encoding="utf-8") == "Распознано: включи музыку\n"
+    finally:
+        log.removeHandler(handler)
+        await asyncio.to_thread(handler.close)
+        await skill.on_stop()
+
+
+async def test_without_logs_dir_the_proxy_takes_no_logs(tmp_path: Path) -> None:
+    skill = await _started()
+    try:
+        _, writer, head = await _ask(
+            skill._port,
+            b"POST /log HTTP/1.1\r\nContent-Length: 1\r\nX-Log-Date: 2026-10-22\r\n\r\nx",
+        )
+        assert head.startswith(b"HTTP/1.1 405")
+        writer.close()
+    finally:
+        await skill.on_stop()
+
+
+def test_ship_address_comes_from_the_proxy_url() -> None:
+    from jarvis.core.logging.ship import proxy_address
+
+    assert proxy_address("http://127.0.0.1:8888") == ("127.0.0.1", 8888)
+    assert proxy_address("127.0.0.1:8888") == ("127.0.0.1", 8888)
+    assert proxy_address("") is None
+    assert proxy_address("socks5://127.0.0.1:1080") is None

@@ -160,6 +160,42 @@ def covers(asked: str, playing: str) -> bool:
     return len(wanted & _title_words(playing)) * 2 >= len(wanted)
 
 
+#: «Включи музыку на Яндекс Музыке» — не название, а «просто музыку». Живой
+#: случай 22.10.2026, 09:25: шаблон `включи {track}` отдал «музыку на яндекс.
+#: музыке» в поиск сайта, и ассистент спросил, какой из пяти джазовых треков
+#: выдачи включить, — а нужно было нажать «играть» на главной.
+_ANY_MUSIC = frozenset({
+    "музыку", "музыка", "музычку", "музон", "что-нибудь", "что нибудь", "что-то",
+    "песню", "песни", "песенку", "трек", "треки", "мою волну", "волну",
+    "music", "some music", "something",
+})
+_MUSIC_SITE_TAILS = re.compile(
+    r"\s+(?:на|в|из)\s+(?:яндекс\W*музык\w*|яндекс\w*|yandex\W*music)$"
+)
+
+
+def any_music(track: str) -> bool:
+    """Просят ли просто музыку, а не что-то названное. Чистая функция."""
+    text = " ".join(str(track).lower().replace("ё", "е").split()).strip(" «»\"'.,!?")
+    text = _MUSIC_SITE_TAILS.sub("", text).strip(" .,")
+    for head in ("какую-нибудь ", "какую нибудь ", "какую-то "):
+        if text.startswith(head):
+            text = text[len(head):]
+    return text in _ANY_MUSIC
+
+
+def clicked_name(detail: str) -> str:
+    """Что нажали, по отчёту страницы: «arctic monkeys 505 — воспроизведение» → «arctic monkeys 505».
+
+    Чистая функция.
+    """
+    name = str(detail).strip()
+    for head in ("верхний результат: ", "верхний результат"):
+        if name.startswith(head):
+            name = name[len(head):]
+    return name.split(" — ", 1)[0].strip()
+
+
 def split_local(track: str) -> tuple[str, bool]:
     """Отрезать от названия хвост «локально»: это не часть трека, а где его искать.
 
@@ -1032,7 +1068,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.6.0",
+        version="0.7.0",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1299,6 +1335,9 @@ class PageSkill(Skill):
                 return forced
         # «Включи ролик про котов», «включи клип Queen» — про видео сказано прямо,
         # и это исключение из правила «трек — в музыку» (владелец, 14.09.2026).
+        if not site.strip() and any_music(track):
+            self.log.info("%r — это просто музыка, а не название: включаю, что есть", track)
+            return await self.play_music()
         first, _, rest = track.strip().partition(" ")
         if first.lower().strip(" ,.") in VIDEO_WORDS and rest.strip():
             self.log.info("В просьбе сказано %r — это видео, а не трек", first)
@@ -1318,7 +1357,7 @@ class PageSkill(Skill):
                 return await self._local_track(track) or result
         return await self._play(track, site=site, fallback=self._music_site)
 
-    async def _confirm_track(self, result: ToolResult, asked: str) -> ToolResult:
+    async def _confirm_track(self, result: ToolResult, asked: str, *, again: bool = True) -> ToolResult:
         """Проверить, что заиграло, и назвать это, а не то, что просили.
 
         Живой случай 28.09.2026, 13:34: «включи ABBA Winner Takes It All»
@@ -1326,32 +1365,59 @@ class PageSkill(Skill):
         Billion Dollar Babies», а ассистент сказал «Включаю winner takes a
         doll». Ложный успех: его не слышно, пока не узнаешь песню. Название
         берётся у сайта (`mediaSession`); не сообщил — остаётся прежний ответ.
+
+        **Сверяется и с тем, что нажали** (22.10.2026). «Arctic Mankins 505»
+        сайт сам поправил, и нажата была строка «arctic monkeys 505»: если
+        заиграла она, это верный трек, а не «точно такого не нашёл».
+
+        **Заиграло не нажатое — нажимаем ещё раз, один** (22.10.2026, 09:27).
+        Нажатие верхней строки выдачи прошло, а продолжил играть прежний
+        «Sereas — Luar Na Lubre»; строка с нужным треком была прямо на экране,
+        и второе нажатие исправило бы дело.
         """
-        if not result.choices and result.ok:
-            deadline = time.monotonic() + CONFIRM_WITHIN_S
-            playing = ""
-            while time.monotonic() < deadline:
-                await asyncio.sleep(CONFIRM_EVERY_S)
-                answer = await self._act("playing", site=self._music_site, soft=True)
-                if not answer.ok or not isinstance(answer.value, Mapping):
-                    break  # сайт не говорит, что играет, — и переспрашивать незачем
-                playing = str(answer.value.get("detail", "")).strip()
-                if not playing or covers(asked, playing):
-                    break
-                # Играет другое — возможно, ещё не переключился: спросим снова.
-            if playing:
-                self.situation.note("играет", playing, minutes=TRACK_FRESH_MIN)
-                if covers(asked, playing):
-                    return replace(result, speech=self._play_speech(playing))
-                self.log.info("Просили %r, а играет %r — говорю как есть", asked, playing)
-                return replace(
-                    result,
-                    speech={
-                        "ru": (f"Точно такого не нашёл, играет {playing}.",),
-                        "en": (f"Couldn't find that exactly, playing {playing}.",),
-                    },
-                )
-        return result
+        if result.choices or not result.ok:
+            return result
+        detail = str(result.value.get("detail", "")) if isinstance(result.value, Mapping) else ""
+        clicked = clicked_name(detail)
+
+        def fits(playing: str) -> bool:
+            return covers(asked, playing) or bool(clicked and covers(clicked, playing))
+
+        deadline = time.monotonic() + CONFIRM_WITHIN_S
+        playing = ""
+        while time.monotonic() < deadline:
+            await asyncio.sleep(CONFIRM_EVERY_S)
+            answer = await self._act("playing", site=self._music_site, soft=True)
+            if not answer.ok or not isinstance(answer.value, Mapping):
+                break  # сайт не говорит, что играет, — и переспрашивать незачем
+            playing = str(answer.value.get("detail", "")).strip()
+            if not playing or fits(playing):
+                break
+            # Играет другое — возможно, ещё не переключился: спросим снова.
+        if not playing:
+            return result
+        if fits(playing):
+            self.situation.note("играет", playing, minutes=TRACK_FRESH_MIN)
+            return replace(result, speech=self._play_speech(playing))
+        if again and clicked:
+            self.log.info("Нажал %r, а играет %r — нажимаю ещё раз", clicked, playing)
+            retry = await self._act(
+                f"item:{clicked}",
+                site=self._music_site,
+                extra=[{"item": [clicked], "hint": list(PLAY_HINTS), "play": True}],
+                speech=self._play_speech(clicked),
+            )
+            if retry.ok and not retry.choices:
+                return await self._confirm_track(retry, asked, again=False)
+        self.situation.note("играет", playing, minutes=TRACK_FRESH_MIN)
+        self.log.info("Просили %r, а играет %r — говорю как есть", asked, playing)
+        return replace(
+            result,
+            speech={
+                "ru": (f"Точно такого не нашёл, играет {playing}.",),
+                "en": (f"Couldn't find that exactly, playing {playing}.",),
+            },
+        )
 
     async def _local_track(self, track: str) -> ToolResult | None:
         """Включить трек из своей фонотеки (AIMP). Нечем — `None`, пусть звучит прежний ответ."""

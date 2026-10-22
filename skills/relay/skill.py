@@ -21,6 +21,11 @@ Deepgram, Fish и Telegram с ноута доступны только чере�
 
 Память — два буфера по `BUFFER` на соединение и ничего сверх, соединений не
 больше ``max_clients``.
+
+**И одно исключение: копия лога ноутбука** (22.10.2026, 0.2.0). ``POST /log``
+с тех же разрешённых адресов дописывает тело в ``logs_dir`` по дням —
+``<имя машины>-<дата>.log``. Пусто в ``logs_dir`` — приёма нет, ответ 405,
+как раньше. Отправляет `jarvis/core/logging/ship.py` при ``logging.ship``.
 """
 
 from __future__ import annotations
@@ -28,8 +33,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import socket
 from dataclasses import dataclass
+from pathlib import Path
 
 from jarvis.core.skills import HealthStatus, Skill, SkillMeta
 
@@ -43,6 +50,8 @@ MAX_HEAD = 8 * 1024
 HANDSHAKE_S = 10.0
 #: Через сколько снова пробовать открыть порт, если он не открылся, с.
 RETRY_S = 10.0
+#: Предел тела копии лога за один запрос.
+MAX_LOG_BODY = 1024 * 1024
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 
@@ -71,6 +80,45 @@ def parse_connect(head: bytes) -> Target | None:
     if not host:
         return None
     return Target(host, int(port))
+
+
+@dataclass(frozen=True, slots=True)
+class LogPost:
+    """Копия лога: от какой машины, за какой день, сколько байт."""
+
+    name: str
+    day: str
+    length: int
+
+
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def parse_log_post(head: bytes) -> LogPost | None:
+    """Разобрать ``POST /log`` с заголовками. Не он или мусор — ``None``.
+
+    Имя машины становится частью пути, поэтому от него остаются только буквы,
+    цифры, точка, дефис и подчёркивание. Чистая функция.
+    """
+    try:
+        text = head.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.split("\r\n")
+    request = lines[0].split()
+    if len(request) != 3 or request[0].upper() != "POST" or request[1] != "/log":
+        return None
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        key, sep, value = line.partition(":")
+        if sep:
+            headers[key.strip().lower()] = value.strip()
+    day = headers.get("x-log-date", "")
+    length = headers.get("content-length", "")
+    if not _DAY.fullmatch(day) or not length.isdigit():
+        return None
+    name = re.sub(r"[^\w.-]", "", headers.get("x-log-name", ""), flags=re.ASCII).strip(".") or "jarvis"
+    return LogPost(name=name[:64], day=day, length=int(length))
 
 
 def networks(values: object) -> tuple[Network, ...]:
@@ -106,7 +154,7 @@ class RelaySkill(Skill):
     meta = SkillMeta(
         name="relay",
         description="Прокси для ноутбука: туннели к внешним API через сервер",
-        version="0.1.0",
+        version="0.2.0",
         spoken=("прокси", "relay"),
     )
 
@@ -119,6 +167,9 @@ class RelaySkill(Skill):
         self._ports = frozenset(int(port) for port in (setting("ports", [443]) or ()))
         self._limit = max(1, int(setting("max_clients", 200)))
         self._idle = max(10.0, float(setting("idle_s", 600)))
+        logs = str(setting("logs_dir", "") or "").strip()
+        self._logs = Path(logs).expanduser() if logs else None
+        self._shipped = 0
         self._server: asyncio.AbstractServer | None = None
         self._active = 0
         self._served = 0
@@ -170,6 +221,7 @@ class RelaySkill(Skill):
             return HealthStatus.degraded(self._error)
         return HealthStatus.healthy(
             f"соединений сейчас {self._active}, обслужено {self._served}, отказано {self._refused}"
+            + (f", строк лога принято пачек {self._shipped}" if self._logs else "")
         )
 
     # --- соединение ---------------------------------------------------------
@@ -199,6 +251,9 @@ class RelaySkill(Skill):
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HANDSHAKE_S)
         if len(head) > MAX_HEAD:
             await _answer(writer, "431 Request Header Fields Too Large")
+            return
+        if self._logs is not None and head.startswith(b"POST /log "):
+            await self._take_log(reader, writer, head, peer)
             return
         target = parse_connect(head)
         if target is None:
@@ -235,6 +290,30 @@ class RelaySkill(Skill):
         finally:
             up_writer.close()
 
+    async def _take_log(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, head: bytes, peer: str
+    ) -> None:
+        """Дописать копию лога ноутбука в дневной файл."""
+        post = parse_log_post(head)
+        if post is None or self._logs is None:
+            self._refused += 1
+            await _answer(writer, "400 Bad Request")
+            return
+        if post.length > MAX_LOG_BODY:
+            self._refused += 1
+            await _answer(writer, "413 Content Too Large")
+            return
+        body = await asyncio.wait_for(reader.readexactly(post.length), HANDSHAKE_S)
+        path = self._logs / f"{post.name}-{post.day}.log"
+        try:
+            await asyncio.to_thread(_append, path, body)
+        except OSError as exc:
+            logger.warning("Копия лога от %s не записалась в %s: %s", peer, path, exc)
+            await _answer(writer, "500 Internal Server Error")
+            return
+        self._shipped += 1
+        await _answer(writer, "204 No Content")
+
     async def _pipe(self, source: asyncio.StreamReader, sink: asyncio.StreamWriter) -> None:
         """Перекладывать байты, пока одна сторона не закроет или не замолчит на `idle_s`."""
         try:
@@ -249,6 +328,12 @@ class RelaySkill(Skill):
         finally:
             # Закрыв одну сторону, будим вторую: иначе она ждала бы `idle_s`.
             sink.close()
+
+
+def _append(path: Path, body: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as file:
+        file.write(body)
 
 
 async def _answer(writer: asyncio.StreamWriter, status: str) -> None:
