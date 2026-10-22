@@ -408,6 +408,13 @@
     </div>
     <p class="note">В тишину Jarvis сам не заговаривает, кроме напоминаний. Пустое время — тишины нет.</p>
 
+    <h2 class="caption">Лог</h2>
+    <div class="field">
+      <label class="small"><input type="checkbox" id="set-log-ship"> копию лога сохранять и на сервере</label>
+      <div class="row"><button class="act" data-save="log_ship">Сохранить</button></div>
+    </div>
+    <p class="note" id="log-ship-note">Строки раз в несколько секунд уходят через тот же прокси, что и облака, и ложатся на сервере по дням. Файл здесь остаётся главным. Заработает после перезапуска Jarvis.</p>
+
     <h2 class="caption">Ключи</h2>
     <p class="note">Ключи хранятся в <code>.env</code>. Значения здесь не показываются — только задан ли ключ и какой он длины. Новый ключ начнёт работать после перезапуска Jarvis.</p>
     <table><thead><tr><th>Переменная</th><th>Состояние</th><th>Где используется</th><th style="width:42%">Заменить</th></tr></thead><tbody id="keys"></tbody></table>
@@ -1247,6 +1254,10 @@ async function loadSettings() {
   $("set-address").value = settings.address;
   $("set-quiet-from").value = settings.quiet_from;
   $("set-quiet-to").value = settings.quiet_to;
+  $("set-log-ship").checked = settings.log_ship;
+  $("log-ship-note").textContent = settings.log_ship_to
+    ? `Строки раз в несколько секунд уходят через прокси ${settings.log_ship_to} и ложатся на сервере по дням. Файл здесь остаётся главным. Заработает после перезапуска Jarvis.`
+    : "Адреса прокси нет: в .env не задан HTTPS_PROXY. Включить можно, но отправлять будет некуда.";
   const ext = settings.extension;
   $("ext-status").textContent = ext.connected ? "подключено" : "не подключено";
   $("ext-status").className = `badge ${ext.connected ? "ok" : "warn"}`;
@@ -1261,6 +1272,7 @@ document.querySelectorAll("[data-save]").forEach((button) => button.addEventList
   if (kind === "output") await run(() => api("/api/settings", { field: "output", value: $("set-output").value }));
   if (kind === "input") await run(() => api("/api/settings", { field: "input", value: $("set-input").value || null }));
   if (kind === "address") await run(() => api("/api/settings", { field: "address", value: $("set-address").value }));
+  if (kind === "log_ship") await run(() => api("/api/settings", { field: "log_ship", value: $("set-log-ship").checked }));
   if (kind === "quiet") {
     const first = await run(() => api("/api/settings", { field: "quiet_from", value: $("set-quiet-from").value }));
     if (first) await run(() => api("/api/settings", { field: "quiet_to", value: $("set-quiet-to").value }));

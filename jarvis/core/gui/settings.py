@@ -191,6 +191,26 @@ def set_scalar(yaml_text: str, section: str, key: str, value: object) -> str:
     raise ValueError(f"в config.yaml нет строки {section}.{key}")
 
 
+def put_scalar(yaml_text: str, section: str, key: str, value: object) -> str:
+    """Как `set_scalar`, но строки нет — дописать её первой в секцию.
+
+    Настройка могла появиться в коде позже, чем владелец правил свой
+    `config.yaml`: тогда строки в файле нет, а включить её из панели надо.
+
+    :raises ValueError: нет самой секции.
+    """
+    try:
+        return set_scalar(yaml_text, section, key, value)
+    except ValueError:
+        pass
+    lines = yaml_text.split("\n")
+    for index, line in enumerate(lines):
+        if line.rstrip() == f"{section}:" or line.startswith(f"{section}: "):
+            lines.insert(index + 1, f"  {key}: {yaml_scalar(value)}")
+            return "\n".join(lines)
+    raise ValueError(f"в config.yaml нет секции {section}")
+
+
 _TOP_KEY = re.compile(r"^([A-Za-z_][\w-]*):(.*)$")
 
 

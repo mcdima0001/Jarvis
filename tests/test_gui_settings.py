@@ -24,6 +24,7 @@ from jarvis.core.gui.settings import (
     describe_config,
     key_list,
     launcher_level,
+    put_scalar,
     read_env,
     referenced_keys,
     set_disabled,
@@ -145,6 +146,15 @@ def test_set_scalar_quotes_and_refuses_missing() -> None:
     assert '  address: "босс"' in set_scalar(SETTINGS, "persona", "address", "босс")
     with pytest.raises(ValueError):
         set_scalar(SETTINGS, "persona", "name", "x")
+
+
+def test_put_scalar_adds_a_missing_line_to_its_section() -> None:
+    """Настройка появилась в коде позже, чем владелец правил свой config.yaml."""
+    updated = put_scalar(SETTINGS, "persona", "ship", True)
+    assert "persona:\n  ship: true\n  address: сэр" in updated
+    assert put_scalar(updated, "persona", "ship", False).count("ship:") == 1
+    with pytest.raises(ValueError):
+        put_scalar(SETTINGS, "logging", "ship", True)
 
 
 SKILL_CONFIG = """# Настройки скилла «keys». Живут рядом с кодом.

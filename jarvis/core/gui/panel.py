@@ -54,6 +54,7 @@ from .settings import (
     is_admin,
     key_list,
     launcher_level,
+    put_scalar,
     set_disabled,
     set_scalar,
     set_top_value,
@@ -877,6 +878,7 @@ class ControlPanel:
         audio = data.get("audio") or {}
         persona = data.get("persona") or {}
         attention = data.get("attention") or {}
+        logs = data.get("logging") or {}
         outputs = await self._query(audio_devices.query_outputs, self._config.audio.output_names)
         inputs = await self._query(audio_devices.query_inputs)
         device = getattr(self._sink, "device", None)
@@ -894,6 +896,9 @@ class ControlPanel:
             "address": persona.get("address") or "",
             "quiet_from": attention.get("quiet_from") or "",
             "quiet_to": attention.get("quiet_to") or "",
+            # Копия лога на сервере (`logging/ship.py`): включена ли и есть ли куда.
+            "log_ship": bool(logs.get("ship", False)),
+            "log_ship_to": str(logs.get("ship_to") or "") or os.environ.get("HTTPS_PROXY", ""),
             "extension": await self._extension_info(),
         })
 
@@ -936,6 +941,14 @@ class ControlPanel:
                 raise ValueError("время пишется как 23:30")
             await self._edit_config(lambda text: set_scalar(text, "attention", field, moment))
             return json_response({"message": "Время тишины сохранено." + restart})
+
+        if field == "log_ship":
+            ship = bool(value)
+            await self._edit_config(lambda text: put_scalar(text, "logging", "ship", ship))
+            return json_response({
+                "message": ("Копия лога на сервер включена." if ship else "Копия лога на сервер выключена.")
+                + restart
+            })
 
         raise ValueError(f"нет такой настройки {field!r}")
 
