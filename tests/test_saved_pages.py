@@ -50,7 +50,9 @@ def _run(name: str, url: str, plan: list[dict[str, Any]]) -> dict[str, Any]:
     done = subprocess.run(
         ["node", str(_HARNESS / "run.js"), str(_PAGES / name), url, json.dumps(plan, ensure_ascii=False)],
         capture_output=True,
-        text=True,
+        # Без кодировки Windows читает вывод node в cp1252: кириллица не
+        # декодируется, и stdout приходит None (CI, windows-latest, 22.10.2026).
+        encoding="utf-8",
         timeout=60,
     )
     assert done.returncode == 0, done.stderr
