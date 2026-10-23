@@ -556,6 +556,17 @@ SEARCH_DELAY = 0.7
 #: Сколько ждать, пока сайт откроет строку поиска после нажатия «Поиск».
 SEARCH_OPEN_DELAY = 0.8
 
+#: Сколько ждать, пока пустая вкладка отрисуется, прежде чем отдать музыку AIMP.
+#:
+#: Живой случай 23.10.2026, 10:58: вкладка Яндекс Музыки нашлась, но на ней не
+#: было ни одного элемента, — и браузер сдался за полсекунды: поиск не нашёлся,
+#: трек ушёл в AIMP. Дважды подряд. Правило владельца — сперва браузер, AIMP
+#: только если там не вышло, — а «не вышло» должно значить «не вышло», а не
+#: «страница ещё не дорисовалась». Двенадцать попыток по 0.7 с — около восьми
+#: секунд; «секунду» за это время уже прозвучит.
+DRAW_ATTEMPTS = 12
+DRAW_DELAY = 0.7
+
 #: Как сайт предлагает поправить запрос. Распознавание пишет названия как слышит
 #: («нервы, волшануя» вместо «нервы, волшебная»), и сайт сам знает, что имелось
 #: в виду, — надо только нажать его подсказку.
@@ -1176,7 +1187,7 @@ class PageSkill(Skill):
     meta = SkillMeta(
         name="page",
         description="Управление тем, что открыто во вкладке: плеер, кнопки, лайки",
-        version="0.8.1",
+        version="0.8.2",
         spoken=("страница", "страницу", "вкладка", "page"),
     )
 
@@ -1197,6 +1208,9 @@ class PageSkill(Skill):
         #: Не только выученное: общий способ тоже может нажать не ту кнопку, и
         #: тогда отменять нечего, а запомнить «сюда больше не надо» — нужно.
         self._last: dict[str, Any] = {}
+        #: Последний план упёрся в пустую страницу: элементов ноль, сайт не
+        #: отрисовался. Ставит `_run`, читает `_until_drawn`.
+        self._blank = False
 
         self._own: dict[str, dict[str, list[dict]]] = {}
         for site, actions in dict(self.context.setting("sites", {})).items():
@@ -2111,6 +2125,8 @@ class PageSkill(Skill):
             result, _ = await self._from_results(steps, tab=tab, host=host)
         else:
             result = await self._run(steps, tab)
+            if result is None and self._blank:
+                result = await self._until_drawn(steps, tab)
         if search and result is None:
             # На странице этого нет — поищем на самом сайте, как это сделал бы
             # человек: нажать «Поиск», напечатать, включить верхнее.
@@ -2233,6 +2249,7 @@ class PageSkill(Skill):
 
     async def _run(self, plan: Sequence[Mapping[str, Any]], tab: int) -> dict[str, Any] | None:
         """Отправить план в страницу; ``None`` — ни один вариант не сработал."""
+        self._blank = False
         steps = validate_plan(plan)
         if not steps:
             return None
@@ -2288,6 +2305,7 @@ class PageSkill(Skill):
         counted = int(result.value.get("counted") or 0)
         where = str(result.value.get("url", "")) or "страница"
         if not counted:
+            self._blank = True
             self.log.info("На %s пока ни одного элемента — страница не отрисовалась", where)
         else:
             self.log.info(
@@ -2295,6 +2313,26 @@ class PageSkill(Skill):
                 counted,
                 "; ".join(str(item) for item in saw),
             )
+        return None
+
+    async def _until_drawn(
+        self, steps: Sequence[Mapping[str, Any]], tab: int
+    ) -> dict[str, Any] | None:
+        """Подождать, пока пустая страница отрисуется, и повторить план.
+
+        Ждём, только пока страница **пуста**: появились элементы, а нужного среди
+        них нет — это уже про название, и дальше идёт обычный путь (поиск сайта,
+        затем AIMP). Не отрисовалась за `DRAW_ATTEMPTS` — тоже обычный путь.
+        Повторять план тут безопасно: на пустой странице он ничего не нажал.
+        """
+        for _ in range(DRAW_ATTEMPTS):
+            await asyncio.sleep(DRAW_DELAY)
+            result = await self._run(steps, tab)
+            if result is not None or not self._blank:
+                return result
+        self.log.info(
+            "Страница так и не отрисовалась за %.0f с", DRAW_ATTEMPTS * DRAW_DELAY
+        )
         return None
 
     async def _elsewhere(

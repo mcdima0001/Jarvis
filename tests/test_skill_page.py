@@ -1614,6 +1614,60 @@ async def test_a_track_goes_to_aimp_when_the_page_cannot(loaded, monkeypatch) ->
     await manager.stop()
 
 
+#: Так отвечает страница, на которой ещё нет ни одного элемента.
+_BLANK = {"done": None, "saw": [], "counted": 0, "url": "https://music.yandex.ru/"}
+
+
+async def test_a_blank_music_tab_is_waited_for_not_handed_to_aimp(loaded, monkeypatch) -> None:
+    """Живой случай 23.10.2026, 10:58: вкладка Яндекс Музыки была пуста —
+    не отрисовалась, — и трек за полсекунды ушёл в AIMP. Дважды подряд.
+
+    Правило владельца: сперва браузер, AIMP — только если там не вышло. Пустая
+    страница — это «ещё не», а не «не вышло»: её ждут.
+    """
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    monkeypatch.setattr(module, "DRAW_DELAY", 0)
+    monkeypatch.setattr(module, "CONFIRM_WITHIN_S", 0)
+    asked: list[str] = []
+    _local_player(registry, asked)
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [
+        dict(_BLANK),
+        dict(_BLANK),
+        {"done": "item", "detail": "deacon blues", "played": True},
+    ]
+
+    result = await registry.invoke("page.play_item", {"track": "Deacon Blues"})
+
+    assert result.ok
+    assert asked == [], "страница дорисовалась — AIMP не нужен"
+    assert sum(1 for call in fake.CALLS if call[0] == "run") == 3
+    await manager.stop()
+
+
+async def test_a_tab_that_never_draws_still_falls_back_to_aimp(loaded, monkeypatch) -> None:
+    """Ждём не вечно: не отрисовалась — трек всё-таки из своей фонотеки."""
+    manager, registry, _ = loaded
+    await manager.start()
+    fake = sys.modules["jarvis_skills.browser"]
+    module = sys.modules["jarvis_skills.page"]
+    for name in ("DRAW_DELAY", "SEARCH_DELAY", "SEARCH_OPEN_DELAY", "CONFIRM_WITHIN_S"):
+        monkeypatch.setattr(module, name, 0)
+    monkeypatch.setattr(module, "DRAW_ATTEMPTS", 3)
+    asked: list[str] = []
+    _local_player(registry, asked)
+    fake.CALLS.clear()
+    fake.REPLIES[:] = [dict(_BLANK) for _ in range(4)]
+
+    result = await registry.invoke("page.play_item", {"track": "Deacon Blues"})
+
+    assert result.ok and asked == ["Deacon Blues"]
+    await manager.stop()
+
+
 async def test_locally_skips_the_browser(loaded, monkeypatch) -> None:
     manager, registry, _ = loaded
     await manager.start()
